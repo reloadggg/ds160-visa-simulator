@@ -48,3 +48,16 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
     choice = response.json()["choices"][0]["message"]
     assert choice["role"] == "assistant"
     assert choice["content"] == "Please upload funding proof."
+
+
+def test_chat_completions_rejects_empty_messages(client: TestClient) -> None:
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 422

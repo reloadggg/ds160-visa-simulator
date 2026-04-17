@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -10,13 +12,13 @@ router = APIRouter(prefix="/v1/chat/completions", tags=["openai-compat"])
 
 
 class CompatMessage(BaseModel):
-    role: str
+    role: Literal["user", "assistant", "system"]
     content: str
 
 
 class CompatRequest(BaseModel):
     model: str
-    messages: list[CompatMessage]
+    messages: list[CompatMessage] = Field(min_length=1)
     metadata: dict = Field(default_factory=dict)
 
 
@@ -27,7 +29,12 @@ def chat_completions(
 ) -> dict:
     declared_family = payload.metadata.get("declared_family")
     session_record = SessionRepository(db).create(declared_family)
-    last_user_message = payload.messages[-1].content
+    last_user_message = next(
+        (message.content for message in reversed(payload.messages) if message.role == "user"),
+        None,
+    )
+    if last_user_message is None:
+        raise HTTPException(status_code=422, detail="at least one user message is required")
     result = MessageService(db).handle_user_turn(session_record.session_id, last_user_message)
     return {
         "id": f"chatcmpl-{session_record.session_id}",

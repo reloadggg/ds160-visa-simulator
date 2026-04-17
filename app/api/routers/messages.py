@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,7 +11,7 @@ router = APIRouter(prefix="/v1/sessions/{session_id}/messages", tags=["messages"
 
 
 class MessageRequest(BaseModel):
-    role: str
+    role: Literal["user"]
     content: str
 
 

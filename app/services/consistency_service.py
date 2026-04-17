@@ -4,6 +4,19 @@ from app.domain.contracts import ApplicantProfile
 class ConsistencyService:
     def evaluate(self, profile: ApplicantProfile) -> list[dict]:
         findings: list[dict] = []
+        last_user_message = profile.ds160_view.get("last_user_message", "").lower()
+
+        if any(token in last_user_message for token in ("lied", "fake", "forged")):
+            findings.append(
+                {
+                    "finding_type": "hard_conflict",
+                    "severity": "high",
+                    "status": "confirmed",
+                    "summary": "applicant self-reported false or fraudulent record",
+                    "evidence_refs": ["msg:last_user_turn"],
+                }
+            )
+
         if (
             profile.funding.get("primary_source") == "parents"
             and not profile.field_provenance["/funding/primary_source"].evidence_refs
@@ -12,6 +25,7 @@ class ConsistencyService:
                 {
                     "finding_type": "gap",
                     "severity": "medium",
+                    "status": "supported",
                     "summary": "funding source claimed but not yet documented",
                     "evidence_refs": [],
                 }

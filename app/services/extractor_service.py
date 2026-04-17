@@ -11,12 +11,14 @@ class ExtractorService:
         profile: ApplicantProfile,
         message_text: str,
     ) -> ApplicantProfile:
+        normalized = message_text.lower()
         self.client.generate_json(
             module_key="extractor_service",
             stage_key="gate_review",
             payload={"message_text": message_text},
         )
-        if "parent" in message_text.lower():
+        profile.ds160_view["last_user_message"] = message_text
+        if "parent" in normalized:
             profile.field_states["/funding/primary_source"] = FieldStateRecord(
                 state=FieldState.CLAIMED,
             )

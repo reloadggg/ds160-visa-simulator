@@ -22,17 +22,34 @@ class ScoringService:
             scoring_stage=scoring_stage,
         )
         score.category_fit = 60 if profile.visa_intent.get("declared_family") else 30
-        score.document_readiness = 40 if findings else 70
-        score.narrative_consistency = 55 if findings else 75
+        score.document_readiness = 70
+        score.narrative_consistency = 75
         score.confidence = 65
-        if findings:
+        for finding in findings:
+            if finding["finding_type"] == "gap":
+                score.document_readiness = 40
+                score.narrative_consistency = 55
+                score.risk_flags.append(
+                    RiskFlag(
+                        code="supporting_evidence_missing",
+                        severity="medium",
+                        status="supported",
+                        evidence_refs=[],
+                    )
+                )
+                if "funding_proof" not in score.missing_evidence:
+                    score.missing_evidence.append("funding_proof")
+                continue
+
+            score.document_readiness = min(score.document_readiness, 30)
+            score.narrative_consistency = min(score.narrative_consistency, 15)
+            score.confidence = max(score.confidence, 85)
             score.risk_flags.append(
                 RiskFlag(
-                    code="supporting_evidence_missing",
-                    severity="medium",
-                    status="supported",
-                    evidence_refs=[],
+                    code=finding["finding_type"],
+                    severity=finding["severity"],
+                    status=finding.get("status", "supported"),
+                    evidence_refs=finding.get("evidence_refs", []),
                 )
             )
-            score.missing_evidence.append("funding_proof")
         return score

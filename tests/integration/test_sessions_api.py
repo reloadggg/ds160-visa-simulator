@@ -59,3 +59,13 @@ def test_required_package_endpoint_uses_declared_family(
         "admission_letter",
         "funding_proof",
     ]
+
+
+def test_required_package_rejects_unlocked_family(client: TestClient) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": None})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.get(f"/v1/sessions/{session_id}/required-package")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "declared_family not locked"

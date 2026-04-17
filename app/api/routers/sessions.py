@@ -33,6 +33,8 @@ def get_required_package(
     record = repo.get(session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
+    if record.declared_family is None:
+        raise HTTPException(status_code=409, detail="declared_family not locked")
 
-    required = GateService().required_package(record.declared_family or "f1")
+    required = GateService().required_package(record.declared_family)
     return {"required_initial_package": required}

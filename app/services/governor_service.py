@@ -37,6 +37,14 @@ class GovernorService:
             if early_term_candidate.get("confirmation_required", False):
                 blocked_actions.append("confirmation_required_blocked")
 
+        if not score.missing_evidence and not early_term_candidate:
+            return {
+                "decision": GovernorDecision.CONTINUE_INTERVIEW.value,
+                "blocked_actions": blocked_actions,
+                "rationale_refs": [],
+                "requested_documents": [],
+            }
+
         return {
             "decision": GovernorDecision.NEED_MORE_EVIDENCE.value,
             "blocked_actions": blocked_actions,

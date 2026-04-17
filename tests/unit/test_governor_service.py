@@ -8,7 +8,7 @@ def test_governor_blocks_refusal_when_only_low_score_exists() -> None:
 
     decision = GovernorService().decide(profile, score, early_term_candidate=None)
 
-    assert decision["decision"] == GovernorDecision.NEED_MORE_EVIDENCE.value
+    assert decision["decision"] == GovernorDecision.CONTINUE_INTERVIEW.value
     assert "low_score_only_blocked" in decision["blocked_actions"]
 
 

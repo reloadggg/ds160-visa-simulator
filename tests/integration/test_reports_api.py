@@ -42,3 +42,39 @@ def test_user_report_returns_summary_shape(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "outcome_label" in response.json()
+
+
+def test_user_report_stays_consistent_after_funding_proof(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My parents will pay for my studies."},
+    )
+    client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof.txt",
+                b"Parent sponsor bank statement for tuition",
+                "text/plain",
+            )
+        },
+    )
+    client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    response = client.get(f"/v1/sessions/{session_id}/reports/user")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["outcome_label"] == "可继续正式问答"
+    assert payload["missing_evidence"] == []
+    assert payload["recommended_improvements"] == [
+        "继续回答后续问题，并保持叙事一致。",
+    ]

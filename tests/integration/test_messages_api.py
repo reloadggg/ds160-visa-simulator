@@ -49,3 +49,67 @@ def test_message_turn_returns_next_question_and_governor_decision(
     payload = response.json()
     assert payload["governor_decision"] == "need_more_evidence"
     assert payload["assistant_message"] == "Please upload funding proof."
+
+
+def test_message_turn_rejects_non_user_role(client: TestClient) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "assistant", "content": "My parents will pay for my studies."},
+    )
+
+    assert response.status_code == 422
+
+
+def test_funding_proof_upload_allows_interview_to_continue(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My parents will pay for my studies."},
+    )
+    upload_response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof.txt",
+                b"Parent sponsor bank statement for tuition",
+                "text/plain",
+            )
+        },
+    )
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert upload_response.status_code == 202
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["governor_decision"] == "continue_interview"
+    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert payload["requested_documents"] == []
+
+
+def test_confirmed_fraud_message_triggers_simulated_refusal(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "I lied on my DS-160 and used fake bank statements.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["governor_decision"] == "simulated_refusal"

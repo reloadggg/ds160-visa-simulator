@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.domain.contracts import ApplicantProfile
+from app.domain.contracts import ApplicantProfile, GovernorDecision
 from app.repositories.session_repo import SessionRepository
 from app.services.consistency_service import ConsistencyService
 from app.services.extractor_service import ExtractorService
@@ -34,15 +34,23 @@ class MessageService:
         profile = self.extractor.apply_message(profile, message_text)
         findings = self.consistency.evaluate(profile)
         score = self.scoring.propose(profile, findings, scoring_stage="interview_turn")
-        governor = self.governor.decide(profile, score, early_term_candidate=None)
+        early_term_candidate = self._build_early_term_candidate(
+            record.declared_family,
+            score,
+        )
+        governor = self.governor.decide(profile, score, early_term_candidate)
 
         record.profile_json = profile.model_dump(mode="json")
         record.current_governor_decision = governor["decision"]
         self.session_repo.save(record)
 
         assistant_message = "Please upload funding proof."
-        if not score.missing_evidence:
+        if governor["decision"] == GovernorDecision.CONTINUE_INTERVIEW.value:
             assistant_message = "What is the purpose of your travel?"
+        if governor["decision"] == GovernorDecision.SIMULATED_REFUSAL.value:
+            assistant_message = (
+                "This simulated case results in refusal based on confirmed record conflicts."
+            )
 
         return {
             "assistant_message": assistant_message,
@@ -60,3 +68,23 @@ class MessageService:
         if profile_json:
             return ApplicantProfile.model_validate(profile_json)
         return ApplicantProfile.minimal(profile_id=f"profile-{session_id}")
+
+    def _build_early_term_candidate(
+        self,
+        declared_family: str | None,
+        score,
+    ) -> dict | None:
+        family = declared_family or "unknown"
+        for risk_flag in score.risk_flags:
+            if (
+                risk_flag.severity == "high"
+                and risk_flag.status == "confirmed"
+                and risk_flag.evidence_refs
+            ):
+                return {
+                    "eligible": True,
+                    "policy_id": f"{family}.tp.{risk_flag.code}",
+                    "confirmation_required": False,
+                    "evidence_refs": risk_flag.evidence_refs,
+                }
+        return None
