@@ -27,3 +27,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "live_llm: 标记需要真实 LLM 配置与网络调用的集成测试",
+]
