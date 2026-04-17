@@ -1,0 +1,14 @@
+visa_family: f1
+scenarios:
+  parent_sponsored:
+    required_initial_package:
+      - ds160
+      - passport_bio
+      - i20
+      - admission_letter
+      - funding_proof
+    prompts:
+      routing_prompt: f1-routing-v1
+      interview_prompt: f1-interview-v1
+      scoring_rubric_prompt: f1-score-v1
+      terminal_pattern_prompt: f1-terminal-v1

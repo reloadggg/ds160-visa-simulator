@@ -1,0 +1,4 @@
+visa_family: l1a
+scenarios:
+  manager_executive:
+    required_initial_package: [ds160, passport_bio, i797, employer_letter]

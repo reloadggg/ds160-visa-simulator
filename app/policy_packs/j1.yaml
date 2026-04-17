@@ -1,0 +1,4 @@
+visa_family: j1
+scenarios:
+  institution_funded:
+    required_initial_package: [ds160, passport_bio, ds2019, funding_proof]

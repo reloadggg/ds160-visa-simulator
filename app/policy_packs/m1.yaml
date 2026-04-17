@@ -1,0 +1,4 @@
+visa_family: m1
+scenarios:
+  vocational_program:
+    required_initial_package: [ds160, passport_bio, school_letter, funding_proof]

@@ -1,0 +1,4 @@
+visa_family: o1
+scenarios:
+  science_business:
+    required_initial_package: [ds160, passport_bio, i797, evidence_of_achievement]

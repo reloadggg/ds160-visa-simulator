@@ -1,0 +1,7 @@
+visa_family: b1_b2
+scenarios:
+  tourism:
+    required_initial_package:
+      - ds160
+      - passport_bio
+      - itinerary_or_trip_purpose

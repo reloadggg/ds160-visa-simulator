@@ -1,0 +1,4 @@
+visa_family: h1b
+scenarios:
+  first_time_stamping:
+    required_initial_package: [ds160, passport_bio, i797, employer_letter]
