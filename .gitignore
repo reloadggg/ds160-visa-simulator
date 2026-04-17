@@ -4,5 +4,6 @@ __pycache__/
 .mypy_cache/
 .DS_Store
 .superpowers/
+.worktrees/
 *.sqlite3
 .env
