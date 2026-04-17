@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.policy_registry import PolicyRegistry
 from app.services.runtime_policies import RuntimePolicyRegistry
 
@@ -17,3 +19,64 @@ def test_runtime_policy_registry_returns_scoring_engine_config() -> None:
 
     assert policy["provider"] == "openai"
     assert policy["model"] == "gpt-5.2"
+
+
+def test_policy_registry_raises_for_missing_directory(tmp_path) -> None:
+    missing_directory = tmp_path / "missing"
+
+    with pytest.raises(FileNotFoundError, match="Policy pack directory does not exist"):
+        PolicyRegistry(str(missing_directory))
+
+
+def test_policy_registry_get_returns_defensive_copy() -> None:
+    registry = PolicyRegistry("app/policy_packs")
+
+    policy = registry.get("f1")
+    policy["scenarios"]["parent_sponsored"]["required_initial_package"].append(
+        "unexpected_document"
+    )
+
+    fresh_policy = registry.get("f1")
+
+    assert "unexpected_document" not in fresh_policy["scenarios"]["parent_sponsored"][
+        "required_initial_package"
+    ]
+
+
+def test_runtime_policy_registry_get_returns_defensive_copy() -> None:
+    registry = RuntimePolicyRegistry("app/runtime_policies/default.yaml")
+
+    policy = registry.get("scoring_engine", "interview_turn")
+    policy["provider"] = "other"
+
+    fresh_policy = registry.get("scoring_engine", "interview_turn")
+
+    assert fresh_policy["provider"] == "openai"
+
+
+def test_policy_registry_raises_for_invalid_pack_payload(tmp_path) -> None:
+    policy_pack_directory = tmp_path / "policy_packs"
+    policy_pack_directory.mkdir()
+    (policy_pack_directory / "f1.yaml").write_text("- invalid\n")
+
+    with pytest.raises(ValueError, match="must be a mapping"):
+        PolicyRegistry(str(policy_pack_directory))
+
+
+def test_runtime_policy_registry_raises_for_invalid_top_level_payload(
+    tmp_path,
+) -> None:
+    runtime_policy_path = tmp_path / "runtime.yaml"
+    runtime_policy_path.write_text("- invalid\n")
+
+    with pytest.raises(ValueError, match="must be a mapping"):
+        RuntimePolicyRegistry(str(runtime_policy_path))
+
+
+def test_policy_registry_raises_for_mismatched_visa_family(tmp_path) -> None:
+    policy_pack_directory = tmp_path / "policy_packs"
+    policy_pack_directory.mkdir()
+    (policy_pack_directory / "f1.yaml").write_text("visa_family: j1\n")
+
+    with pytest.raises(ValueError, match="visa_family mismatch"):
+        PolicyRegistry(str(policy_pack_directory))
