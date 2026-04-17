@@ -1,0 +1,10 @@
+{
+  "funding": {
+    "primary_source": "parents"
+  },
+  "field_states": {
+    "/funding/primary_source": {
+      "state": "claimed"
+    }
+  }
+}

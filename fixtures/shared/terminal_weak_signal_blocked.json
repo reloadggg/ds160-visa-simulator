@@ -1,0 +1,6 @@
+{
+  "policy_id": "f1.tp.weak_signal_only",
+  "eligible": true,
+  "confirmation_required": false,
+  "evidence_refs": []
+}

@@ -1,0 +1,16 @@
+{
+  "case_id": "f1_parent_sponsored_consistent_01",
+  "visa_family": "f1",
+  "scenario_key": "parent_sponsored",
+  "fixture_type": "happy_path",
+  "initial_required_package": [
+    "ds160",
+    "passport_bio",
+    "i20",
+    "admission_letter",
+    "funding_proof"
+  ],
+  "should_gate_pass": true,
+  "should_trigger_early_termination": false,
+  "expected_final_decision": "need_more_evidence"
+}

@@ -1,0 +1,12 @@
+{
+  "policy_pack_trace": {
+    "policy_pack_id": "f1.default.v1"
+  },
+  "runtime_trace": [],
+  "score_history": [],
+  "governor_history": [
+    {
+      "decision": "need_more_evidence"
+    }
+  ]
+}

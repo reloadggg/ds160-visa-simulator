@@ -50,6 +50,8 @@ class MessageService:
             "score_summary": {
                 "category_fit": score.category_fit,
                 "document_readiness": score.document_readiness,
+                "narrative_consistency": score.narrative_consistency,
+                "confidence": score.confidence,
             },
             "requested_documents": governor["requested_documents"],
         }

@@ -1,0 +1,7 @@
+{
+  "category_fit": 60,
+  "document_readiness": 40,
+  "narrative_consistency": 55,
+  "confidence": 65,
+  "missing_evidence": ["funding_proof"]
+}
