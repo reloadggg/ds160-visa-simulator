@@ -9,15 +9,22 @@ class DocumentRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def create_document(self, session_id: str, filename: str) -> DocumentRecord:
+    def create_document(
+        self,
+        session_id: str,
+        filename: str,
+        raw_bytes: bytes,
+        raw_text: str,
+    ) -> DocumentRecord:
         record = DocumentRecord(
             document_id=f"doc-{uuid4().hex[:12]}",
             session_id=session_id,
             filename=filename,
+            raw_bytes=raw_bytes,
+            raw_text=raw_text,
         )
         self.db.add(record)
-        self.db.commit()
-        self.db.refresh(record)
+        self.db.flush()
         return record
 
     def enqueue_job(
@@ -33,6 +40,5 @@ class DocumentRepository:
             payload_json=payload_json,
         )
         self.db.add(job)
-        self.db.commit()
-        self.db.refresh(job)
+        self.db.flush()
         return job

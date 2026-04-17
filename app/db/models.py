@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, String, Text
+from sqlalchemy import JSON, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -26,6 +26,7 @@ class DocumentRecord(Base):
     filename: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), default="uploaded")
     artifact_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    raw_bytes: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
     raw_text: Mapped[str] = mapped_column(Text, default="")
 
 
