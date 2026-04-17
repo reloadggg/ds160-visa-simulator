@@ -21,3 +21,9 @@ class SessionRepository:
 
     def get(self, session_id: str) -> SessionRecord | None:
         return self.db.get(SessionRecord, session_id)
+
+    def save(self, record: SessionRecord) -> SessionRecord:
+        self.db.add(record)
+        self.db.commit()
+        self.db.refresh(record)
+        return record
