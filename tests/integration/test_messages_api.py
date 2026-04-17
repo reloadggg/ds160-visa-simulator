@@ -113,3 +113,22 @@ def test_confirmed_fraud_message_triggers_simulated_refusal(
     assert response.status_code == 200
     payload = response.json()
     assert payload["governor_decision"] == "simulated_refusal"
+
+
+def test_negated_fraud_statement_does_not_trigger_refusal(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "I did not use fake bank statements.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["governor_decision"] == "continue_interview"

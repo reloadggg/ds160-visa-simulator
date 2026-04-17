@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.core.visa_families import validate_declared_family
 from app.core.dependencies import get_session_repo
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_service import GateService
@@ -17,7 +18,12 @@ def create_session(
     payload: CreateSessionRequest,
     repo: SessionRepository = Depends(get_session_repo),
 ) -> dict:
-    record = repo.create(payload.declared_family)
+    try:
+        declared_family = validate_declared_family(payload.declared_family)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    record = repo.create(declared_family)
     return {
         "session_id": record.session_id,
         "phase_state": record.phase_state,
@@ -35,6 +41,10 @@ def get_required_package(
         raise HTTPException(status_code=404, detail="session not found")
     if record.declared_family is None:
         raise HTTPException(status_code=409, detail="declared_family not locked")
+    try:
+        declared_family = validate_declared_family(record.declared_family)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    required = GateService().required_package(record.declared_family)
+    required = GateService().required_package(declared_family)
     return {"required_initial_package": required}

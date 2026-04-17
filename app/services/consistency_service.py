@@ -1,3 +1,5 @@
+import re
+
 from app.domain.contracts import ApplicantProfile
 
 
@@ -6,7 +8,15 @@ class ConsistencyService:
         findings: list[dict] = []
         last_user_message = profile.ds160_view.get("last_user_message", "").lower()
 
-        if any(token in last_user_message for token in ("lied", "fake", "forged")):
+        hard_conflict_patterns = (
+            r"\bi lied\b",
+            r"\bi (?:used|submitted|provided|uploaded|brought) fake\b",
+            r"\bi (?:forged|forge|faked)\b",
+        )
+        if any(
+            re.search(pattern, last_user_message) is not None
+            for pattern in hard_conflict_patterns
+        ):
             findings.append(
                 {
                     "finding_type": "hard_conflict",

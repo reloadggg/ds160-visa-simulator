@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.visa_families import validate_declared_family
 from app.db.session import get_db
 from app.repositories.session_repo import SessionRepository
 from app.services.message_service import MessageService
@@ -27,14 +28,18 @@ def chat_completions(
     payload: CompatRequest,
     db: Session = Depends(get_db),
 ) -> dict:
-    declared_family = payload.metadata.get("declared_family")
-    session_record = SessionRepository(db).create(declared_family)
     last_user_message = next(
         (message.content for message in reversed(payload.messages) if message.role == "user"),
         None,
     )
     if last_user_message is None:
         raise HTTPException(status_code=422, detail="at least one user message is required")
+    try:
+        declared_family = validate_declared_family(payload.metadata.get("declared_family"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    session_record = SessionRepository(db).create(declared_family)
     result = MessageService(db).handle_user_turn(session_record.session_id, last_user_message)
     return {
         "id": f"chatcmpl-{session_record.session_id}",
