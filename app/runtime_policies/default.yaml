@@ -2,11 +2,13 @@ scoring_engine:
   interview_turn:
     provider: openai
     model: gpt-5.4
+    reasoning_effort: xhigh
     prompt_template_id: scoring-default
     prompt_version: v1
 extractor_service:
   gate_review:
     provider: openai
     model: gpt-5.4
+    reasoning_effort: xhigh
     prompt_template_id: extractor-default
     prompt_version: v1

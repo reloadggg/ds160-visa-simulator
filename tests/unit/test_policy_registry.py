@@ -18,7 +18,8 @@ def test_runtime_policy_registry_returns_scoring_engine_config() -> None:
     policy = registry.get("scoring_engine", "interview_turn")
 
     assert policy["provider"] == "openai"
-    assert policy["model"] == "gpt-5.2"
+    assert policy["model"] == "gpt-5.4"
+    assert policy["reasoning_effort"] == "xhigh"
 
 
 def test_policy_registry_raises_for_missing_directory(tmp_path) -> None:

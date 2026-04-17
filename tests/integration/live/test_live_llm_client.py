@@ -18,4 +18,5 @@ def test_live_llm_client_returns_runtime_metadata() -> None:
 
     assert payload["provider"] == "openai"
     assert payload["model"] == "gpt-5.4"
+    assert payload["reasoning_effort"] == "xhigh"
     assert payload["response_json"] is not None
