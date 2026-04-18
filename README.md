@@ -10,6 +10,33 @@ FastAPI monolith for a DS-160-oriented nonimmigrant visa interview simulator.
 uv sync --dev
 ```
 
+### Runtime Config
+
+日常运行时，runtime 相关配置以 `.env` 为主，`app/runtime_policies/default.yaml` 只作为兜底默认值。
+
+推荐从 `.env.example` 复制一份：
+
+```bash
+cp .env.example .env
+```
+
+常用可调项包括：
+
+- `OPENAI_BASE_URL`
+- `OPENAI_API_KEY`
+- `RUNTIME_DEFAULT_PROVIDER`
+- `RUNTIME_DEFAULT_MODEL`
+- `RUNTIME_<MODULE>_<STAGE>_PROVIDER`
+- `RUNTIME_<MODULE>_<STAGE>_REASONING_EFFORT`
+
+例如：
+
+```bash
+RUNTIME_DEFAULT_MODEL=gpt-5.4
+RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_REASONING_EFFORT=high
+RUNTIME_SCORING_AGENT_INTERVIEW_TURN_REASONING_EFFORT=xhigh
+```
+
 ### Run API Only
 
 ```bash

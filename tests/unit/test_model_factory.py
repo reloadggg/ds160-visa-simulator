@@ -77,6 +77,24 @@ def test_model_factory_builds_openai_chat_model_from_custom_runtime_path(
     assert runtime["model"] == "gpt-5.4"
 
 
+def test_model_factory_reads_env_overrides_from_runtime_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_MODEL", "gpt-5.4")
+    monkeypatch.setenv(
+        "RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_REASONING_EFFORT",
+        "xhigh",
+    )
+
+    model, runtime = AgentModelFactory().build("question_agent", "interview_turn")
+
+    assert model is None
+    assert runtime["model"] == "gpt-5.4"
+    assert runtime["reasoning_effort"] == "xhigh"
+
+
 def test_model_factory_returns_none_for_unsupported_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

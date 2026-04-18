@@ -1,3 +1,11 @@
+# 这里的 runtime policy 只作为兜底默认值。
+# 日常运行优先使用 `.env` 中的 RUNTIME_* 覆盖项：
+# - RUNTIME_DEFAULT_<FIELD>
+# - RUNTIME_<MODULE>_<STAGE>_<FIELD>
+# 例如：
+# - RUNTIME_DEFAULT_MODEL=gpt-5.4
+# - RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_REASONING_EFFORT=high
+
 scoring_engine:
   interview_turn:
     provider: openai

@@ -55,6 +55,51 @@ def test_runtime_policy_registry_get_returns_defensive_copy() -> None:
     assert fresh_policy["provider"] == "openai"
 
 
+def test_runtime_policy_registry_applies_default_env_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNTIME_DEFAULT_MODEL", "gpt-5.4")
+    monkeypatch.setenv("RUNTIME_DEFAULT_REASONING_EFFORT", "high")
+
+    registry = RuntimePolicyRegistry("app/runtime_policies/default.yaml")
+
+    policy = registry.get("scoring_agent", "interview_turn")
+
+    assert policy["model"] == "gpt-5.4"
+    assert policy["reasoning_effort"] == "high"
+
+
+def test_runtime_policy_registry_prefers_module_stage_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNTIME_DEFAULT_REASONING_EFFORT", "medium")
+    monkeypatch.setenv(
+        "RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_REASONING_EFFORT",
+        "xhigh",
+    )
+
+    registry = RuntimePolicyRegistry("app/runtime_policies/default.yaml")
+
+    policy = registry.get("question_agent", "interview_turn")
+
+    assert policy["reasoning_effort"] == "xhigh"
+
+
+def test_runtime_policy_registry_allows_provider_override_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_PROVIDER",
+        "openai_compatible",
+    )
+
+    registry = RuntimePolicyRegistry("app/runtime_policies/default.yaml")
+
+    policy = registry.get("question_agent", "interview_turn")
+
+    assert policy["provider"] == "openai_compatible"
+
+
 def test_policy_registry_raises_for_invalid_pack_payload(tmp_path) -> None:
     policy_pack_directory = tmp_path / "policy_packs"
     policy_pack_directory.mkdir()
