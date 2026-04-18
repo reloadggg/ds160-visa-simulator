@@ -71,12 +71,43 @@ async def test_chainlit_client_uploads_file_to_files_endpoint() -> None:
 
     response = await client.upload_file(
         "sess-1",
-        "funding_proof.txt",
-        b"bank statement",
-        "text/plain",
+        "funding_proof.pdf",
+        b"%PDF-1.7",
+        "application/pdf",
     )
 
     assert response["document_status"] == "uploaded"
     assert captured["method"] == "POST"
     assert captured["path"] == "/v1/sessions/sess-1/files"
     assert "multipart/form-data" in str(captured["content_type"])
+
+
+@pytest.mark.asyncio
+async def test_chainlit_client_rejects_unsupported_upload_type_before_request() -> None:
+    called = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    client = ChainlitBackendClient(
+        base_url="http://testserver",
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="http://testserver",
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Only PDF and PNG/JPG/JPEG images are supported",
+    ):
+        await client.upload_file(
+            "sess-1",
+            "funding_proof.txt",
+            b"bank statement",
+            "text/plain",
+        )
+
+    assert called is False

@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from app.services.file_service import resolve_upload_content_type
+
 
 class ChainlitBackendClient:
     def __init__(
@@ -48,11 +50,14 @@ class ChainlitBackendClient:
         filename: str,
         raw_bytes: bytes,
         content_type: str = "application/octet-stream",
+        document_type: str | None = None,
     ) -> dict[str, Any]:
+        normalized_content_type = resolve_upload_content_type(filename, content_type)
         async with self._use_client() as client:
             response = await client.post(
                 f"/v1/sessions/{session_id}/files",
-                files={"file": (filename, raw_bytes, content_type)},
+                files={"file": (filename, raw_bytes, normalized_content_type)},
+                data={"document_type": document_type} if document_type else None,
             )
             response.raise_for_status()
             return response.json()

@@ -1,5 +1,7 @@
 [features.spontaneous_file_upload]
-enabled = false
+enabled = true
+accept = ["application/pdf", "image/png", "image/jpeg"]
+max_size_mb = 64
 
 [UI]
 name = "DS-160 Simulator"
