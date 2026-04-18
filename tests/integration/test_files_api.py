@@ -79,10 +79,12 @@ def test_upload_file_creates_document_and_job(
         assert document.session_id == session_id
         assert document.filename == "i20.txt"
         assert document.raw_bytes == raw_bytes
-        assert document.raw_text == raw_bytes.decode("utf-8")
+        assert document.raw_text == ""
+        assert document.status == "uploaded"
 
         assert job is not None
         assert job.kind == "gate_parse"
+        assert job.status == "queued"
         assert job.payload_json["document_id"] == document.document_id
 
 

@@ -8,19 +8,29 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from app.workers.parse_worker import ParseWorker
 
 
 @pytest.fixture()
-def client(tmp_path) -> Generator[TestClient, None, None]:
+def db_session_factory(tmp_path):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'reports-api.sqlite3'}",
         connect_args={"check_same_thread": False},
     )
     testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     Base.metadata.create_all(bind=engine)
+    try:
+        yield testing_session_local
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.fixture()
+def client(db_session_factory) -> Generator[TestClient, None, None]:
 
     def override_get_db() -> Generator[Session, None, None]:
-        db = testing_session_local()
+        db = db_session_factory()
         try:
             yield db
         finally:
@@ -30,8 +40,6 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=engine)
-    engine.dispose()
 
 
 def test_user_report_returns_summary_shape(client: TestClient) -> None:
@@ -46,6 +54,7 @@ def test_user_report_returns_summary_shape(client: TestClient) -> None:
 
 def test_user_report_stays_consistent_after_funding_proof(
     client: TestClient,
+    db_session_factory,
 ) -> None:
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
@@ -64,6 +73,10 @@ def test_user_report_stays_consistent_after_funding_proof(
             )
         },
     )
+
+    with db_session_factory() as db:
+        assert ParseWorker(db).run_once() is True
+
     client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "I will study computer science."},

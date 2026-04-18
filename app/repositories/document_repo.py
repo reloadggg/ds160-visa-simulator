@@ -1,5 +1,7 @@
+from time import time_ns
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import DocumentRecord, JobRecord
@@ -15,6 +17,7 @@ class DocumentRepository:
         filename: str,
         raw_bytes: bytes,
         raw_text: str,
+        artifact_json: dict | None = None,
     ) -> DocumentRecord:
         record = DocumentRecord(
             document_id=f"doc-{uuid4().hex[:12]}",
@@ -22,10 +25,18 @@ class DocumentRepository:
             filename=filename,
             raw_bytes=raw_bytes,
             raw_text=raw_text,
+            artifact_json=artifact_json or {},
         )
         self.db.add(record)
         self.db.flush()
         return record
+
+    def get_document(self, document_id: str) -> DocumentRecord | None:
+        return self.db.get(DocumentRecord, document_id)
+
+    def save_document(self, document: DocumentRecord) -> DocumentRecord:
+        self.db.add(document)
+        return document
 
     def enqueue_job(
         self,
@@ -33,12 +44,30 @@ class DocumentRepository:
         kind: str,
         payload_json: dict,
     ) -> JobRecord:
+        # 固定宽度时间前缀让 job_id 的字典序等价于入队顺序，
+        # 这样 claim_next_job() 可继续按 job_id 升序取最早任务。
         job = JobRecord(
-            job_id=f"job-{uuid4().hex[:12]}",
+            job_id=f"job-{time_ns():020d}-{uuid4().hex[:6]}",
             session_id=session_id,
             kind=kind,
             payload_json=payload_json,
         )
         self.db.add(job)
+        self.db.flush()
+        return job
+
+    def claim_next_job(self, kind: str) -> JobRecord | None:
+        job = self.db.scalar(
+            select(JobRecord)
+            .where(
+                JobRecord.kind == kind,
+                JobRecord.status == "queued",
+            )
+            .order_by(JobRecord.job_id.asc()),
+            )
+        if job is None:
+            return None
+
+        job.status = "processing"
         self.db.flush()
         return job

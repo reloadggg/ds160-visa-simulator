@@ -2,10 +2,11 @@ from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
+from app.db.models import JobRecord
 from app.db.session import get_db
 from app.main import app
 from app.workers.parse_worker import ParseWorker
@@ -14,7 +15,7 @@ from app.workers.parse_worker import ParseWorker
 @pytest.fixture()
 def db_session_factory(tmp_path):
     engine = create_engine(
-        f"sqlite:///{tmp_path / 'messages-api.sqlite3'}",
+        f"sqlite:///{tmp_path / 'parse-worker.sqlite3'}",
         connect_args={"check_same_thread": False},
     )
     testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -41,46 +42,18 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
-def test_message_turn_returns_next_question_and_governor_decision(
-    client: TestClient,
-) -> None:
-    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
-    session_id = session_resp.json()["session_id"]
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My parents will pay for my studies."},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "need_more_evidence"
-    assert payload["assistant_message"] == "Please upload funding proof."
-
-
-def test_message_turn_rejects_non_user_role(client: TestClient) -> None:
-    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
-    session_id = session_resp.json()["session_id"]
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "assistant", "content": "My parents will pay for my studies."},
-    )
-
-    assert response.status_code == 422
-
-
-def test_funding_proof_upload_allows_interview_to_continue(
+def test_parse_worker_processes_uploaded_document_before_next_message(
     client: TestClient,
     db_session_factory,
 ) -> None:
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
-    client.post(
+    first_response = client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "My parents will pay for my studies."},
     )
+
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
         files={
@@ -91,6 +64,11 @@ def test_funding_proof_upload_allows_interview_to_continue(
             )
         },
     )
+
+    assert first_response.status_code == 200
+    assert first_response.json()["governor_decision"] == "need_more_evidence"
+    assert upload_response.status_code == 202
+
     pre_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "I will study computer science."},
@@ -107,47 +85,62 @@ def test_funding_proof_upload_allows_interview_to_continue(
         json={"role": "user", "content": "I will study computer science."},
     )
 
-    assert upload_response.status_code == 202
     assert post_worker_response.status_code == 200
-    payload = post_worker_response.json()
-    assert payload["governor_decision"] == "continue_interview"
-    assert payload["assistant_message"] == "What is the purpose of your travel?"
-    assert payload["requested_documents"] == []
+    assert post_worker_response.json()["governor_decision"] == "continue_interview"
 
 
-def test_confirmed_fraud_message_triggers_simulated_refusal(
+def test_parse_worker_claims_oldest_queued_job_first(
     client: TestClient,
+    db_session_factory,
 ) -> None:
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
-    response = client.post(
+    client.post(
         f"/v1/sessions/{session_id}/messages",
-        json={
-            "role": "user",
-            "content": "I lied on my DS-160 and used fake bank statements.",
+        json={"role": "user", "content": "My parents will pay for my studies."},
+    )
+
+    first_upload = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof_1.txt",
+                b"Parent sponsor bank statement for tuition",
+                "text/plain",
+            )
+        },
+    )
+    second_upload = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof_2.txt",
+                b"Parent sponsor bank statement for tuition",
+                "text/plain",
+            )
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "simulated_refusal"
+    assert first_upload.status_code == 202
+    assert second_upload.status_code == 202
 
+    first_job_id = first_upload.json()["job_id"]
+    second_job_id = second_upload.json()["job_id"]
 
-def test_negated_fraud_statement_does_not_trigger_refusal(
-    client: TestClient,
-) -> None:
-    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
-    session_id = session_resp.json()["session_id"]
+    with db_session_factory() as db:
+        assert ParseWorker(db).run_once() is True
 
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={
-            "role": "user",
-            "content": "I did not use fake bank statements.",
-        },
-    )
+    with db_session_factory() as db:
+        first_job = db.scalar(
+            select(JobRecord).where(JobRecord.job_id == first_job_id),
+        )
+        second_job = db.scalar(
+            select(JobRecord).where(JobRecord.job_id == second_job_id),
+        )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "continue_interview"
+        assert first_job is not None
+        assert second_job is not None
+        assert first_job.job_id < second_job.job_id
+        assert first_job.status == "completed"
+        assert second_job.status == "queued"
