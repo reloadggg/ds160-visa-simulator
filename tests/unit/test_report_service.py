@@ -55,5 +55,8 @@ def test_user_report_stays_in_gate_review_copy_until_ready() -> None:
     )
 
     assert payload["outcome_label"] == "补件审核中"
-    assert payload["summary"] == "材料已提交，仍在解析中，暂不能进入正式 interview。"
+    assert (
+        payload["summary"]
+        == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
+    )
     assert payload["recommended_improvements"] == ["等待解析完成后再继续。"]

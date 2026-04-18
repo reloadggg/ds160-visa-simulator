@@ -1,8 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.agents.model_factory import AgentModelFactory
-from app.agents.question_agent import QuestionAgentRunner
-from app.domain.contracts import ApplicantProfile
+from app.domain.runtime import GateOverallStatus
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.interview_runtime_service import InterviewRuntimeService
@@ -26,6 +24,6 @@ class MessageService:
         if record is None:
             raise SessionNotFoundError(session_id)
         record = self.gate_runtime.refresh_session(session_id)
-        if record.gate_status_json.get("status") != "ready_for_interview":
+        if record.gate_status_json.get("status") != GateOverallStatus.READY_FOR_INTERVIEW:
             return self.gate_runtime.build_gate_response(record)
         return self.interview_runtime.run_turn(record, message_text)

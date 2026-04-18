@@ -4,12 +4,25 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
+import fitz
 
 from app.db.base import Base
 from app.db.models import JobRecord, SessionRecord
 from app.db.session import get_db
+from app.domain.runtime import build_initial_gate_status
 from app.main import app
 from app.workers.parse_worker import ParseWorker
+
+
+def build_pdf_bytes(*pages: str) -> bytes:
+    pdf = fitz.open()
+    for text in pages:
+        page = pdf.new_page()
+        page.insert_text((72, 72), text)
+    try:
+        return pdf.tobytes()
+    finally:
+        pdf.close()
 
 
 @pytest.fixture()
@@ -28,7 +41,10 @@ def db_session_factory(tmp_path):
 
 
 @pytest.fixture()
-def client(db_session_factory) -> Generator[TestClient, None, None]:
+def client(
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[TestClient, None, None]:
     def override_get_db() -> Generator[Session, None, None]:
         db = db_session_factory()
         try:
@@ -36,10 +52,13 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
         finally:
             db.close()
 
+    monkeypatch.setenv("PARSE_WORKER_INLINE", "0")
+    app.state.parse_worker_session_factory = None
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+    app.state.parse_worker_session_factory = None
 
 
 def test_parse_worker_processes_uploaded_document_before_next_message(
@@ -49,23 +68,33 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="runtime_test",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
     first_response = client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "My parents will pay for my studies."},
     )
 
-    for filename, raw_bytes in [
-        ("ds160.txt", b"Completed DS-160 form draft"),
-        ("passport_bio.txt", b"Passport biographic page"),
-        ("i20.txt", b"Form I-20 issued by school"),
-        ("admission_letter.txt", b"University admission letter"),
-        ("funding_proof.txt", b"Parent sponsor bank statement for tuition"),
-    ]:
-        upload_response = client.post(
-            f"/v1/sessions/{session_id}/files",
-            files={"file": (filename, raw_bytes, "text/plain")},
-        )
-        assert upload_response.status_code == 202
+    upload_response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof.pdf",
+                build_pdf_bytes("Parent sponsor bank statement for tuition"),
+                "application/pdf",
+            )
+        },
+    )
+    assert upload_response.status_code == 202
 
     assert first_response.status_code == 200
     assert first_response.json()["governor_decision"] == "need_more_evidence"
@@ -104,6 +133,17 @@ def test_parse_worker_claims_oldest_queued_job_first(
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="runtime_test",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
     client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "My parents will pay for my studies."},
@@ -113,9 +153,9 @@ def test_parse_worker_claims_oldest_queued_job_first(
         f"/v1/sessions/{session_id}/files",
         files={
             "file": (
-                "funding_proof_1.txt",
-                b"Parent sponsor bank statement for tuition",
-                "text/plain",
+                "funding_proof_1.pdf",
+                build_pdf_bytes("Parent sponsor bank statement for tuition"),
+                "application/pdf",
             )
         },
     )
@@ -123,9 +163,9 @@ def test_parse_worker_claims_oldest_queued_job_first(
         f"/v1/sessions/{session_id}/files",
         files={
             "file": (
-                "funding_proof_2.txt",
-                b"Parent sponsor bank statement for tuition",
-                "text/plain",
+                "funding_proof_2.pdf",
+                build_pdf_bytes("Parent sponsor bank statement for tuition"),
+                "application/pdf",
             )
         },
     )

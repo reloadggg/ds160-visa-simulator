@@ -102,7 +102,10 @@ def test_reports_api_returns_gate_review_copy_and_internal_histories(
 
     assert user_response.status_code == 200
     assert user_response.json()["outcome_label"] == "补件审核中"
-    assert user_response.json()["summary"] == "材料已提交，仍在解析中，暂不能进入正式 interview。"
+    assert (
+        user_response.json()["summary"]
+        == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
+    )
 
     assert internal_response.status_code == 200
     internal_payload = internal_response.json()
@@ -178,7 +181,7 @@ def test_reports_api_returns_interview_copy(
     assert response.status_code == 200
     payload = response.json()
     assert payload["outcome_label"] == "正式问答进行中"
-    assert payload["summary"] == "当前已进入正式 interview，可继续回答后续问题。"
+    assert payload["summary"] == "当前已进入正式 interview 阶段，可继续回答后续问题。"
     assert payload["recommended_improvements"] == [
         "继续回答后续问题，并保持叙事一致。",
     ]

@@ -30,18 +30,18 @@ class ReportService:
         elif phase_state == "gate_review":
             outcome_label = "补件审核中"
             if gate_overall_status == "waiting_for_parse":
-                summary = "材料已提交，仍在解析中，暂不能进入正式 interview。"
+                summary = "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
                 recommended_improvements = ["等待解析完成后再继续。"]
             else:
-                summary = "当前仍处于补件阶段，暂不能进入正式 interview。"
+                summary = "当前处于材料门控阶段。仍缺必需材料，暂不能进入正式 interview。"
                 recommended_improvements = ["补齐必需材料后再继续。"]
         elif phase_state == "interview":
             outcome_label = "正式问答进行中"
-            summary = "当前已进入正式 interview，可继续回答后续问题。"
+            summary = "当前已进入正式 interview 阶段，可继续回答后续问题。"
             recommended_improvements = ["继续回答后续问题，并保持叙事一致。"]
         elif not missing_evidence:
             outcome_label = "可继续正式问答"
-            summary = "当前材料主线基本完整，可继续常规 interview。"
+            summary = "当前已进入正式 interview 阶段，可继续回答后续问题。"
             recommended_improvements = ["继续回答后续问题，并保持叙事一致。"]
 
         return {

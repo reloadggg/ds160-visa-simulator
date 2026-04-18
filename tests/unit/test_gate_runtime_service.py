@@ -286,3 +286,52 @@ def test_refresh_session_marks_all_required_documents_ready_after_parse(
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_matches_document_type_prefers_uploaded_document_type_metadata(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-document-type.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            service = GateRuntimeService(db)
+            document = DocumentRecord(
+                document_id="doc-1",
+                session_id="sess-1",
+                filename="bank-statement-final.pdf",
+                status="uploaded",
+                artifact_json={
+                    "status": "uploaded",
+                    "filename": "bank-statement-final.pdf",
+                    "document_type": "funding_proof",
+                },
+            )
+
+            assert service._matches_document_type(document, "funding_proof") is True
+            assert service._matches_document_type(document, "passport_bio") is False
+
+            document.artifact_json = {
+                "status": "parsed",
+                "metadata": {"document_type": "funding_proof"},
+            }
+
+            assert service._matches_document_type(document, "funding_proof") is True
+            assert service._matches_document_type(document, "passport_bio") is False
+
+            document.filename = "funding_proof-final.pdf"
+            document.artifact_json = {
+                "status": "uploaded",
+                "document_type": "passport_bio",
+            }
+
+            assert service._matches_document_type(document, "funding_proof") is False
+            assert service._matches_document_type(document, "passport_bio") is True
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
