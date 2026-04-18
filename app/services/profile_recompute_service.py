@@ -9,14 +9,18 @@ from app.domain.contracts import (
 from app.repositories.evidence_repo import EvidenceRepository
 from app.repositories.session_repo import SessionRepository
 
-
 class ProfileRecomputeService:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.evidence = EvidenceRepository(db)
         self.sessions = SessionRepository(db)
 
-    def recompute_session(self, session_id: str) -> ApplicantProfile:
+    def recompute_session(
+        self,
+        session_id: str,
+        *,
+        save: bool = True,
+    ) -> ApplicantProfile:
         record = self.sessions.get(session_id)
         if record is None:
             raise LookupError(f"Session not found: {session_id}")
@@ -55,5 +59,9 @@ class ProfileRecomputeService:
             )
 
         record.profile_json = profile.model_dump(mode="json")
-        self.sessions.save(record)
+        if save:
+            self.sessions.save(record)
+        else:
+            self.db.add(record)
+            self.db.flush()
         return profile

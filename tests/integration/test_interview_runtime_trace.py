@@ -1,0 +1,128 @@
+from collections.abc import Generator
+
+from fastapi.testclient import TestClient
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.db.base import Base
+from app.db.models import SessionRecord
+from app.db.session import get_db
+from app.main import app
+from app.workers.parse_worker import ParseWorker
+
+
+def _prepare_ready_for_interview_session(
+    client: TestClient,
+    db_session_factory,
+) -> str:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+    assert session_resp.status_code == 201
+    for filename, raw_bytes in [
+        ("ds160.txt", b"Completed DS-160 form draft"),
+        ("passport_bio.txt", b"Passport biographic page"),
+        ("i20.txt", b"Form I-20 issued by school"),
+        ("admission_letter.txt", b"University admission letter"),
+        ("funding_proof.txt", b"Parent sponsor bank statement for tuition"),
+    ]:
+        upload_response = client.post(
+            f"/v1/sessions/{session_id}/files",
+            files={"file": (filename, raw_bytes, "text/plain")},
+        )
+        assert upload_response.status_code == 202
+
+    with db_session_factory() as db:
+        while ParseWorker(db).run_once():
+            pass
+
+    return session_id
+
+
+@pytest.fixture()
+def db_session_factory(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'interview-runtime-trace.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+    try:
+        yield testing_session_local
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.fixture()
+def client(db_session_factory) -> Generator[TestClient, None, None]:
+    def override_get_db() -> Generator[Session, None, None]:
+        db = db_session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+def test_interview_runtime_trace_and_histories_append_per_turn(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_id = _prepare_ready_for_interview_session(client, db_session_factory)
+
+    first = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My parents will pay for my studies."},
+    )
+    second = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+
+    assert record is not None
+    assert len(record.runtime_trace_json) == 14
+    assert len(record.score_history_json) == 2
+    assert len(record.governor_history_json) == 2
+    assert [entry["node_name"] for entry in record.runtime_trace_json[:7]] == [
+        "receive_input",
+        "extract_claims",
+        "resolve_evidence",
+        "consistency_check",
+        "score_case",
+        "governor_decide",
+        "build_next_action",
+    ]
+    assert [entry["node_name"] for entry in record.runtime_trace_json[7:]] == [
+        "receive_input",
+        "extract_claims",
+        "resolve_evidence",
+        "consistency_check",
+        "score_case",
+        "governor_decide",
+        "build_next_action",
+    ]
+    assert record.score_history_json[0]["scoring_stage"] == "interview_turn"
+    assert {
+        "category_fit",
+        "document_readiness",
+        "narrative_consistency",
+        "confidence",
+        "missing_evidence",
+        "risk_flags",
+        "summary",
+    } <= set(record.score_history_json[0].keys())
+    assert {
+        "decision",
+        "summary",
+    } <= set(record.governor_history_json[0].keys())

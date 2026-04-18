@@ -23,11 +23,16 @@ def create_session(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    record = repo.create(declared_family)
+    gate_status = GateService().initial_gate_status(declared_family)
+    record = repo.create(
+        declared_family=declared_family,
+        gate_status_json=gate_status,
+    )
     return {
         "session_id": record.session_id,
         "phase_state": record.phase_state,
         "current_governor_decision": record.current_governor_decision,
+        "gate_status": record.gate_status_json,
     }
 
 

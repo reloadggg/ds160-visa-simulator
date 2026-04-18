@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import JobRecord
+from app.db.models import JobRecord, SessionRecord
 from app.db.session import get_db
 from app.main import app
 from app.workers.parse_worker import ParseWorker
@@ -54,20 +54,21 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
         json={"role": "user", "content": "My parents will pay for my studies."},
     )
 
-    upload_response = client.post(
-        f"/v1/sessions/{session_id}/files",
-        files={
-            "file": (
-                "funding_proof.txt",
-                b"Parent sponsor bank statement for tuition",
-                "text/plain",
-            )
-        },
-    )
+    for filename, raw_bytes in [
+        ("ds160.txt", b"Completed DS-160 form draft"),
+        ("passport_bio.txt", b"Passport biographic page"),
+        ("i20.txt", b"Form I-20 issued by school"),
+        ("admission_letter.txt", b"University admission letter"),
+        ("funding_proof.txt", b"Parent sponsor bank statement for tuition"),
+    ]:
+        upload_response = client.post(
+            f"/v1/sessions/{session_id}/files",
+            files={"file": (filename, raw_bytes, "text/plain")},
+        )
+        assert upload_response.status_code == 202
 
     assert first_response.status_code == 200
     assert first_response.json()["governor_decision"] == "need_more_evidence"
-    assert upload_response.status_code == 202
 
     pre_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",
@@ -78,7 +79,14 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     assert pre_worker_response.json()["governor_decision"] == "need_more_evidence"
 
     with db_session_factory() as db:
-        assert ParseWorker(db).run_once() is True
+        while ParseWorker(db).run_once():
+            pass
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        assert record.phase_state == "interview"
+        assert record.gate_status_json["status"] == "ready_for_interview"
 
     post_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",

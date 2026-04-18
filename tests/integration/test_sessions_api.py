@@ -48,6 +48,130 @@ def test_create_session_returns_initial_phase(client: TestClient) -> None:
     payload = response.json()
     assert payload["phase_state"] == "intake"
     assert payload["current_governor_decision"] == "need_more_evidence"
+    assert payload["gate_status"] == {
+        "declared_family": "f1",
+        "scenario_key": "parent_sponsored",
+        "status": "pending_documents",
+        "required_documents": [
+            {
+                "document_type": "ds160",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "passport_bio",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "i20",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "admission_letter",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "funding_proof",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+        ],
+    }
+
+
+def test_create_session_uses_family_default_scenario(client: TestClient) -> None:
+    response = client.post("/v1/sessions", json={"declared_family": "j1"})
+
+    assert response.status_code == 201
+    assert response.json()["gate_status"] == {
+        "declared_family": "j1",
+        "scenario_key": "institution_funded",
+        "status": "pending_documents",
+        "required_documents": [
+            {
+                "document_type": "ds160",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "passport_bio",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "ds2019",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+            {
+                "document_type": "funding_proof",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            },
+        ],
+    }
+
+
+def test_create_session_persists_runtime_state_skeleton(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    response = client.post("/v1/sessions", json={"declared_family": "f1"})
+
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+
+    assert record is not None
+    assert record.gate_status_json["status"] == "pending_documents"
+    assert [doc["document_type"] for doc in record.gate_status_json["required_documents"]] == [
+        "ds160",
+        "passport_bio",
+        "i20",
+        "admission_letter",
+        "funding_proof",
+    ]
+    assert record.runtime_trace_json == []
+    assert record.score_history_json == []
+    assert record.governor_history_json == []
+
+
+def test_create_session_without_declared_family_keeps_stable_gate_shape(
+    client: TestClient,
+) -> None:
+    response = client.post("/v1/sessions", json={"declared_family": None})
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["gate_status"] == {
+        "declared_family": None,
+        "scenario_key": None,
+        "status": "family_not_selected",
+        "required_documents": [],
+    }
 
 
 def test_required_package_endpoint_uses_declared_family(
@@ -64,6 +188,23 @@ def test_required_package_endpoint_uses_declared_family(
         "passport_bio",
         "i20",
         "admission_letter",
+        "funding_proof",
+    ]
+
+
+def test_required_package_endpoint_supports_non_f1_family(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "j1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.get(f"/v1/sessions/{session_id}/required-package")
+
+    assert response.status_code == 200
+    assert response.json()["required_initial_package"] == [
+        "ds160",
+        "passport_bio",
+        "ds2019",
         "funding_proof",
     ]
 

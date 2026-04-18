@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.repositories.document_repo import DocumentRepository
 from app.services.document_pipeline import DocumentPipelineService
+from app.services.gate_runtime_service import GateRuntimeService
 from app.services.profile_recompute_service import ProfileRecomputeService
 
 
@@ -21,8 +22,9 @@ class ParseWorker:
         try:
             document_id = job.payload_json["document_id"]
             self.pipeline.process_document(document_id)
-            self.recompute.recompute_session(job.session_id)
+            self.recompute.recompute_session(job.session_id, save=False)
             job.status = "completed"
+            GateRuntimeService(self.db).refresh_session(job.session_id, save=False)
             self.db.commit()
             return True
         except Exception:

@@ -16,6 +16,10 @@ class SessionRecord(Base):
     )
     profile_json: Mapped[dict] = mapped_column(JSON, default=dict)
     route_candidates_json: Mapped[list] = mapped_column(JSON, default=list)
+    gate_status_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    runtime_trace_json: Mapped[list] = mapped_column(JSON, default=list)
+    score_history_json: Mapped[list] = mapped_column(JSON, default=list)
+    governor_history_json: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class DocumentRecord(Base):

@@ -54,7 +54,37 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
     assert response.status_code == 200
     choice = response.json()["choices"][0]["message"]
     assert choice["role"] == "assistant"
-    assert choice["content"] == "Please upload funding proof."
+    assert choice["content"] == "Please upload the required documents before continuing."
+    assert response.json()["metadata"]["phase_state"] == "gate_review"
+
+
+def test_chat_completions_uses_same_runtime_gate_initialization(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "I am funded by my institution."}],
+            "metadata": {"declared_family": "j1"},
+        },
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["metadata"]["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+
+    assert record is not None
+    assert record.gate_status_json["scenario_key"] == "institution_funded"
+    assert [doc["document_type"] for doc in record.gate_status_json["required_documents"]] == [
+        "ds160",
+        "passport_bio",
+        "ds2019",
+        "funding_proof",
+    ]
 
 
 def test_chat_completions_rejects_empty_messages(client: TestClient) -> None:

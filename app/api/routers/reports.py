@@ -21,6 +21,8 @@ def get_user_report(
         visa_family=record.declared_family or "unknown",
         governor_decision=record.current_governor_decision,
         profile_json=record.profile_json,
+        phase_state=record.phase_state,
+        gate_status=record.gate_status_json,
     )
 
 
@@ -37,4 +39,7 @@ def get_internal_report(
         visa_family=record.declared_family or "unknown",
         governor_decision=record.current_governor_decision,
         profile_json=record.profile_json,
+        runtime_trace=record.runtime_trace_json,
+        score_history=record.score_history_json,
+        governor_history=record.governor_history_json,
     )

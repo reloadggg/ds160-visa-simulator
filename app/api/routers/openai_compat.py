@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.visa_families import validate_declared_family
 from app.db.session import get_db
 from app.repositories.session_repo import SessionRepository
+from app.services.gate_service import GateService
 from app.services.message_service import MessageService
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["openai-compat"])
@@ -39,8 +40,13 @@ def chat_completions(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    session_record = SessionRepository(db).create(declared_family)
+    session_repo = SessionRepository(db)
+    session_record = session_repo.create(
+        declared_family=declared_family,
+        gate_status_json=GateService().initial_gate_status(declared_family),
+    )
     result = MessageService(db).handle_user_turn(session_record.session_id, last_user_message)
+    session_record = session_repo.get(session_record.session_id) or session_record
     return {
         "id": f"chatcmpl-{session_record.session_id}",
         "object": "chat.completion",
@@ -53,6 +59,6 @@ def chat_completions(
         ],
         "metadata": {
             "session_id": session_record.session_id,
-            "phase_state": "intake",
+            "phase_state": session_record.phase_state,
         },
     }

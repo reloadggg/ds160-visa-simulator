@@ -1,0 +1,10 @@
+[features.spontaneous_file_upload]
+enabled = false
+
+[UI]
+name = "DS-160 Simulator"
+cot = "hidden"
+confirm_new_chat = true
+
+[meta]
+generated_by = "2.11.0"

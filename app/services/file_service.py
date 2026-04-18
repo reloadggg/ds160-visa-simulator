@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
+from app.services.gate_runtime_service import GateRuntimeService
 
 
 class SessionNotFoundError(LookupError):
@@ -39,6 +40,7 @@ class FileService:
                 kind="gate_parse",
                 payload_json={"document_id": document.document_id},
             )
+            GateRuntimeService(self.db).refresh_record(session_record, save=False)
             self.db.commit()
         except Exception:
             self.db.rollback()
