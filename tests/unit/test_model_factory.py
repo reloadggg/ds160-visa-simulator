@@ -1,0 +1,155 @@
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+from pydantic_ai.models.openai import OpenAIChatModel
+
+from app.agents.model_factory import AgentModelFactory
+from app.agents.schemas import (
+    ConsistencyFinding,
+    InterviewNextAction,
+    RiskFlagProposal,
+    ScoreProposal,
+)
+
+
+def test_model_factory_returns_none_without_openai_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    model, runtime = AgentModelFactory().build("scoring_agent", "interview_turn")
+
+    assert model is None
+    assert runtime["model"] == "gpt-5.4"
+    assert runtime["reasoning_effort"] == "xhigh"
+    assert runtime["prompt_template_id"] == "scoring-agent-v1"
+    # pydantic 2.12 不是漂移；当前 foundation 依赖 pydantic-ai-slim 1.77 的安装约束。
+    assert runtime["prompt_version"] == "v1"
+
+
+def test_model_factory_returns_empty_runtime_for_missing_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    model, runtime = AgentModelFactory().build("missing_agent", "missing_stage")
+
+    assert model is None
+    assert runtime == {
+        "provider": None,
+        "model": None,
+        "reasoning_effort": None,
+        "prompt_template_id": None,
+        "prompt_version": None,
+    }
+
+
+def test_model_factory_builds_openai_chat_model_from_custom_runtime_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_policy_path = tmp_path / "runtime.yaml"
+    runtime_policy_path.write_text(
+        "\n".join(
+            [
+                "scoring_agent:",
+                "  interview_turn:",
+                "    provider: openai_compatible",
+                "    model: gpt-5.4",
+                "    reasoning_effort: xhigh",
+                "    prompt_template_id: scoring-agent-v1",
+                "    prompt_version: v1",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+
+    model, runtime = AgentModelFactory(
+        runtime_policy_path=str(runtime_policy_path)
+    ).build("scoring_agent", "interview_turn")
+
+    assert isinstance(model, OpenAIChatModel)
+    assert runtime["provider"] == "openai_compatible"
+    assert runtime["model"] == "gpt-5.4"
+
+
+def test_model_factory_returns_none_for_unsupported_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_policy_path = tmp_path / "runtime.yaml"
+    runtime_policy_path.write_text(
+        "\n".join(
+            [
+                "question_agent:",
+                "  interview_turn:",
+                "    provider: unsupported_vendor",
+                "    model: gpt-5.4",
+                "    reasoning_effort: high",
+                "    prompt_template_id: question-agent-v1",
+                "    prompt_version: v1",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+
+    model, runtime = AgentModelFactory(
+        runtime_policy_path=str(runtime_policy_path)
+    ).build("question_agent", "interview_turn")
+
+    assert model is None
+    assert runtime["provider"] == "unsupported_vendor"
+
+
+def test_score_proposal_requires_refs_for_confirmed_high_risk() -> None:
+    with pytest.raises(ValueError):
+        ScoreProposal(
+            category_fit=70,
+            document_readiness=20,
+            narrative_consistency=10,
+            confidence=80,
+            risk_flags=[
+                RiskFlagProposal(
+                    code="hard_conflict",
+                    severity="high",
+                    status="confirmed",
+                    summary="self-reported fraud",
+                    evidence_refs=[],
+                )
+            ],
+        )
+
+
+def test_score_proposal_keeps_requested_documents() -> None:
+    proposal = ScoreProposal(
+        category_fit=70,
+        document_readiness=20,
+        narrative_consistency=10,
+        confidence=80,
+        requested_documents=["bank_statement", "funding_letter"],
+    )
+
+    assert proposal.requested_documents == ["bank_statement", "funding_letter"]
+
+
+def test_schema_control_fields_reject_unknown_values() -> None:
+    with pytest.raises(ValidationError):
+        ConsistencyFinding(
+            finding_type="typo_gap",
+            severity="urgent",
+            status="pending",
+            summary="invalid finding control fields",
+            evidence_refs=[],
+        )
+
+    with pytest.raises(ValidationError):
+        InterviewNextAction(
+            assistant_message="Please upload your funding proof.",
+            requested_documents=["funding_proof"],
+            decision_hint="ask_more_questions",
+        )

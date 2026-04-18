@@ -2,6 +2,7 @@ from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 import pytest
+from pydantic_ai.models.test import TestModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -56,6 +57,81 @@ def test_message_turn_returns_next_question_and_governor_decision(
     payload = response.json()
     assert payload["governor_decision"] == "need_more_evidence"
     assert payload["assistant_message"] == "Please upload funding proof."
+
+
+def test_message_turn_uses_question_agent_output_for_continue_interview(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "assistant_message": "What is the purpose of your travel?",
+                    "requested_documents": [],
+                    "decision_hint": "continue_interview",
+                },
+            ),
+            {"model": "gpt-5.4"},
+        )
+        if module_key == "question_agent"
+        else (None, {"model": None}),
+    )
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService._fallback_question_action",
+        lambda self, governor_decision, score: (_ for _ in ()).throw(
+            AssertionError("question agent path should not fall back")
+        ),
+    )
+
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["governor_decision"] == "continue_interview"
+    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert payload["requested_documents"] == []
+
+
+def test_message_turn_falls_back_when_question_agent_errors(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            object(),
+            {"model": "gpt-5.4"},
+        )
+        if module_key == "question_agent"
+        else (None, {"model": None}),
+    )
+    monkeypatch.setattr(
+        "app.services.message_service.QuestionAgentRunner.run",
+        lambda self, **kwargs: (_ for _ in ()).throw(RuntimeError("runtime failure")),
+    )
+
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["governor_decision"] == "continue_interview"
+    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert payload["requested_documents"] == []
 
 
 def test_message_turn_rejects_non_user_role(client: TestClient) -> None:

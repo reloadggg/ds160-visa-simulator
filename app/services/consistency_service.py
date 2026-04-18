@@ -1,11 +1,12 @@
 import re
 
+from app.agents.schemas import ConsistencyFinding
 from app.domain.contracts import ApplicantProfile
 
 
 class ConsistencyService:
-    def evaluate(self, profile: ApplicantProfile) -> list[dict]:
-        findings: list[dict] = []
+    def evaluate(self, profile: ApplicantProfile) -> list[ConsistencyFinding]:
+        findings: list[ConsistencyFinding] = []
         last_user_message = profile.ds160_view.get("last_user_message", "").lower()
 
         hard_conflict_patterns = (
@@ -18,13 +19,13 @@ class ConsistencyService:
             for pattern in hard_conflict_patterns
         ):
             findings.append(
-                {
-                    "finding_type": "hard_conflict",
-                    "severity": "high",
-                    "status": "confirmed",
-                    "summary": "applicant self-reported false or fraudulent record",
-                    "evidence_refs": ["msg:last_user_turn"],
-                }
+                ConsistencyFinding(
+                    finding_type="hard_conflict",
+                    severity="high",
+                    status="confirmed",
+                    summary="applicant self-reported false or fraudulent record",
+                    evidence_refs=["msg:last_user_turn"],
+                )
             )
 
         if (
@@ -32,12 +33,12 @@ class ConsistencyService:
             and not profile.field_provenance["/funding/primary_source"].evidence_refs
         ):
             findings.append(
-                {
-                    "finding_type": "gap",
-                    "severity": "medium",
-                    "status": "supported",
-                    "summary": "funding source claimed but not yet documented",
-                    "evidence_refs": [],
-                }
+                ConsistencyFinding(
+                    finding_type="gap",
+                    severity="medium",
+                    status="supported",
+                    summary="funding source claimed but not yet documented",
+                    evidence_refs=[],
+                )
             )
         return findings
