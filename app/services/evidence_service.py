@@ -33,20 +33,23 @@ class EvidenceService:
         )
 
     def extract_document_fields(self, document_id: str, schema_name: str) -> dict[str, str]:
-        if schema_name != "funding_proof":
-            return {}
-
         evidence_items = self.db.scalars(
             select(EvidenceItemRecord).where(
                 EvidenceItemRecord.document_id == document_id,
-                EvidenceItemRecord.evidence_type == "funding_proof",
-                EvidenceItemRecord.field_path == "/funding/primary_source",
+                EvidenceItemRecord.evidence_type == schema_name,
             )
         ).all()
+        extracted: dict[str, str] = {}
+        best_by_field: dict[str, EvidenceItemRecord] = {}
         for item in evidence_items:
-            if item.value:
-                return {"primary_source": item.value}
-        return {}
+            if not item.value:
+                continue
+            existing = best_by_field.get(item.field_path)
+            if existing is None or item.confidence > existing.confidence:
+                best_by_field[item.field_path] = item
+        for field_path, item in best_by_field.items():
+            extracted[field_path.rsplit("/", 1)[-1]] = item.value
+        return extracted
 
     def _resolve_source_type(self, artifact_json: dict | None) -> DocumentSourceType:
         raw_value = (artifact_json or {}).get("source_type", DocumentSourceType.UNKNOWN.value)

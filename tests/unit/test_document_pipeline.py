@@ -4,8 +4,26 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord
+from app.domain.evidence import DocumentSourceType
 from app.repositories.document_repo import DocumentRepository
 from app.services.document_pipeline import DocumentPipelineService
+from app.services.multimodal_extraction_service import (
+    MultimodalExtractedField,
+    MultimodalExtractionResult,
+)
+
+
+def build_pdf_bytes(*pages: str) -> bytes:
+    import fitz
+
+    pdf = fitz.open()
+    for text in pages:
+        page = pdf.new_page()
+        page.insert_text((72, 72), text)
+    try:
+        return pdf.tobytes()
+    finally:
+        pdf.close()
 
 
 def test_process_document_persists_artifact_chunk_and_evidence(tmp_path) -> None:
@@ -117,6 +135,177 @@ def test_process_document_marks_unsupported_parser_output(tmp_path) -> None:
             assert document.artifact_json["page_count"] == 0
             assert chunks == []
             assert evidence == []
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_process_passport_and_i20_extract_structured_evidence(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-structured.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add_all(
+                [
+                    DocumentRecord(
+                        document_id="doc-passport",
+                        session_id="sess-1",
+                        filename="passport_bio.txt",
+                        raw_bytes=(
+                            b"Full Name: Ada Lovelace\n"
+                            b"Passport Number: P1234567\n"
+                            b"Nationality: UK"
+                        ),
+                    ),
+                    DocumentRecord(
+                        document_id="doc-i20",
+                        session_id="sess-1",
+                        filename="i20.txt",
+                        raw_bytes=(
+                            b"SEVIS ID: N1234567890\n"
+                            b"School Name: Example University\n"
+                            b"Program: Computer Science"
+                        ),
+                    ),
+                ]
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            DocumentPipelineService(db).process_document("doc-passport")
+            DocumentPipelineService(db).process_document("doc-i20")
+            db.commit()
+
+            evidence = db.scalars(
+                select(EvidenceItemRecord).order_by(EvidenceItemRecord.evidence_id)
+            ).all()
+            extracted = {(item.evidence_type, item.field_path): item.value for item in evidence}
+
+            assert extracted[("passport_bio", "/identity/full_name")] == "Ada Lovelace"
+            assert extracted[("passport_bio", "/identity/passport_number")] == "P1234567"
+            assert extracted[("passport_bio", "/identity/nationality")] == "UK"
+            assert extracted[("i20", "/education/sevis_id")] == "N1234567890"
+            assert extracted[("i20", "/education/school_name")] == "Example University"
+            assert extracted[("i20", "/education/program_name")] == "Computer Science"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_process_supported_pdf_uses_multimodal_structured_extraction(tmp_path) -> None:
+    class StubMultimodalService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def extract(
+            self,
+            *,
+            filename: str,
+            raw_bytes: bytes,
+            source_type: DocumentSourceType,
+            document_type: str | None,
+        ) -> MultimodalExtractionResult | None:
+            self.calls.append((filename, source_type.value, document_type or ""))
+            return MultimodalExtractionResult(
+                source_type=source_type,
+                parser_name="multimodal_llm",
+                full_text=(
+                    "Full Name: Ada Lovelace\n"
+                    "Passport Number: P1234567\n"
+                    "Travel Purpose: Attend academic program"
+                ),
+                segments=[
+                    {
+                        "ordinal": 0,
+                        "page_number": 1,
+                        "text": (
+                            "Full Name: Ada Lovelace\n"
+                            "Passport Number: P1234567\n"
+                            "Travel Purpose: Attend academic program"
+                        ),
+                    }
+                ],
+                fields=[
+                    MultimodalExtractedField(
+                        field_path="/identity/full_name",
+                        value="Ada Lovelace",
+                        excerpt="Full Name: Ada Lovelace",
+                        confidence=0.99,
+                        page_number=1,
+                    ),
+                    MultimodalExtractedField(
+                        field_path="/identity/passport_number",
+                        value="P1234567",
+                        excerpt="Passport Number: P1234567",
+                        confidence=0.98,
+                        page_number=1,
+                    ),
+                    MultimodalExtractedField(
+                        field_path="/visa_intent/travel_purpose",
+                        value="Attend academic program",
+                        excerpt="Travel Purpose: Attend academic program",
+                        confidence=0.97,
+                        page_number=1,
+                    ),
+                ],
+            )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-multimodal.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-ds160",
+                    session_id="sess-1",
+                    filename="ds160.pdf",
+                    raw_bytes=build_pdf_bytes("Locally extracted text should not win"),
+                )
+            )
+            db.commit()
+
+        stub = StubMultimodalService()
+        with testing_session_local() as db:
+            result = DocumentPipelineService(
+                db,
+                multimodal_service=stub,
+            ).process_document("doc-ds160")
+            db.commit()
+
+            document = DocumentRepository(db).get_document("doc-ds160")
+            evidence = db.scalars(
+                select(EvidenceItemRecord).order_by(EvidenceItemRecord.field_path)
+            ).all()
+            chunks = db.scalars(select(DocumentChunkRecord)).all()
+
+            assert result == {"chunk_count": 1, "evidence_count": 3}
+            assert stub.calls == [("ds160.pdf", "pdf", "ds160")]
+            assert document is not None
+            assert document.raw_text.startswith("Full Name: Ada Lovelace")
+            assert document.artifact_json["parser_name"] == "multimodal_llm"
+            assert document.artifact_json["metadata"]["multimodal_used"] is True
+            assert len(chunks) == 1
+            assert chunks[0].page_number == 1
+
+            extracted = {(item.evidence_type, item.field_path): item.value for item in evidence}
+            assert extracted[("ds160", "/identity/full_name")] == "Ada Lovelace"
+            assert extracted[("ds160", "/identity/passport_number")] == "P1234567"
+            assert (
+                extracted[("ds160", "/visa_intent/travel_purpose")]
+                == "Attend academic program"
+            )
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

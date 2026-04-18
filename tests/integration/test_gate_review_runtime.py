@@ -4,12 +4,24 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+import fitz
 
 from app.db.base import Base
 from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.main import app
 from app.workers.parse_worker import ParseWorker
+
+
+def build_pdf_bytes(*pages: str) -> bytes:
+    pdf = fitz.open()
+    for text in pages:
+        page = pdf.new_page()
+        page.insert_text((72, 72), text)
+    try:
+        return pdf.tobytes()
+    finally:
+        pdf.close()
 
 
 @pytest.fixture()
@@ -57,15 +69,15 @@ def test_f1_gate_review_runtime_progresses_from_pending_to_ready(
         assert created.gate_status_json["status"] == "pending_documents"
 
     for filename, raw_bytes in [
-        ("ds160.txt", b"Completed DS-160 form draft"),
-        ("passport_bio.txt", b"Passport biographic page"),
-        ("i20.txt", b"Form I-20 issued by school"),
-        ("admission_letter.txt", b"University admission letter"),
-        ("funding_proof.txt", b"Parent sponsor bank statement for tuition"),
+        ("ds160.pdf", build_pdf_bytes("Completed DS-160 form draft")),
+        ("passport_bio.pdf", build_pdf_bytes("Passport biographic page")),
+        ("i20.pdf", build_pdf_bytes("Form I-20 issued by school")),
+        ("admission_letter.pdf", build_pdf_bytes("University admission letter")),
+        ("funding_proof.pdf", build_pdf_bytes("Parent sponsor bank statement for tuition")),
     ]:
         upload_response = client.post(
             f"/v1/sessions/{session_id}/files",
-            files={"file": (filename, raw_bytes, "text/plain")},
+            files={"file": (filename, raw_bytes, "application/pdf")},
         )
         assert upload_response.status_code == 202
 
