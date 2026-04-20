@@ -1,6 +1,7 @@
 from app.agents.schemas import InterviewNextAction
 from app.db.models import SessionRecord
 from app.domain.contracts import ApplicantProfile, RiskFlag, ScoreState
+from app.domain.runtime import RuntimeTraceEntry
 from app.services.interview_runtime_service import InterviewRuntimeService
 
 
@@ -70,10 +71,16 @@ def test_build_question_action_appends_trace(monkeypatch) -> None:
     monkeypatch.setattr(
         service,
         "_question_action",
-        lambda session_id, current_profile, current_score, governor_decision, recent_turns=None: InterviewNextAction(
-            assistant_message="Please upload funding proof.",
-            requested_documents=["funding_proof"],
-            decision_hint="need_more_evidence",
+        lambda session_id, current_profile, current_score, governor_decision, recent_turns=None: (
+            InterviewNextAction(
+                assistant_message="Please upload funding proof.",
+                requested_documents=["funding_proof"],
+                decision_hint="need_more_evidence",
+            ),
+            RuntimeTraceEntry(
+                node_name="turn_decision",
+                summary="decision=need_more_evidence",
+            ),
         ),
     )
 
@@ -92,13 +99,22 @@ def test_build_question_action_appends_trace(monkeypatch) -> None:
     )
     assert [entry.model_dump(mode="json") for entry in trace_entries] == [
         {
-            "node_name": "build_next_action",
-            "summary": "requested_documents=1",
+            "node_name": "turn_decision",
+            "summary": "decision=need_more_evidence",
+            "prompt_pack_id": None,
+            "prompt_version": None,
+            "provider": None,
+            "model": None,
+            "tool_calls": [],
+            "turn_decision": None,
+            "fallback_used": False,
+            "retry_count": 0,
+            "metadata": {},
         }
     ]
 
 
-def test_fallback_continue_interview_question_uses_turn_progression_not_score_focus() -> None:
+def test_fallback_continue_interview_recovers_to_document_request_when_evidence_is_missing() -> None:
     service = InterviewRuntimeService(db=object())
     score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
     score.missing_evidence = ["funding_proof"]
@@ -110,13 +126,13 @@ def test_fallback_continue_interview_question_uses_turn_progression_not_score_fo
     )
 
     assert action == InterviewNextAction(
-        assistant_message="What is the purpose of your travel?",
-        requested_documents=[],
-        decision_hint="continue_interview",
+        assistant_message="Please provide the key supporting document for this point.",
+        requested_documents=["funding_proof"],
+        decision_hint="need_more_evidence",
     )
 
 
-def test_fallback_need_more_evidence_keeps_document_selection_out_of_scoring() -> None:
+def test_fallback_need_more_evidence_uses_single_document_focus() -> None:
     service = InterviewRuntimeService(db=object())
     score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
     score.missing_evidence = ["funding_proof"]
@@ -129,6 +145,6 @@ def test_fallback_need_more_evidence_keeps_document_selection_out_of_scoring() -
 
     assert action == InterviewNextAction(
         assistant_message="Please provide the key supporting document for this point.",
-        requested_documents=[],
+        requested_documents=["funding_proof"],
         decision_hint="need_more_evidence",
     )

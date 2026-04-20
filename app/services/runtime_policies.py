@@ -11,6 +11,7 @@ _OVERRIDABLE_FIELDS = (
     "model",
     "reasoning_effort",
     "prompt_template_id",
+    "prompt_pack_id",
     "prompt_version",
 )
 

@@ -12,9 +12,13 @@ from app.db.models import SessionRecord
 from app.domain.contracts import ApplicantProfile, GovernorDecision, ScoreState
 from app.domain.runtime import (
     GovernorHistoryEntry,
+    InterviewRiskLevel,
+    PromptRoleContract,
     RiskFlagHistoryEntry,
     RuntimeTraceEntry,
     ScoreHistoryEntry,
+    TurnAdvisoryContext,
+    TurnContextSnapshot,
 )
 from app.services.consistency_service import ConsistencyService
 from app.services.evidence_service import EvidenceService
@@ -154,7 +158,7 @@ class InterviewRuntimeService:
         trace_entries: list[RuntimeTraceEntry] | None = None,
         recent_turns: list[Any] | None = None,
     ) -> InterviewNextAction:
-        action = self._question_action(
+        action, runtime_trace = self._question_action(
             session_id,
             profile,
             score,
@@ -162,12 +166,7 @@ class InterviewRuntimeService:
             recent_turns=recent_turns,
         )
         if trace_entries is not None:
-            trace_entries.append(
-                RuntimeTraceEntry(
-                    node_name="build_next_action",
-                    summary=f"requested_documents={len(action.requested_documents)}",
-                )
-            )
+            trace_entries.append(runtime_trace)
         return action
 
     def _build_score_history_entry(self, score: ScoreState) -> ScoreHistoryEntry:
@@ -239,15 +238,35 @@ class InterviewRuntimeService:
         score: ScoreState,
         governor_decision: str,
         recent_turns: list[Any] | None = None,
-    ) -> InterviewNextAction:
+    ) -> tuple[InterviewNextAction, RuntimeTraceEntry]:
         if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
-            return self._fallback_question_action(governor_decision, score)
+            action = self._fallback_question_action(governor_decision, score)
+            return action, self._build_turn_decision_trace(
+                runtime={},
+                action=action,
+                fallback_used=True,
+                tool_calls=[],
+                retry_count=0,
+                provider=None,
+                model=None,
+                boundary_decision=governor_decision,
+            )
 
         declared_family = profile.visa_intent.get("declared_family")
         model, runtime = self._build_question_agent_runtime(declared_family)
+        fallback_messages = runtime.get("fallback_messages", {})
+        latest_user_message = self._latest_user_message(recent_turns)
+        dynamic_turn_context = self._build_dynamic_turn_context(
+            session_id=session_id,
+            profile=profile,
+            score=score,
+            recent_turns=recent_turns,
+            latest_user_message=latest_user_message,
+            declared_family=declared_family,
+        )
         if model is not None:
             try:
-                action = QuestionAgentRunner(
+                run_result = QuestionAgentRunner(
                     model=model,
                     instructions=runtime.get("instructions")
                     or self.model_factory.build_instructions(
@@ -256,21 +275,57 @@ class InterviewRuntimeService:
                     ),
                 ).run(
                     deps=self._build_agent_deps(session_id),
-                    profile_payload=profile.model_dump(mode="json"),
-                    score_payload=score.model_dump(mode="json"),
-                    governor_decision=governor_decision,
+                    dynamic_turn_context=dynamic_turn_context,
+                    user_message=latest_user_message,
+                    boundary_decision=governor_decision,
                 )
-                return self._finalize_question_action(governor_decision, score, action)
+                action = self._finalize_question_action(
+                    governor_decision,
+                    score,
+                    run_result.output,
+                )
+                return action, self._build_turn_decision_trace(
+                    runtime=runtime,
+                    action=action,
+                    fallback_used=False,
+                    tool_calls=run_result.tool_calls,
+                    retry_count=run_result.retry_count,
+                    provider=run_result.provider or runtime.get("provider"),
+                    model=run_result.model or runtime.get("model"),
+                    boundary_decision=governor_decision,
+                )
             except Exception:
-                return self._fallback_question_action(
+                action = self._fallback_question_action(
                     governor_decision,
                     score,
                     recent_turns=recent_turns,
+                    fallback_messages=fallback_messages,
                 )
-        return self._fallback_question_action(
+                return action, self._build_turn_decision_trace(
+                    runtime=runtime,
+                    action=action,
+                    fallback_used=True,
+                    tool_calls=[],
+                    retry_count=0,
+                    provider=runtime.get("provider"),
+                    model=runtime.get("model"),
+                    boundary_decision=governor_decision,
+                )
+        action = self._fallback_question_action(
             governor_decision,
             score,
             recent_turns=recent_turns,
+            fallback_messages=fallback_messages,
+        )
+        return action, self._build_turn_decision_trace(
+            runtime=runtime,
+            action=action,
+            fallback_used=True,
+            tool_calls=[],
+            retry_count=0,
+            provider=runtime.get("provider"),
+            model=runtime.get("model"),
+            boundary_decision=governor_decision,
         )
 
     def _build_question_agent_runtime(
@@ -304,16 +359,23 @@ class InterviewRuntimeService:
         del score
         if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:
             return InterviewNextAction(
+                decision="high_risk_review",
                 assistant_message=action.assistant_message,
                 requested_documents=[],
-                decision_hint=action.decision_hint,
+                focus_kind="risk_review",
+                focus_risk_code=action.focus_risk_code,
+                reason=action.reason,
             )
 
         requested_documents = self._coerce_requested_documents(action.requested_documents)
         return InterviewNextAction(
+            decision=action.decision,
             assistant_message=action.assistant_message,
             requested_documents=requested_documents,
-            decision_hint=action.decision_hint,
+            focus_kind=action.focus_kind,
+            focus_document_type=action.focus_document_type,
+            focus_risk_code=action.focus_risk_code,
+            reason=action.reason,
         )
 
     def _fallback_question_action(
@@ -322,38 +384,67 @@ class InterviewRuntimeService:
         score: ScoreState,
         *,
         recent_turns: list[Any] | None = None,
+        fallback_messages: dict[str, str] | None = None,
     ) -> InterviewNextAction:
-        del score
+        fallback_messages = fallback_messages or {}
+        fallback_requested_documents = self._coerce_requested_documents(
+            score.missing_evidence
+        )
+        if (
+            governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value
+            and fallback_requested_documents
+        ):
+            return InterviewNextAction(
+                decision="need_more_evidence",
+                assistant_message=fallback_messages.get("need_more_evidence")
+                or "Please provide the key supporting document for this point.",
+                requested_documents=fallback_requested_documents,
+                focus_kind="required_document",
+                focus_document_type=fallback_requested_documents[0],
+            )
         if governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value:
             return InterviewNextAction(
-                assistant_message=self._next_continue_interview_question(recent_turns),
+                decision="continue_interview",
+                assistant_message=fallback_messages.get("continue_interview")
+                or self._next_continue_interview_question(recent_turns),
                 requested_documents=[],
-                decision_hint="continue_interview",
+                focus_kind="interview_question",
             )
         if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
             return InterviewNextAction(
-                assistant_message=(
-                    "This simulated case results in refusal based on confirmed record conflicts."
-                ),
+                decision="simulated_refusal",
+                assistant_message=fallback_messages.get("simulated_refusal")
+                or "This simulated case results in refusal based on confirmed record conflicts.",
                 requested_documents=[],
-                decision_hint="simulated_refusal",
+                focus_kind="refusal",
             )
         if governor_decision == GovernorDecision.ROUTE_CORRECTION.value:
             return InterviewNextAction(
-                assistant_message="Your case may fit a different visa route. Please clarify your travel purpose.",
+                decision="route_correction",
+                assistant_message=fallback_messages.get("route_correction")
+                or "Your case may fit a different visa route. Please clarify your travel purpose.",
                 requested_documents=[],
-                decision_hint="route_correction",
+                focus_kind="route_correction",
             )
         if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:
             return InterviewNextAction(
-                assistant_message="This case needs additional review before the interview can continue.",
+                decision="high_risk_review",
+                assistant_message=fallback_messages.get("high_risk_review")
+                or "This case needs additional review before the interview can continue.",
                 requested_documents=[],
-                decision_hint="high_risk_review",
+                focus_kind="risk_review",
             )
         return InterviewNextAction(
-            assistant_message="Please provide the key supporting document for this point.",
-            requested_documents=[],
-            decision_hint="need_more_evidence",
+            decision="need_more_evidence",
+            assistant_message=fallback_messages.get("need_more_evidence")
+            or "Please provide the key supporting document for this point.",
+            requested_documents=fallback_requested_documents,
+            focus_kind="required_document",
+            focus_document_type=(
+                fallback_requested_documents[0]
+                if fallback_requested_documents
+                else "supporting_document"
+            ),
         )
 
     def _coerce_requested_documents(
@@ -388,3 +479,113 @@ class InterviewRuntimeService:
         if "which school admitted you" in lowered:
             return "How will you pay for your studies?"
         return "What is the purpose of your travel?"
+
+    def _latest_user_message(self, recent_turns: list[Any] | None) -> str:
+        if recent_turns is None:
+            return ""
+        for turn in reversed(recent_turns):
+            if getattr(turn, "role", None) != "user":
+                continue
+            content = getattr(turn, "content", "")
+            if isinstance(content, str):
+                return content
+        return ""
+
+    def _build_dynamic_turn_context(
+        self,
+        *,
+        session_id: str,
+        profile: ApplicantProfile,
+        score: ScoreState,
+        recent_turns: list[Any] | None,
+        latest_user_message: str,
+        declared_family: str | None,
+    ) -> dict[str, Any]:
+        snapshot = TurnContextSnapshot(
+            session_id=session_id,
+            declared_family=declared_family,
+            phase_state="interview",
+            latest_user_message=latest_user_message,
+            recent_turns=self._recent_turn_payload(recent_turns),
+            profile_snapshot=profile.model_dump(mode="json"),
+            current_focus={},
+            advisory_context=self._build_advisory_context(score),
+            gate_progress={},
+            last_turn_decision=None,
+            prompt_roles=PromptRoleContract(),
+        )
+        return snapshot.model_dump(mode="json")
+
+    def _recent_turn_payload(
+        self,
+        recent_turns: list[Any] | None,
+    ) -> list[dict[str, str]]:
+        if recent_turns is None:
+            return []
+        payload: list[dict[str, str]] = []
+        for turn in recent_turns[-6:]:
+            role = getattr(turn, "role", None)
+            content = getattr(turn, "content", None)
+            if not isinstance(role, str) or not isinstance(content, str):
+                continue
+            payload.append({"role": role, "content": content})
+        return payload
+
+    def _build_advisory_context(self, score: ScoreState) -> TurnAdvisoryContext:
+        missing_evidence = list(score.missing_evidence)
+        return TurnAdvisoryContext(
+            score_summary={
+                "category_fit": score.category_fit,
+                "document_readiness": score.document_readiness,
+                "narrative_consistency": score.narrative_consistency,
+                "confidence": score.confidence,
+            },
+            risk_codes=[item.code for item in score.risk_flags],
+            missing_evidence=missing_evidence,
+            risk_level=self._risk_level_from_score(score),
+            missing_evidence_summary=(
+                ", ".join(missing_evidence) if missing_evidence else None
+            ),
+        )
+
+    def _risk_level_from_score(self, score: ScoreState) -> InterviewRiskLevel:
+        severities = {item.severity for item in score.risk_flags}
+        if "high" in severities:
+            return InterviewRiskLevel.HIGH
+        if "medium" in severities:
+            return InterviewRiskLevel.MEDIUM
+        if "low" in severities:
+            return InterviewRiskLevel.LOW
+        return InterviewRiskLevel.NONE
+
+    def _build_turn_decision_trace(
+        self,
+        *,
+        runtime: dict[str, Any],
+        action: InterviewNextAction,
+        fallback_used: bool,
+        tool_calls: list[dict[str, Any]],
+        retry_count: int,
+        provider: str | None,
+        model: str | None,
+        boundary_decision: str,
+    ) -> RuntimeTraceEntry:
+        return RuntimeTraceEntry(
+            node_name="turn_decision",
+            summary=f"decision={action.decision}",
+            prompt_pack_id=runtime.get("prompt_pack_id"),
+            prompt_version=runtime.get("prompt_version"),
+            provider=provider,
+            model=model,
+            tool_calls=tool_calls,
+            turn_decision=action.decision,
+            fallback_used=fallback_used,
+            retry_count=retry_count,
+            metadata={
+                "requested_documents": list(action.requested_documents),
+                "focus_kind": action.focus_kind,
+                "focus_document_type": action.focus_document_type,
+                "boundary_decision": boundary_decision,
+                "reasoning_effort": runtime.get("reasoning_effort"),
+            },
+        )

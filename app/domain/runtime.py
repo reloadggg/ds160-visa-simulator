@@ -57,6 +57,52 @@ class SessionGateStatus(BaseModel):
 class RuntimeTraceEntry(BaseModel):
     node_name: str
     summary: str | None = None
+    prompt_pack_id: str | None = None
+    prompt_version: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    turn_decision: str | None = None
+    fallback_used: bool = False
+    retry_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptTrace(BaseModel):
+    prompt_pack_id: str | None = None
+    prompt_version: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+
+class PromptRoleContract(BaseModel):
+    system: str = "stable_policy"
+    dynamic_turn_context: str = "dynamic_turn_context"
+    tool_outputs: str = "tool_outputs"
+    user: str = "user"
+
+
+class TurnAdvisoryContext(BaseModel):
+    score_summary: dict[str, int] = Field(default_factory=dict)
+    risk_codes: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    risk_level: InterviewRiskLevel = InterviewRiskLevel.NONE
+    missing_evidence_summary: str | None = None
+
+
+class TurnContextSnapshot(BaseModel):
+    session_id: str
+    declared_family: str | None = None
+    phase_state: str
+    latest_user_message: str
+    recent_turns: list[dict[str, str]] = Field(default_factory=list)
+    profile_snapshot: dict[str, Any] = Field(default_factory=dict)
+    current_focus: dict[str, Any] = Field(default_factory=dict)
+    advisory_context: TurnAdvisoryContext = Field(default_factory=TurnAdvisoryContext)
+    gate_progress: dict[str, Any] = Field(default_factory=dict)
+    last_turn_decision: str | None = None
+    prompt_roles: PromptRoleContract = Field(default_factory=PromptRoleContract)
 
 
 class RiskFlagHistoryEntry(BaseModel):

@@ -74,5 +74,9 @@ def chat_completions(
             "session_id": session_record.session_id,
             "phase_state": session_record.phase_state,
             "context_mode": context_mode,
+            "governor_decision": result.get("governor_decision"),
+            "requested_documents": list(result.get("requested_documents", []) or []),
+            "turn_decision": dict(result.get("turn_decision", {}) or {}),
+            "prompt_trace": dict(result.get("prompt_trace", {}) or {}),
         },
     }

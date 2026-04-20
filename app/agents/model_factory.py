@@ -16,6 +16,7 @@ EMPTY_RUNTIME: dict[str, Any] = {
     "model": None,
     "reasoning_effort": None,
     "prompt_template_id": None,
+    "prompt_pack_id": None,
     "prompt_version": None,
 }
 SUPPORTED_PROVIDERS = {"openai", "openai_compatible"}
@@ -48,9 +49,26 @@ class AgentModelFactory:
             return None, dict(EMPTY_RUNTIME)
 
         if module_key.endswith("_agent"):
+            prompt_payload = self.prompt_registry.load_prompt_payload(
+                declared_family=declared_family,
+                prompt_pack_id=runtime.get("prompt_pack_id"),
+                prompt_version=runtime.get("prompt_version"),
+            )
+            runtime["prompt_pack_id"] = prompt_payload.get("prompt_pack_id")
+            runtime["prompt_version"] = prompt_payload.get(
+                "prompt_version",
+                runtime.get("prompt_version"),
+            )
+            runtime["fallback_messages"] = self.prompt_registry.fallback_messages(
+                declared_family=declared_family,
+                prompt_pack_id=runtime.get("prompt_pack_id"),
+                prompt_version=runtime.get("prompt_version"),
+            )
             runtime["instructions"] = self.prompt_registry.build_instructions(
                 module_key,
                 declared_family=declared_family,
+                prompt_pack_id=runtime.get("prompt_pack_id"),
+                prompt_version=runtime.get("prompt_version"),
             )
 
         if runtime.get("provider") not in SUPPORTED_PROVIDERS:

@@ -60,9 +60,13 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
         "session_id",
         "phase_state",
         "context_mode",
+        "governor_decision",
+        "requested_documents",
+        "turn_decision",
+        "prompt_trace",
     }
     assert payload["metadata"]["session_id"].startswith("sess-")
-    assert payload["metadata"]["phase_state"] == "gate_review"
+    assert payload["metadata"]["phase_state"] == "interview"
     assert payload["metadata"]["context_mode"] == "new_session"
 
 
@@ -170,6 +174,10 @@ def test_chat_completions_reuses_existing_session_when_metadata_session_id_prese
         "session_id": first_session_id,
         "phase_state": "interview",
         "context_mode": "existing_session",
+        "governor_decision": "continue_interview",
+        "requested_documents": [],
+        "turn_decision": {},
+        "prompt_trace": {},
     }
 
     with db_session_factory() as db:

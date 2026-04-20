@@ -12,6 +12,7 @@ scoring_engine:
     model: gpt-5.4
     reasoning_effort: xhigh
     prompt_template_id: scoring-default
+    prompt_pack_id: ds160.scoring
     prompt_version: v1
 extractor_service:
   gate_review:
@@ -19,6 +20,7 @@ extractor_service:
     model: gpt-5.4
     reasoning_effort: xhigh
     prompt_template_id: extractor-default
+    prompt_pack_id: ds160.extractor
     prompt_version: v1
 scoring_agent:
   interview_turn:
@@ -26,6 +28,7 @@ scoring_agent:
     model: gpt-5.4
     reasoning_effort: xhigh
     prompt_template_id: scoring-agent-v1
+    prompt_pack_id: ds160.scoring
     prompt_version: v1
 extractor_agent:
   interview_turn:
@@ -33,6 +36,7 @@ extractor_agent:
     model: gpt-5.4
     reasoning_effort: xhigh
     prompt_template_id: extractor-agent-v1
+    prompt_pack_id: ds160.extractor
     prompt_version: v1
 question_agent:
   interview_turn:
@@ -40,4 +44,5 @@ question_agent:
     model: gpt-5.4
     reasoning_effort: high
     prompt_template_id: question-agent-v1
-    prompt_version: v1
+    prompt_pack_id: ds160.interviewer
+    prompt_version: v2

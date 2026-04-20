@@ -127,12 +127,13 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
 
     response = service.run_turn(record, "I will study computer science.")
 
-    assert response == {
-        "assistant_message": "What is the purpose of your travel?",
-        "governor_decision": "continue_interview",
-        "score_summary": {},
-        "requested_documents": [],
-    }
+    assert response["assistant_message"] == "What is the purpose of your travel?"
+    assert response["governor_decision"] == "continue_interview"
+    assert response["score_summary"] == {}
+    assert response["requested_documents"] == []
+    assert response["turn_decision"]["decision"] == "continue_interview"
+    assert response["advisory_context"]["risk_codes"] == ["supporting_evidence_missing"]
+    assert response["prompt_trace"] == {}
     assert record.profile_json == profile.model_dump(mode="json")
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
@@ -140,7 +141,10 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
         "question": "What is the purpose of your travel?",
     }
     assert record.phase_state == "interview"
-    assert record.interviewer_state_json == {
+    assert record.interviewer_state_json | {
+        "advisory_context": record.interviewer_state_json["advisory_context"],
+        "prompt_trace": record.interviewer_state_json["prompt_trace"],
+    } == {
         "owner": "interviewer_runtime_service",
         "status": "verify_key_issue",
         "public_status": "verify_key_issue",
@@ -159,6 +163,19 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
         "requested_documents": [],
         "risk_codes": ["supporting_evidence_missing"],
         "history_turn_count": 0,
+        "advisory_context": {
+            "score_summary": {
+                "category_fit": 61,
+                "document_readiness": 42,
+                "narrative_consistency": 77,
+                "confidence": 68,
+            },
+            "risk_codes": ["supporting_evidence_missing"],
+            "missing_evidence": [],
+            "risk_level": "medium",
+            "missing_evidence_summary": None,
+        },
+        "prompt_trace": {},
     }
     assert saved_records == []
     assert events == []
@@ -194,7 +211,7 @@ def test_run_turn_keeps_focus_under_single_owner_for_each_next_action(
                 requested_documents=["funding_proof"],
                 decision_hint="need_more_evidence",
             ),
-            "gate_review",
+            "interview",
             {
                 "owner": "interviewer_runtime_service",
                 "kind": "required_document",
@@ -308,7 +325,10 @@ def test_run_turn_keeps_focus_under_single_owner_for_each_next_action(
         assert response["governor_decision"] == decision
         assert record.phase_state == expected_phase_state
         assert record.current_focus_json == expected_focus
-        assert record.interviewer_state_json == {
+        assert record.interviewer_state_json | {
+            "advisory_context": record.interviewer_state_json["advisory_context"],
+            "prompt_trace": record.interviewer_state_json["prompt_trace"],
+        } == {
             "owner": "interviewer_runtime_service",
             "status": (
                 "verify_key_issue"
@@ -366,6 +386,29 @@ def test_run_turn_keeps_focus_under_single_owner_for_each_next_action(
             "requested_documents": list(action.requested_documents),
             "risk_codes": expected_risk_codes,
             "history_turn_count": 0,
+            "advisory_context": {
+                "score_summary": {
+                    "category_fit": score.category_fit,
+                    "document_readiness": score.document_readiness,
+                    "narrative_consistency": score.narrative_consistency,
+                    "confidence": score.confidence,
+                },
+                "risk_codes": [
+                    risk_flag.code for risk_flag in score.risk_flags
+                ],
+                "missing_evidence": list(score.missing_evidence),
+                "risk_level": (
+                    "medium"
+                    if decision == "continue_interview"
+                    else "none"
+                    if decision == "need_more_evidence"
+                    else "high"
+                ),
+                "missing_evidence_summary": (
+                    ", ".join(score.missing_evidence) if score.missing_evidence else None
+                ),
+            },
+            "prompt_trace": {},
         }
 
 
@@ -563,7 +606,7 @@ def test_run_turn_selects_requested_document_in_owner_when_action_keeps_it_empty
 
     response = service.run_turn(record, "I will upload it later.")
 
-    assert response["assistant_message"] == "Please upload funding proof."
+    assert response["assistant_message"] == "Please provide the key supporting document for this point."
     assert response["requested_documents"] == ["funding_proof"]
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
@@ -629,7 +672,7 @@ def test_run_turn_uses_governor_requested_document_when_action_and_score_are_emp
 
     response = service.run_turn(record, "I can upload it next.")
 
-    assert response["assistant_message"] == "Please upload passport bio page."
+    assert response["assistant_message"] == "Please provide the key supporting document for this point."
     assert response["requested_documents"] == ["passport_bio"]
     assert response["score_summary"] == {}
     assert record.current_focus_json == {
@@ -813,7 +856,7 @@ def test_run_turn_keeps_prior_focus_document_when_only_focus_can_name_the_key_pr
 
     response = service.run_turn(record, "I still need more time.")
 
-    assert response["assistant_message"] == "Please upload funding proof."
+    assert response["assistant_message"] == "Please provide the key supporting document for this point."
     assert response["requested_documents"] == ["funding_proof"]
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",

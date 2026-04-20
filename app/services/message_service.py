@@ -92,7 +92,9 @@ class MessageService:
             metadata_json={
                 "phase_state": record.phase_state,
                 "governor_decision": response.get("governor_decision"),
+                "turn_decision": (response.get("turn_decision", {}) or {}).get("decision"),
                 "current_focus_kind": (record.current_focus_json or {}).get("kind"),
+                "prompt_trace": response.get("prompt_trace", {}),
             },
             commit=False,
         )

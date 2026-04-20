@@ -38,6 +38,10 @@ SUPPORTED_MULTIMODAL_DOCUMENT_TYPES = {
         "/education/program_name",
     ],
 }
+SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES = {
+    **SUPPORTED_MULTIMODAL_DOCUMENT_TYPES,
+    "funding_proof": ["/funding/primary_source"],
+}
 
 
 class MultimodalExtractedField(BaseModel):
@@ -61,6 +65,20 @@ class MultimodalExtractionResult(BaseModel):
     full_text: str
     segments: list[MultimodalExtractedSegment]
     fields: list[MultimodalExtractedField] = Field(default_factory=list)
+
+
+class UploadDocumentTypeCandidate(BaseModel):
+    document_type: str
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class MultimodalUploadAssessment(BaseModel):
+    document_type_candidates: list[UploadDocumentTypeCandidate] = Field(
+        default_factory=list
+    )
+    relevance: str = "unknown"
+    supported_claims: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class MultimodalExtractionService:
@@ -113,6 +131,95 @@ class MultimodalExtractionService:
             response_payload = self.invoke_model(payload)
         except Exception:
             return None
+        return self._parse_extraction_response(
+            source_type=source_type,
+            response_payload=response_payload,
+        )
+
+    def assess_document(
+        self,
+        *,
+        filename: str,
+        raw_bytes: bytes,
+        source_type: DocumentSourceType,
+        document_type_hint: str | None = None,
+    ) -> MultimodalUploadAssessment:
+        if source_type not in {DocumentSourceType.PDF, DocumentSourceType.IMAGE}:
+            return MultimodalUploadAssessment()
+
+        can_call_model = self.enabled and not (
+            self.invoke_model is self._invoke_http and (not self.base_url or not self.api_key)
+        )
+        if can_call_model:
+            payload = self._build_assessment_payload(
+                filename=filename,
+                raw_bytes=raw_bytes,
+                source_type=source_type,
+                document_type_hint=document_type_hint,
+            )
+            try:
+                response_payload = self.invoke_model(payload)
+                candidates = [
+                    UploadDocumentTypeCandidate.model_validate(item)
+                    for item in response_payload.get("document_type_candidates", [])
+                ]
+                return MultimodalUploadAssessment(
+                    document_type_candidates=candidates,
+                    relevance=str(response_payload.get("relevance", "unknown")),
+                    supported_claims=[
+                        str(item)
+                        for item in response_payload.get("supported_claims", [])
+                        if isinstance(item, str)
+                    ],
+                    confidence=float(response_payload.get("confidence", 0.0)),
+                )
+            except Exception:
+                pass
+
+        if document_type_hint is not None:
+            extract_result = self.extract(
+                filename=filename,
+                raw_bytes=raw_bytes,
+                source_type=source_type,
+                document_type=document_type_hint,
+            )
+            if extract_result is not None:
+                supported_claims = [
+                    str(field_path)
+                    for field in extract_result.fields
+                    for field_path in [getattr(field, "field_path", None)]
+                    if isinstance(field_path, str) and field_path
+                ]
+                confidence = max(
+                    (
+                        float(getattr(field, "confidence", 0.0))
+                        for field in extract_result.fields
+                    ),
+                    default=0.0,
+                )
+                return MultimodalUploadAssessment(
+                    document_type_candidates=[
+                        UploadDocumentTypeCandidate(
+                            document_type=document_type_hint,
+                            confidence=confidence or 0.5,
+                        )
+                    ],
+                    relevance="high" if extract_result.fields else "low",
+                    supported_claims=supported_claims,
+                    confidence=confidence or (0.2 if not extract_result.fields else 0.5),
+                )
+
+        return self._heuristic_assessment(
+            filename=filename,
+            document_type_hint=document_type_hint,
+        )
+
+    def _parse_extraction_response(
+        self,
+        *,
+        source_type: DocumentSourceType,
+        response_payload: dict[str, Any],
+    ) -> MultimodalExtractionResult | None:
         try:
             segments = []
             for index, item in enumerate(response_payload.get("segments", [])):
@@ -164,6 +271,44 @@ class MultimodalExtractionService:
                                 f"document_type={document_type}\n"
                                 f"filename={filename}\n"
                                 f"只抽取这些字段：{', '.join(SUPPORTED_MULTIMODAL_DOCUMENT_TYPES[document_type])}"
+                            ),
+                        },
+                        *self._build_image_parts(raw_bytes, source_type),
+                    ],
+                },
+            ],
+        }
+
+    def _build_assessment_payload(
+        self,
+        *,
+        filename: str,
+        raw_bytes: bytes,
+        source_type: DocumentSourceType,
+        document_type_hint: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "model": self.model_name,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是签证材料上传评估器。"
+                        "输出 JSON，字段包括 document_type_candidates、relevance、supported_claims、confidence。"
+                        "document_type_candidates 中每项包含 document_type 和 confidence。"
+                        "relevance 只能是 high、medium、low、unknown。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"filename={filename}\n"
+                                f"document_type_hint={document_type_hint or 'none'}\n"
+                                f"候选类型：{', '.join(SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES)}"
                             ),
                         },
                         *self._build_image_parts(raw_bytes, source_type),
@@ -229,3 +374,43 @@ class MultimodalExtractionService:
                 if isinstance(item, dict)
             )
         return json.loads(raw_content)
+
+    def _heuristic_assessment(
+        self,
+        *,
+        filename: str,
+        document_type_hint: str | None,
+    ) -> MultimodalUploadAssessment:
+        normalized_filename = filename.lower()
+        candidates: list[UploadDocumentTypeCandidate] = []
+        if document_type_hint in SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES:
+            candidates.append(
+                UploadDocumentTypeCandidate(
+                    document_type=document_type_hint,
+                    confidence=0.9,
+                )
+            )
+        for document_type in SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES:
+            if document_type in normalized_filename and not any(
+                item.document_type == document_type for item in candidates
+            ):
+                candidates.append(
+                    UploadDocumentTypeCandidate(
+                        document_type=document_type,
+                        confidence=0.65,
+                    )
+                )
+        if not candidates:
+            return MultimodalUploadAssessment()
+        top_candidate = candidates[0]
+        return MultimodalUploadAssessment(
+            document_type_candidates=candidates[:3],
+            relevance="high" if document_type_hint else "medium",
+            supported_claims=list(
+                SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES.get(
+                    top_candidate.document_type,
+                    [],
+                )
+            ),
+            confidence=top_candidate.confidence,
+        )

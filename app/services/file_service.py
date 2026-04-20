@@ -12,7 +12,11 @@ from app.domain.evidence import DocumentSourceType
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_runtime_service import GateRuntimeService
-from app.services.multimodal_extraction_service import MultimodalExtractionService
+from app.services.multimodal_extraction_service import (
+    MultimodalExtractionService,
+    MultimodalUploadAssessment,
+    UploadDocumentTypeCandidate,
+)
 
 MAX_UPLOAD_SIZE_MB = 64
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
@@ -56,6 +60,10 @@ class FileUploadResult:
     document_id: str
     job_id: str
     document_type: str | None
+    document_type_candidates: list[str] | None = None
+    relevance: str | None = None
+    supported_claims: list[str] | None = None
+    confidence: float | None = None
     feedback_message: str | None = None
     relevant: bool | None = None
     main_flow_feedback: dict[str, Any] | None = None
@@ -127,30 +135,56 @@ class FileService:
         if len(raw_bytes) > MAX_UPLOAD_SIZE_BYTES:
             raise FileTooLargeError("Uploaded file exceeds 64MB limit")
         normalized_content_type = resolve_upload_content_type(filename, content_type)
+        source_type = resolve_source_type(normalized_content_type)
         gate_runtime = GateRuntimeService(self.db)
         session_record = gate_runtime.refresh_record(session_record, save=False)
         pre_upload_support = gate_runtime.build_gate_support(session_record)
         required_document_types = self._required_document_types(session_record)
-        feedback_message, relevant = self._analyze_relevance(
+        assessment = self._assess_upload(
             filename=filename,
             raw_bytes=raw_bytes,
-            content_type=normalized_content_type,
+            source_type=source_type,
+            document_type_hint=document_type,
+        )
+        feedback_message, relevant = self._build_assessment_feedback(
             document_type=document_type,
+            assessment=assessment,
         )
         supported_document_type = self._supported_document_type(
             filename=filename,
             document_type=document_type,
+            assessment_candidates=assessment.document_type_candidates,
             required_document_types=required_document_types,
         )
         counts_toward_gate = self._counts_toward_gate(
             supported_document_type=supported_document_type,
             required_document_types=required_document_types,
-            relevant=relevant,
+            relevance=assessment.relevance,
+        )
+        top_assessment_document_type = next(
+            (
+                normalize_document_type(item.document_type)
+                for item in assessment.document_type_candidates
+                if normalize_document_type(item.document_type) is not None
+            ),
+            None,
+        )
+        resolved_document_type = (
+            normalize_document_type(document_type)
+            or supported_document_type
+            or top_assessment_document_type
         )
         artifact_json = {
             "status": "uploaded",
             "filename": filename,
-            "document_type": document_type,
+            "document_type": resolved_document_type,
+            "document_type_hint": document_type,
+            "document_type_candidates": [
+                item.document_type for item in assessment.document_type_candidates
+            ],
+            "relevance": assessment.relevance,
+            "supported_claims": list(assessment.supported_claims),
+            "confidence": assessment.confidence,
             "feedback_message": feedback_message,
             "relevant": relevant,
         }
@@ -190,7 +224,13 @@ class FileService:
         return FileUploadResult(
             document_id=document.document_id,
             job_id=job.job_id,
-            document_type=document_type,
+            document_type=resolved_document_type,
+            document_type_candidates=[
+                item.document_type for item in assessment.document_type_candidates
+            ],
+            relevance=assessment.relevance,
+            supported_claims=list(assessment.supported_claims),
+            confidence=assessment.confidence,
             feedback_message=feedback_message,
             relevant=relevant,
             main_flow_feedback=main_flow_feedback,
@@ -198,36 +238,91 @@ class FileService:
             gate_progress=post_upload_support["gate_progress"],
         )
 
-    def _analyze_relevance(
+    def _build_assessment_feedback(
+        self,
+        *,
+        document_type: str | None,
+        assessment,
+    ) -> tuple[str | None, bool | None]:
+        candidate_types = [
+            item.document_type for item in assessment.document_type_candidates
+        ]
+        if document_type is None and not candidate_types:
+            return None, None
+
+        if assessment.relevance == "low":
+            return (
+                "这份材料与当前主线关联较弱，系统会保留结果，但建议你继续上传更直接的关键证明。",
+                False,
+            )
+        if document_type is not None and candidate_types and document_type not in candidate_types:
+            return (
+                f"系统当前更倾向把这份文件识别为 {candidate_types[0]}，如有误你可以在前端纠正类型。",
+                False,
+            )
+        if candidate_types:
+            headline = f"系统识别候选类型：{', '.join(candidate_types)}。"
+        else:
+            headline = "系统暂时无法稳定识别这份材料的类型。"
+        return (
+            self._join_feedback_message(
+                headline,
+                (
+                    f"支持主张：{', '.join(assessment.supported_claims)}。"
+                    if assessment.supported_claims
+                    else None
+                ),
+            ),
+            assessment.relevance != "low",
+        )
+
+    def _assess_upload(
         self,
         *,
         filename: str,
         raw_bytes: bytes,
-        content_type: str,
-        document_type: str | None,
-    ) -> tuple[str | None, bool | None]:
-        if document_type is None:
-            return None, None
+        source_type: DocumentSourceType,
+        document_type_hint: str | None,
+    ) -> MultimodalUploadAssessment:
+        assess_document = getattr(self.multimodal, "assess_document", None)
+        if callable(assess_document):
+            return assess_document(
+                filename=filename,
+                raw_bytes=raw_bytes,
+                source_type=source_type,
+                document_type_hint=document_type_hint,
+            )
 
-        result = self.multimodal.extract(
+        extract = getattr(self.multimodal, "extract", None)
+        if not callable(extract) or document_type_hint is None:
+            return MultimodalUploadAssessment()
+        result = extract(
             filename=filename,
             raw_bytes=raw_bytes,
-            source_type=resolve_source_type(content_type),
-            document_type=document_type,
+            source_type=source_type,
+            document_type=document_type_hint,
         )
         if result is None:
-            return (
-                f"暂时无法判断这份文件是否属于 {document_type}，系统会继续尝试解析。",
-                None,
-            )
-        if not result.fields:
-            return (
-                f"这份文件看起来不像当前要求的 {document_type} 材料，请检查后重新上传。",
-                False,
-            )
-        return (
-            f"已识别出 {len(result.fields)} 个与 {document_type} 相关的字段，系统将继续处理。",
-            True,
+            return MultimodalUploadAssessment()
+        fields = list(getattr(result, "fields", []) or [])
+        relevance = "low" if not fields else "high"
+        confidence = 0.0
+        for field in fields:
+            confidence = max(confidence, float(getattr(field, "confidence", 0.0)))
+        return MultimodalUploadAssessment(
+            document_type_candidates=[
+                UploadDocumentTypeCandidate(
+                    document_type=document_type_hint,
+                    confidence=confidence or 0.5,
+                )
+            ],
+            relevance=relevance,
+            supported_claims=[
+                str(getattr(field, "field_path", ""))
+                for field in fields
+                if getattr(field, "field_path", None)
+            ],
+            confidence=confidence or (0.2 if not fields else 0.5),
         )
 
     def _required_document_types(self, session_record) -> set[str]:
@@ -243,6 +338,7 @@ class FileService:
         *,
         filename: str,
         document_type: str | None,
+        assessment_candidates: list[Any],
         required_document_types: set[str],
     ) -> str | None:
         normalized_required_document_types = {
@@ -253,6 +349,14 @@ class FileService:
         normalized_document_type = normalize_document_type(document_type)
         if normalized_document_type in normalized_required_document_types:
             return normalized_document_type
+        for candidate in assessment_candidates:
+            candidate_type = normalize_document_type(
+                getattr(candidate, "document_type", None)
+                if not isinstance(candidate, dict)
+                else candidate.get("document_type")
+            )
+            if candidate_type in normalized_required_document_types:
+                return candidate_type
 
         lowered_filename = filename.lower()
         for required_document_type in normalized_required_document_types:
@@ -324,13 +428,13 @@ class FileService:
         *,
         supported_document_type: str | None,
         required_document_types: set[str],
-        relevant: bool | None,
+        relevance: str | None,
     ) -> bool | None:
         if not required_document_types:
             return None
         if supported_document_type is None:
             return False
-        return relevant is not False
+        return relevance != "low"
 
     def _join_feedback_message(
         self,

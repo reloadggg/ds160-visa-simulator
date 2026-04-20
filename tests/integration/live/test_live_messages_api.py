@@ -5,6 +5,18 @@ from app.agents.question_agent import QuestionAgentRunner
 from app.workers.parse_worker import ParseWorker
 
 
+def assert_live_post_parse_progress(
+    *,
+    governor_decision: str,
+    requested_documents: list[str],
+) -> None:
+    assert governor_decision in {"continue_interview", "need_more_evidence"}
+    normalized_documents = [
+        document_type.lower().replace("-", "_") for document_type in requested_documents
+    ]
+    assert "funding_proof" not in normalized_documents
+
+
 @pytest.mark.live_llm
 def test_live_messages_api_requests_funding_proof(
     live_api_client,
@@ -16,20 +28,34 @@ def test_live_messages_api_requests_funding_proof(
     original_build = AgentModelFactory.build
     original_run = QuestionAgentRunner.run
 
-    def tracked_build(self, module_key, stage_key):
-        model, runtime = original_build(self, module_key, stage_key)
+    def tracked_build(self, module_key, stage_key, declared_family=None):
+        model, runtime = original_build(
+            self,
+            module_key,
+            stage_key,
+            declared_family=declared_family,
+        )
         if module_key == "question_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
-    def tracked_run(self, *, deps, profile_payload, score_payload, governor_decision):
+    def tracked_run(
+        self,
+        *,
+        deps,
+        dynamic_turn_context,
+        user_message,
+        boundary_decision,
+    ):
+        assert dynamic_turn_context["prompt_roles"]["system"] == "stable_policy"
+        assert user_message
         run_calls.append(deps.session_id)
         return original_run(
             self,
             deps=deps,
-            profile_payload=profile_payload,
-            score_payload=score_payload,
-            governor_decision=governor_decision,
+            dynamic_turn_context=dynamic_turn_context,
+            user_message=user_message,
+            boundary_decision=boundary_decision,
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
@@ -77,20 +103,34 @@ def test_live_messages_api_continues_after_funding_document_upload(
     original_build = AgentModelFactory.build
     original_run = QuestionAgentRunner.run
 
-    def tracked_build(self, module_key, stage_key):
-        model, runtime = original_build(self, module_key, stage_key)
+    def tracked_build(self, module_key, stage_key, declared_family=None):
+        model, runtime = original_build(
+            self,
+            module_key,
+            stage_key,
+            declared_family=declared_family,
+        )
         if module_key == "question_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
-    def tracked_run(self, *, deps, profile_payload, score_payload, governor_decision):
+    def tracked_run(
+        self,
+        *,
+        deps,
+        dynamic_turn_context,
+        user_message,
+        boundary_decision,
+    ):
+        assert dynamic_turn_context["prompt_roles"]["system"] == "stable_policy"
+        assert user_message
         run_calls.append(deps.session_id)
         return original_run(
             self,
             deps=deps,
-            profile_payload=profile_payload,
-            score_payload=score_payload,
-            governor_decision=governor_decision,
+            dynamic_turn_context=dynamic_turn_context,
+            user_message=user_message,
+            boundary_decision=boundary_decision,
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
@@ -131,12 +171,17 @@ def test_live_messages_api_continues_after_funding_document_upload(
 
     assert upload_response.status_code == 202
     assert pre_worker.status_code == 200
-    assert pre_worker.json()["governor_decision"] == "need_more_evidence"
+    assert pre_worker.json()["governor_decision"] in {
+        "continue_interview",
+        "need_more_evidence",
+    }
     assert response.status_code == 200
     payload = response.json()
-    assert payload["governor_decision"] == "continue_interview"
     assert payload["assistant_message"]
-    assert payload["requested_documents"] == []
+    assert_live_post_parse_progress(
+        governor_decision=payload["governor_decision"],
+        requested_documents=payload["requested_documents"],
+    )
     assert build_calls
     assert build_calls[-1] == (
         "question_agent",

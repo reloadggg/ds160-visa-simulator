@@ -44,6 +44,7 @@ def test_model_factory_returns_empty_runtime_for_missing_policy(
         "model": None,
         "reasoning_effort": None,
         "prompt_template_id": None,
+        "prompt_pack_id": None,
         "prompt_version": None,
     }
 

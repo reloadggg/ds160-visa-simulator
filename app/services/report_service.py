@@ -37,6 +37,14 @@ class ReportService:
         current_key_proof = interviewer_state_json.get("current_key_proof")
         current_risk_code = interviewer_state_json.get("current_risk_code")
         allowed_next_actions = list(interviewer_state_json.get("allowed_next_actions", []))
+        advisory_context = dict(interviewer_state_json.get("advisory_context", {}) or {})
+        prompt_trace = dict(interviewer_state_json.get("prompt_trace", {}) or {})
+        turn_decision = {
+            "decision": interviewer_state_json.get("decision", governor_decision),
+            "current_key_question": current_key_question,
+            "current_key_proof": current_key_proof,
+            "current_risk_code": current_risk_code,
+        }
 
         outcome_label = "需补强关键证据"
         summary = self._waiting_key_proof_summary(current_key_proof)
@@ -98,6 +106,9 @@ class ReportService:
             "current_risk_code": current_risk_code,
             "allowed_next_actions": allowed_next_actions,
             "recommended_improvements": recommended_improvements,
+            "turn_decision": turn_decision,
+            "advisory_context": advisory_context,
+            "prompt_trace": prompt_trace,
         }
 
     def internal_report(
@@ -112,15 +123,30 @@ class ReportService:
         interviewer_state_json: dict | None = None,
         current_focus_json: dict | None = None,
     ) -> dict:
+        interviewer_state_json = interviewer_state_json or {}
+        current_focus_json = current_focus_json or {}
         return {
             "session_id": session_id,
-            "policy_pack_trace": {"policy_pack_id": f"{visa_family}.default.v1"},
+            "policy_pack_trace": dict(
+                interviewer_state_json.get("prompt_trace", {})
+                or {"prompt_pack_id": f"{visa_family}.default.v1"}
+            ),
             "runtime_trace": list(runtime_trace or []),
             "score_history": list(score_history or []),
             "governor_history": list(governor_history or []),
-            "interviewer_state": dict(interviewer_state_json or {}),
-            "current_focus": dict(current_focus_json or {}),
+            "interviewer_state": dict(interviewer_state_json),
+            "current_focus": dict(current_focus_json),
             "profile_snapshot": profile_json,
+            "turn_decision": {
+                "decision": interviewer_state_json.get("decision", governor_decision),
+                "governor_decision": interviewer_state_json.get(
+                    "governor_decision",
+                    governor_decision,
+                ),
+            },
+            "advisory_context": dict(
+                interviewer_state_json.get("advisory_context", {}) or {}
+            ),
         }
 
     def _resolve_missing_evidence(

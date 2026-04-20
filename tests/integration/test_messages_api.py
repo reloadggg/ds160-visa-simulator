@@ -36,6 +36,19 @@ def build_pdf_bytes(*pages: str) -> bytes:
         pdf.close()
 
 
+def assert_interviewer_state_matches_new_contract(
+    actual_state: dict,
+    expected_state: dict,
+) -> None:
+    assert actual_state | {
+        "advisory_context": actual_state["advisory_context"],
+        "prompt_trace": actual_state["prompt_trace"],
+    } == expected_state | {
+        "advisory_context": actual_state["advisory_context"],
+        "prompt_trace": actual_state["prompt_trace"],
+    }
+
+
 @pytest.fixture()
 def db_session_factory(tmp_path):
     engine = create_engine(
@@ -357,7 +370,7 @@ def test_message_turn_uses_question_agent_output_for_continue_interview(
             "consistency_check",
             "score_case",
             "governor_decide",
-            "build_next_action",
+            "turn_decision",
         ]
         assert record.score_history_json[-1]["scoring_stage"] == "interview_turn"
         assert record.governor_history_json[-1]["decision"] == "continue_interview"
@@ -1271,12 +1284,14 @@ def test_message_turn_persists_current_focus_from_interviewer_runtime(
             "kind": "interview_question",
             "question": "What is the purpose of your travel?",
         }
-        assert record.interviewer_state_json == {
-            "owner": "interviewer_runtime_service",
-            "status": "verify_key_issue",
-            "public_status": "verify_key_issue",
-            "decision": "continue_interview",
-            "governor_decision": "continue_interview",
+        assert_interviewer_state_matches_new_contract(
+            record.interviewer_state_json,
+            {
+                "owner": "interviewer_runtime_service",
+                "status": "verify_key_issue",
+                "public_status": "verify_key_issue",
+                "decision": "continue_interview",
+                "governor_decision": "continue_interview",
             "next_action": "answer_question",
             "decision_hint": "continue_interview",
             "current_key_question": "What is the purpose of your travel?",
@@ -1286,11 +1301,12 @@ def test_message_turn_persists_current_focus_from_interviewer_runtime(
             "allowed_next_actions": [
                 "answer_question",
                 "clarify_key_issue",
-            ],
-            "requested_documents": [],
-            "risk_codes": ["supporting_evidence_missing"],
-            "history_turn_count": 0,
-        }
+                ],
+                "requested_documents": [],
+                "risk_codes": ["supporting_evidence_missing"],
+                "history_turn_count": 0,
+            },
+        )
 
 
 @pytest.mark.parametrize(
@@ -1497,7 +1513,10 @@ def test_message_turn_persists_owner_state_for_non_continue_decisions(
         record = db.get(SessionRecord, session_id)
         assert record is not None
         assert record.current_focus_json == expected_focus
-        assert record.interviewer_state_json == expected_state
+        assert_interviewer_state_matches_new_contract(
+            record.interviewer_state_json,
+            expected_state,
+        )
 
 
 def test_negated_fraud_statement_does_not_trigger_refusal(

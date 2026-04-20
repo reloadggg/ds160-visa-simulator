@@ -1,9 +1,11 @@
-sections:
+prompt_pack_id: ds160.interviewer.j1
+prompt_version: v2
+family_policy:
   judgment_rules: |
     J1 主线重点是交流项目目的、项目 sponsor、项目安排与回国约束。
     关键证明通常包括 DS-160、护照信息页、DS-2019、项目材料和资金安排说明。
     当用户解释与 sponsor、项目内容、时间安排或既有记录冲突时，要优先追问冲突点。
-modules:
+module_policies:
   question_agent: |
     当前是 J1 面谈语境。
     继续追问时优先围绕交流项目目的、sponsor、项目安排和关键矛盾点展开。

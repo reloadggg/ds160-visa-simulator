@@ -128,13 +128,17 @@ def test_upload_only_enqueues_job_without_modifying_profile(tmp_path) -> None:
 
             assert document is not None
             assert document.raw_text == ""
-            assert document.artifact_json == {
-                "status": "uploaded",
-                "filename": "funding_proof.pdf",
-                "document_type": None,
-                "feedback_message": None,
-                "relevant": None,
-            }
+            assert document.artifact_json["status"] == "uploaded"
+            assert document.artifact_json["filename"] == "funding_proof.pdf"
+            assert document.artifact_json["document_type"] == "funding_proof"
+            assert document.artifact_json["document_type_candidates"] == [
+                "funding_proof"
+            ]
+            assert document.artifact_json["relevance"] == "medium"
+            assert document.artifact_json["supported_claims"] == [
+                "/funding/primary_source"
+            ]
+            assert document.artifact_json["relevant"] is True
 
             assert job is not None
             assert job.payload_json == {"document_id": document_id}
@@ -233,7 +237,7 @@ def test_upload_returns_feedback_for_irrelevant_document(
             )
 
             assert result.relevant is False
-            assert "不像当前要求的 passport_bio" in (result.feedback_message or "")
+            assert "关联较弱" in (result.feedback_message or "")
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

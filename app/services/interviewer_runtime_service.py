@@ -17,7 +17,9 @@ from app.domain.contracts import (
 from app.domain.runtime import (
     InterviewAllowedNextAction,
     InterviewStateSnapshot,
+    PromptTrace,
     RuntimeTraceEntry,
+    TurnAdvisoryContext,
 )
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
@@ -125,40 +127,51 @@ class InterviewerRuntimeService:
             history_turns,
             trace_entries,
         )
+        action = self._coerce_action(action)
         requested_documents = self._select_requested_documents(
             record,
             score,
-            governor["decision"],
+            action.decision,
             action,
             governor.get("requested_documents", []),
         )
+        advisory_context = self._build_advisory_context(score)
+        prompt_trace = self._extract_prompt_trace(trace_entries)
         response = self._action_to_response(
             action,
             score,
-            governor["decision"],
             requested_documents,
+            advisory_context,
+            prompt_trace,
         )
         risk_codes = self._extract_risk_codes(score)
         current_focus = self._build_current_focus(
-            governor["decision"],
-            response["assistant_message"],
+            action,
             requested_documents,
             risk_codes,
+            refusal_reason=(
+                response["assistant_message"]
+                if action.decision == GovernorDecision.SIMULATED_REFUSAL.value
+                else None
+            ),
         )
+        final_decision = action.decision
 
         record.profile_json = profile_json
-        record.current_governor_decision = governor["decision"]
+        record.current_governor_decision = final_decision
         record.current_focus_json = current_focus
         record.phase_state = self._derive_phase_state(
-            governor_decision=governor["decision"],
-            current_focus=current_focus,
+            turn_decision=final_decision,
         )
         record.interviewer_state_json = self._build_interviewer_state(
+            final_decision,
             governor["decision"],
             response["decision_hint"],
             current_focus,
             score,
             history_turn_count,
+            advisory_context=advisory_context,
+            prompt_trace=prompt_trace,
         )
         self.session_repo.append_runtime_history(
             record,
@@ -174,72 +187,86 @@ class InterviewerRuntimeService:
             "governor_decision": response["governor_decision"],
             "score_summary": dict(response["score_summary"]),
             "requested_documents": list(response["requested_documents"]),
+            "turn_decision": dict(response["turn_decision"]),
+            "advisory_context": dict(response["advisory_context"]),
+            "prompt_trace": dict(response["prompt_trace"]),
         }
 
     def _derive_phase_state(
         self,
         *,
-        governor_decision: str,
-        current_focus: dict[str, str | None],
+        turn_decision: str,
     ) -> str:
-        if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
+        if turn_decision == GovernorDecision.SIMULATED_REFUSAL.value:
             return "session_closed"
-        if current_focus.get("kind") == "required_document":
-            return "gate_review"
         return "interview"
 
     def _build_current_focus(
         self,
-        decision: str,
-        assistant_message: str,
+        action: InterviewNextAction,
         requested_documents: list[str],
         risk_codes: list[str],
+        *,
+        refusal_reason: str | None = None,
     ) -> dict[str, str | None]:
-        if decision == GovernorDecision.CONTINUE_INTERVIEW.value:
+        decision = action.decision
+        if action.focus_kind == "interview_question" or decision == GovernorDecision.CONTINUE_INTERVIEW.value:
             return {
                 "owner": "interviewer_runtime_service",
                 "kind": "interview_question",
-                "question": assistant_message,
+                "question": action.assistant_message,
             }
-        if decision == GovernorDecision.NEED_MORE_EVIDENCE.value:
+        if action.focus_kind == "required_document" or decision == GovernorDecision.NEED_MORE_EVIDENCE.value:
             return {
                 "owner": "interviewer_runtime_service",
                 "kind": "required_document",
-                "document_type": requested_documents[0] if requested_documents else None,
+                "document_type": action.focus_document_type
+                or (action.requested_documents[0] if action.requested_documents else None)
+                or (requested_documents[0] if requested_documents else None),
             }
-        if decision == GovernorDecision.HIGH_RISK_REVIEW.value:
+        if action.focus_kind == "route_correction" or decision == GovernorDecision.ROUTE_CORRECTION.value:
+            return {
+                "owner": "interviewer_runtime_service",
+                "kind": "route_correction",
+                "question": action.assistant_message,
+            }
+        if action.focus_kind == "risk_review" or decision == GovernorDecision.HIGH_RISK_REVIEW.value:
             return {
                 "owner": "interviewer_runtime_service",
                 "kind": "risk_review",
-                "risk_code": risk_codes[0] if risk_codes else None,
+                "risk_code": action.focus_risk_code or (risk_codes[0] if risk_codes else None),
             }
-        if decision == GovernorDecision.SIMULATED_REFUSAL.value:
+        if action.focus_kind == "refusal" or decision == GovernorDecision.SIMULATED_REFUSAL.value:
             return {
                 "owner": "interviewer_runtime_service",
                 "kind": "refusal",
-                "risk_code": risk_codes[0] if risk_codes else None,
-                "reason": assistant_message,
+                "risk_code": action.focus_risk_code or (risk_codes[0] if risk_codes else None),
+                "reason": refusal_reason or action.reason or action.assistant_message,
             }
         return {
             "owner": "interviewer_runtime_service",
             "kind": "interview_question",
-            "question": assistant_message,
+            "question": action.assistant_message,
         }
 
     def _build_interviewer_state(
         self,
+        decision: str,
         governor_decision: str,
         decision_hint: str,
         current_focus: dict[str, str | None],
         score: ScoreState,
         history_turn_count: int,
+        *,
+        advisory_context: TurnAdvisoryContext,
+        prompt_trace: PromptTrace,
     ) -> dict[str, Any]:
         risk_codes = self._extract_risk_codes(score)
         current_key_question = current_focus.get("question")
         current_key_proof = self._current_key_proof(current_focus, score)
         current_risk_code = current_focus.get("risk_code") or (risk_codes[0] if risk_codes else None)
         state_status = self._derive_interview_state_status(
-            governor_decision,
+            decision,
             current_key_proof,
             current_risk_code,
         )
@@ -251,7 +278,7 @@ class InterviewerRuntimeService:
         snapshot = InterviewStateSnapshot(
             status=state_status,
             public_status=state_status,
-            decision=governor_decision,
+            decision=decision,
             governor_decision=governor_decision,
             next_action=allowed_next_actions[0].value,
             decision_hint=decision_hint,
@@ -264,7 +291,13 @@ class InterviewerRuntimeService:
             risk_codes=risk_codes,
             history_turn_count=history_turn_count,
         )
-        return snapshot.model_dump(mode="json")
+        payload = snapshot.model_dump(mode="json")
+        payload["advisory_context"] = advisory_context.model_dump(mode="json")
+        payload["prompt_trace"] = prompt_trace.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        return payload
 
     def _derive_interview_state_status(
         self,
@@ -426,26 +459,26 @@ class InterviewerRuntimeService:
         self,
         action: InterviewNextAction,
         score: ScoreState,
-        governor_decision: str,
         requested_documents: list[str],
+        advisory_context: TurnAdvisoryContext,
+        prompt_trace: PromptTrace,
     ) -> dict[str, Any]:
         assistant_message = action.assistant_message
-        requested_documents = list(requested_documents)
-        if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
+        if action.decision == GovernorDecision.SIMULATED_REFUSAL.value:
             assistant_message = self._public_refusal_message(score)
-            requested_documents = []
-        elif (
-            governor_decision == GovernorDecision.NEED_MORE_EVIDENCE.value
-            and requested_documents
-            and not self._has_explicit_document_request(action)
-        ):
-            assistant_message = self._required_document_message(requested_documents[0])
+        requested_documents = list(requested_documents)
         return {
             "assistant_message": assistant_message,
-            "governor_decision": governor_decision,
+            "governor_decision": action.decision,
             "score_summary": {},
             "requested_documents": requested_documents,
-            "decision_hint": action.decision_hint or governor_decision,
+            "decision_hint": action.decision_hint or action.decision,
+            "turn_decision": action.model_dump(mode="json"),
+            "advisory_context": advisory_context.model_dump(mode="json"),
+            "prompt_trace": prompt_trace.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
         }
 
     def _extract_risk_codes(self, score: ScoreState) -> list[str]:
@@ -455,40 +488,32 @@ class InterviewerRuntimeService:
         self,
         record: SessionRecord,
         score: ScoreState,
-        governor_decision: str,
+        turn_decision: str,
         action: InterviewNextAction,
         governor_requested_documents: list[str],
     ) -> list[str]:
         explicit_requested_documents = self._normalize_requested_documents(
             action.requested_documents
         )
-        if governor_decision != GovernorDecision.NEED_MORE_EVIDENCE.value:
+        if turn_decision != GovernorDecision.NEED_MORE_EVIDENCE.value:
             return explicit_requested_documents[:1]
         if explicit_requested_documents:
             return explicit_requested_documents[:1]
+        if action.focus_document_type and action.focus_document_type.strip():
+            return [action.focus_document_type.strip()]
         normalized_governor_documents = self._normalize_requested_documents(
             governor_requested_documents
         )
         if normalized_governor_documents:
             return normalized_governor_documents[:1]
-
         current_focus = record.current_focus_json or {}
-        focus_kind = current_focus.get("kind")
         focus_document = current_focus.get("document_type")
-        if (
-            focus_kind == "required_document"
-            and isinstance(focus_document, str)
-            and focus_document.strip()
-        ):
+        if isinstance(focus_document, str) and focus_document.strip():
             return [focus_document.strip()]
-
         for document_type in score.missing_evidence:
-            if document_type:
-                return [document_type]
+            if isinstance(document_type, str) and document_type.strip():
+                return [document_type.strip()]
         return []
-
-    def _has_explicit_document_request(self, action: InterviewNextAction) -> bool:
-        return any(document_type.strip() for document_type in action.requested_documents)
 
     def _normalize_requested_documents(self, document_types: list[str]) -> list[str]:
         return [
@@ -497,17 +522,65 @@ class InterviewerRuntimeService:
             if document_type.strip()
         ]
 
-    def _required_document_message(self, document_type: str) -> str:
-        labels = {
-            "funding_proof": "funding proof",
-            "passport_bio": "passport bio page",
-            "admission_letter": "admission letter",
-            "i20": "I-20",
-            "ds160": "DS-160 confirmation",
-            "travel_history": "travel history evidence",
-        }
-        label = labels.get(document_type, document_type.replace("_", " "))
-        return f"Please upload {label}."
+    def _coerce_action(self, action: Any) -> InterviewNextAction:
+        if isinstance(action, InterviewNextAction):
+            return action
+        if isinstance(action, dict):
+            return InterviewNextAction.model_validate(action)
+        return InterviewNextAction.model_validate(
+            {
+                "assistant_message": getattr(action, "assistant_message"),
+                "requested_documents": list(
+                    getattr(action, "requested_documents", []) or []
+                ),
+                "decision": getattr(action, "decision", None)
+                or getattr(action, "decision_hint"),
+                "focus_kind": getattr(action, "focus_kind", None),
+                "focus_document_type": getattr(action, "focus_document_type", None),
+                "focus_risk_code": getattr(action, "focus_risk_code", None),
+                "reason": getattr(action, "reason", None),
+            }
+        )
+
+    def _build_advisory_context(self, score: ScoreState) -> TurnAdvisoryContext:
+        missing_evidence = list(score.missing_evidence)
+        return TurnAdvisoryContext(
+            score_summary={
+                "category_fit": score.category_fit,
+                "document_readiness": score.document_readiness,
+                "narrative_consistency": score.narrative_consistency,
+                "confidence": score.confidence,
+            },
+            risk_codes=self._extract_risk_codes(score),
+            missing_evidence=missing_evidence,
+            risk_level=self._derive_risk_level(score),
+            missing_evidence_summary=(
+                ", ".join(missing_evidence) if missing_evidence else None
+            ),
+        )
+
+    def _extract_prompt_trace(
+        self,
+        trace_entries: list[RuntimeTraceEntry],
+    ) -> PromptTrace:
+        turn_trace = next(
+            (
+                entry
+                for entry in reversed(trace_entries)
+                if entry.node_name == "turn_decision"
+            ),
+            None,
+        )
+        if turn_trace is None:
+            return PromptTrace()
+        metadata = turn_trace.metadata if isinstance(turn_trace.metadata, dict) else {}
+        return PromptTrace(
+            prompt_pack_id=turn_trace.prompt_pack_id,
+            prompt_version=turn_trace.prompt_version,
+            provider=turn_trace.provider,
+            model=turn_trace.model,
+            reasoning_effort=metadata.get("reasoning_effort"),
+        )
 
     def _extract_runtime_trace(self, analysis: Any) -> list[Any]:
         return list(self._analysis_value(analysis, "runtime_trace", [])) or list(

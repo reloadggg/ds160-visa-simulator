@@ -7,6 +7,37 @@ from app.db.models import SessionRecord
 from app.workers.parse_worker import ParseWorker
 
 
+def assert_live_post_parse_progress(
+    *,
+    governor_decision: str,
+    requested_documents: list[str],
+) -> None:
+    assert governor_decision in {"continue_interview", "need_more_evidence"}
+    normalized_documents = [
+        document_type.lower().replace("-", "_") for document_type in requested_documents
+    ]
+    assert "funding_proof" not in normalized_documents
+
+
+def assert_openai_compat_metadata(
+    metadata: dict,
+    *,
+    session_id: str,
+    context_mode: str,
+    governor_decision: str | None = None,
+    requested_documents: list[str] | None = None,
+) -> None:
+    assert metadata["session_id"] == session_id
+    assert metadata["phase_state"] == "interview"
+    assert metadata["context_mode"] == context_mode
+    if governor_decision is not None:
+        assert metadata["governor_decision"] == governor_decision
+    if requested_documents is not None:
+        assert metadata["requested_documents"] == requested_documents
+    assert isinstance(metadata["turn_decision"], dict)
+    assert isinstance(metadata["prompt_trace"], dict)
+
+
 @pytest.mark.live_llm
 def test_live_openai_compat_maps_to_domain_flow(
     live_api_client,
@@ -18,20 +49,34 @@ def test_live_openai_compat_maps_to_domain_flow(
     original_build = AgentModelFactory.build
     original_run = QuestionAgentRunner.run
 
-    def tracked_build(self, module_key, stage_key):
-        model, runtime = original_build(self, module_key, stage_key)
+    def tracked_build(self, module_key, stage_key, declared_family=None):
+        model, runtime = original_build(
+            self,
+            module_key,
+            stage_key,
+            declared_family=declared_family,
+        )
         if module_key == "question_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
-    def tracked_run(self, *, deps, profile_payload, score_payload, governor_decision):
+    def tracked_run(
+        self,
+        *,
+        deps,
+        dynamic_turn_context,
+        user_message,
+        boundary_decision,
+    ):
+        assert dynamic_turn_context["prompt_roles"]["system"] == "stable_policy"
+        assert user_message
         run_calls.append(deps.session_id)
         return original_run(
             self,
             deps=deps,
-            profile_payload=profile_payload,
-            score_payload=score_payload,
-            governor_decision=governor_decision,
+            dynamic_turn_context=dynamic_turn_context,
+            user_message=user_message,
+            boundary_decision=boundary_decision,
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
@@ -54,9 +99,15 @@ def test_live_openai_compat_maps_to_domain_flow(
     payload = response.json()
     assert payload["choices"][0]["message"]["role"] == "assistant"
     assert payload["choices"][0]["message"]["content"]
-    assert payload["metadata"]["session_id"].startswith("sess-")
-    assert payload["metadata"]["context_mode"] == "new_session"
-    assert payload["metadata"]["phase_state"] == "gate_review"
+    session_id = payload["metadata"]["session_id"]
+    assert session_id.startswith("sess-")
+    assert_openai_compat_metadata(
+        payload["metadata"],
+        session_id=session_id,
+        context_mode="new_session",
+        governor_decision="need_more_evidence",
+        requested_documents=payload["metadata"]["requested_documents"],
+    )
     assert build_calls == [
         (
             "question_agent",
@@ -80,20 +131,34 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
     original_build = AgentModelFactory.build
     original_run = QuestionAgentRunner.run
 
-    def tracked_build(self, module_key, stage_key):
-        model, runtime = original_build(self, module_key, stage_key)
+    def tracked_build(self, module_key, stage_key, declared_family=None):
+        model, runtime = original_build(
+            self,
+            module_key,
+            stage_key,
+            declared_family=declared_family,
+        )
         if module_key == "question_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
-    def tracked_run(self, *, deps, profile_payload, score_payload, governor_decision):
+    def tracked_run(
+        self,
+        *,
+        deps,
+        dynamic_turn_context,
+        user_message,
+        boundary_decision,
+    ):
+        assert dynamic_turn_context["prompt_roles"]["system"] == "stable_policy"
+        assert user_message
         run_calls.append(deps.session_id)
         return original_run(
             self,
             deps=deps,
-            profile_payload=profile_payload,
-            score_payload=score_payload,
-            governor_decision=governor_decision,
+            dynamic_turn_context=dynamic_turn_context,
+            user_message=user_message,
+            boundary_decision=boundary_decision,
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
@@ -116,11 +181,13 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
     assert first_completion.status_code == 200
     first_payload = first_completion.json()
     session_id = first_payload["metadata"]["session_id"]
-    assert first_payload["metadata"] == {
-        "session_id": session_id,
-        "phase_state": "gate_review",
-        "context_mode": "new_session",
-    }
+    assert_openai_compat_metadata(
+        first_payload["metadata"],
+        session_id=session_id,
+        context_mode="new_session",
+        governor_decision="need_more_evidence",
+        requested_documents=first_payload["metadata"]["requested_documents"],
+    )
 
     upload_response = live_api_client.post(
         f"/v1/sessions/{session_id}/files",
@@ -152,10 +219,14 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
 
     assert second_completion.status_code == 200
     second_payload = second_completion.json()
-    assert second_payload["metadata"] == {
-        "session_id": session_id,
-        "phase_state": "gate_review",
-        "context_mode": "existing_session",
+    assert_openai_compat_metadata(
+        second_payload["metadata"],
+        session_id=session_id,
+        context_mode="existing_session",
+    )
+    assert second_payload["metadata"]["governor_decision"] in {
+        "continue_interview",
+        "need_more_evidence",
     }
 
     with live_db_session_factory() as db:
@@ -181,11 +252,17 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
 
     assert third_completion.status_code == 200
     third_payload = third_completion.json()
-    assert third_payload["metadata"] == {
-        "session_id": session_id,
-        "phase_state": "interview",
-        "context_mode": "existing_session",
-    }
+    assert_openai_compat_metadata(
+        third_payload["metadata"],
+        session_id=session_id,
+        context_mode="existing_session",
+        governor_decision=third_payload["metadata"]["governor_decision"],
+        requested_documents=third_payload["metadata"]["requested_documents"],
+    )
+    assert_live_post_parse_progress(
+        governor_decision=third_payload["metadata"]["governor_decision"],
+        requested_documents=third_payload["metadata"]["requested_documents"],
+    )
     assert third_payload["choices"][0]["message"]["role"] == "assistant"
     assert third_payload["choices"][0]["message"]["content"]
 
@@ -193,10 +270,17 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
 
     assert user_report_response.status_code == 200
     user_report = user_report_response.json()
-    assert user_report["interview_status"] == "continue_interview"
-    assert user_report["current_key_question"] == third_payload["choices"][0]["message"][
-        "content"
-    ]
+    assert user_report["turn_decision"]["decision"] == third_payload["metadata"][
+        "turn_decision"
+    ]["decision"]
+    assert user_report["interview_status"] in {"verify_key_issue", "waiting_key_proof"}
+    if user_report["current_key_question"] is not None:
+        assert user_report["current_key_question"] == third_payload["choices"][0][
+            "message"
+        ]["content"]
+    else:
+        assert user_report["current_key_proof"] is not None
+        assert user_report["current_key_proof"].lower().replace("-", "_") != "funding_proof"
     assert build_calls
     assert build_calls[-1] == (
         "question_agent",

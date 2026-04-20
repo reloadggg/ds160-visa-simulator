@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.contracts import FieldState
 from app.domain.evidence import DocumentSourceType
@@ -23,6 +23,13 @@ DecisionHint = Literal[
     "route_correction",
     "high_risk_review",
     "simulated_refusal",
+]
+FocusKind = Literal[
+    "interview_question",
+    "required_document",
+    "route_correction",
+    "risk_review",
+    "refusal",
 ]
 
 
@@ -100,9 +107,17 @@ class ScoreProposal(BaseModel):
 
 
 class InterviewNextAction(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    decision: DecisionHint = Field(
+        validation_alias=AliasChoices("decision", "decision_hint")
+    )
     assistant_message: str
     requested_documents: list[str] = Field(default_factory=list)
-    decision_hint: DecisionHint
+    focus_kind: FocusKind | None = None
+    focus_document_type: str | None = None
+    focus_risk_code: str | None = None
+    reason: str | None = None
 
     @field_validator("assistant_message")
     @classmethod
@@ -139,7 +154,33 @@ class InterviewNextAction(BaseModel):
             raise ValueError(
                 "assistant_message must align with the single requested document focus"
             )
+        if self.requested_documents and self.decision != "need_more_evidence":
+            raise ValueError(
+                "requested_documents may only be set when decision is need_more_evidence"
+            )
+        if self.focus_kind is None:
+            self.focus_kind = self._default_focus_kind(self.decision)
+        if self.focus_kind == "required_document":
+            if self.focus_document_type is None and self.requested_documents:
+                self.focus_document_type = self.requested_documents[0]
+        if self.focus_kind == "risk_review" and not self.focus_risk_code:
+            self.focus_risk_code = None
         return self
+
+    @property
+    def decision_hint(self) -> DecisionHint:
+        return self.decision
+
+    @staticmethod
+    def _default_focus_kind(decision: DecisionHint) -> FocusKind:
+        mapping: dict[DecisionHint, FocusKind] = {
+            "continue_interview": "interview_question",
+            "need_more_evidence": "required_document",
+            "route_correction": "route_correction",
+            "high_risk_review": "risk_review",
+            "simulated_refusal": "refusal",
+        }
+        return mapping[decision]
 
     @staticmethod
     def _looks_like_summary_or_checklist(message: str) -> bool:

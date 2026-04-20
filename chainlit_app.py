@@ -262,14 +262,34 @@ def _format_upload_feedback(response: dict) -> str | None:
     feedback_message = (
         main_flow_feedback.get("message") or response.get("feedback_message") or ""
     ).strip()
-    if not feedback_message:
+    candidates = list(response.get("document_type_candidates", []) or [])
+    supported_claims = list(response.get("supported_claims", []) or [])
+    relevance = response.get("relevance")
+    confidence = response.get("confidence")
+    extras: list[str] = []
+    if candidates:
+        extras.append(f"候选类型：{', '.join(candidates)}")
+    if relevance:
+        extras.append(f"相关性：{relevance}")
+    if supported_claims:
+        extras.append(f"支持主张：{', '.join(supported_claims)}")
+    if isinstance(confidence, (int, float)) and confidence > 0:
+        extras.append(f"置信度：{confidence:.2f}")
+
+    if not feedback_message and not extras:
         return None
 
     status = main_flow_feedback.get("status")
     status_label = _UPLOAD_FEEDBACK_STATUS_LABELS.get(status)
-    if not status_label:
-        return feedback_message
-    return f"{status_label}\n{feedback_message}"
+    lines: list[str] = []
+    if status_label:
+        lines.append(status_label)
+    if feedback_message:
+        lines.append(feedback_message)
+    lines.extend(extras)
+    if candidates and response.get("document_type") not in candidates:
+        lines.append("如识别类型不准，可在前端下次上传时手动指定类型纠偏。")
+    return "\n".join(lines)
 
 
 async def _handle_upload_response(response: dict) -> None:
