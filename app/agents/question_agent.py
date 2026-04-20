@@ -10,16 +10,12 @@ from app.agents.tools import register_evidence_tools
 
 
 class QuestionAgentRunner:
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: Any, instructions: str) -> None:
         self.agent = Agent(
             model,
             deps_type=AgentRuntimeDeps,
             output_type=InterviewNextAction,
-            instructions=(
-                "你负责生成 DS-160 模拟面谈的下一步助手动作。"
-                "Governor 才是最终决策层，你不能自行改变 governor_decision。"
-                "如果需要更多证据，requested_documents 必须非空。"
-            ),
+            instructions=instructions,
         )
         register_evidence_tools(self.agent)
 

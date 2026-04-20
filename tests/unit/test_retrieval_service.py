@@ -166,3 +166,98 @@ def test_search_session_evidence_matches_chinese_tokens(tmp_path) -> None:
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_search_session_evidence_matches_field_name_queries(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'retrieval-service-field-name.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-field", declared_family="f1"))
+            db.add_all(
+                [
+                    DocumentRecord(
+                        document_id="doc-passport",
+                        session_id="sess-field",
+                        filename="upload-001.pdf",
+                        artifact_json={"source_type": "pdf"},
+                    ),
+                    DocumentRecord(
+                        document_id="doc-name",
+                        session_id="sess-field",
+                        filename="upload-002.pdf",
+                        artifact_json={"source_type": "pdf"},
+                    ),
+                ]
+            )
+            db.add_all(
+                [
+                    DocumentChunkRecord(
+                        chunk_id="chunk-passport",
+                        document_id="doc-passport",
+                        session_id="sess-field",
+                        ordinal=0,
+                        page_number=1,
+                        text="P1234567",
+                        metadata_json={},
+                    ),
+                    DocumentChunkRecord(
+                        chunk_id="chunk-name",
+                        document_id="doc-name",
+                        session_id="sess-field",
+                        ordinal=0,
+                        page_number=1,
+                        text="Ada Lovelace",
+                        metadata_json={},
+                    ),
+                ]
+            )
+            db.add_all(
+                [
+                    EvidenceItemRecord(
+                        evidence_id="evi-passport",
+                        session_id="sess-field",
+                        document_id="doc-passport",
+                        chunk_id="chunk-passport",
+                        evidence_type="passport_bio",
+                        field_path="/identity/passport_number",
+                        value="P1234567",
+                        excerpt="P1234567",
+                        confidence=1.0,
+                        metadata_json={},
+                    ),
+                    EvidenceItemRecord(
+                        evidence_id="evi-name",
+                        session_id="sess-field",
+                        document_id="doc-name",
+                        chunk_id="chunk-name",
+                        evidence_type="passport_bio",
+                        field_path="/identity/full_name",
+                        value="Ada Lovelace",
+                        excerpt="Ada Lovelace",
+                        confidence=1.0,
+                        metadata_json={},
+                    ),
+                ]
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            hits = RetrievalService(db).search_session_evidence(
+                "sess-field",
+                "passport number",
+                limit=5,
+            )
+
+            assert hits[0].evidence_id == "evi-passport"
+            assert hits[0].field_path == "/identity/passport_number"
+            assert hits[0].score > hits[1].score
+            assert hits[0].score > 0
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

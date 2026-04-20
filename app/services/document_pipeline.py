@@ -9,6 +9,7 @@ from app.domain.evidence import (
     DocumentSourceType,
     EvidenceItem,
 )
+from app.domain.document_types import DOCUMENT_TYPE_ALIASES, normalize_document_type
 from app.integrations.parsers import parse_document
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
@@ -47,6 +48,19 @@ _STRUCTURED_FIELD_PATTERNS: dict[str, list[tuple[str, str]]] = {
         (r"travel purpose:\s*(.+)", "/visa_intent/travel_purpose"),
     ],
 }
+_FUNDING_DOCUMENT_TYPES = {"funding_proof"}
+_FUNDING_KEYWORDS = (
+    "bank statement",
+    "financial statement",
+    "sponsor letter",
+    "affidavit of support",
+    "scholarship",
+    "stipend",
+    "assistantship",
+    "fellowship",
+    "grant",
+    "tuition waiver",
+)
 
 
 class DocumentPipelineService:
@@ -66,10 +80,11 @@ class DocumentPipelineService:
         if document is None:
             raise LookupError(f"Document not found: {document_id}")
 
-        document_type = (
-            (document.artifact_json or {}).get("document_type")
-            or self._classify_document_type(document.filename)
-        )
+        previous_artifact = dict(document.artifact_json or {})
+        previous_metadata = dict(previous_artifact.get("metadata", {}))
+        document_type = self._normalize_document_type(
+            previous_artifact.get("document_type")
+        ) or self._classify_document_type(document.filename)
         parsed = parse_document(document.filename, document.raw_bytes)
         multimodal_result = self.multimodal_service.extract(
             filename=document.filename,
@@ -80,6 +95,19 @@ class DocumentPipelineService:
         if multimodal_result is not None:
             parsed = self._parsed_from_multimodal(multimodal_result)
         artifact_status = self._resolve_status(parsed.source_type)
+        artifact_metadata = {
+            "multimodal_used": multimodal_result is not None,
+            "document_type": document_type,
+        }
+        for key in (
+            "counts_toward_gate",
+            "feedback_message",
+            "relevant",
+            "main_flow_feedback",
+        ):
+            value = previous_artifact.get(key, previous_metadata.get(key))
+            if value is not None:
+                artifact_metadata[key] = value
         artifact = DocumentArtifact(
             document_id=document.document_id,
             session_id=document.session_id,
@@ -88,10 +116,7 @@ class DocumentPipelineService:
             parser_name=parsed.parser_name,
             status=artifact_status,
             page_count=len(parsed.segments),
-            metadata={
-                "multimodal_used": multimodal_result is not None,
-                "document_type": document_type,
-            },
+            metadata=artifact_metadata,
         )
 
         chunks = [
@@ -111,6 +136,7 @@ class DocumentPipelineService:
             session_id=document.session_id,
             document_id=document.document_id,
             filename=document.filename,
+            document_type=document_type,
             chunks=chunks,
             multimodal_fields=multimodal_result.fields if multimodal_result else [],
         )
@@ -138,11 +164,11 @@ class DocumentPipelineService:
         session_id: str,
         document_id: str,
         filename: str,
+        document_type: str | None,
         chunks: list[DocumentChunk],
         multimodal_fields: list | None = None,
     ) -> list[EvidenceItem]:
         evidence_items: list[EvidenceItem] = []
-        document_type = self._classify_document_type(filename)
         if multimodal_fields:
             evidence_items.extend(
                 self._multimodal_fields_to_evidence(
@@ -156,9 +182,11 @@ class DocumentPipelineService:
             return evidence_items
         for chunk in chunks:
             normalized = chunk.text.lower()
-            if "bank statement" not in normalized:
-                pass
-            elif "parent" in normalized or "sponsor" in normalized:
+            funding_source = self._extract_funding_source(
+                normalized,
+                document_type=document_type,
+            )
+            if funding_source is not None:
                 evidence_items.append(
                     EvidenceItem(
                         evidence_id=f"evi-{uuid4().hex[:12]}",
@@ -167,7 +195,7 @@ class DocumentPipelineService:
                         chunk_id=chunk.chunk_id,
                         evidence_type="funding_proof",
                         field_path="/funding/primary_source",
-                        value="parents",
+                        value=funding_source,
                         excerpt=chunk.text[:240],
                     )
                 )
@@ -251,10 +279,16 @@ class DocumentPipelineService:
 
     def _classify_document_type(self, filename: str) -> str | None:
         candidate = filename.lower()
+        for marker, document_type in DOCUMENT_TYPE_ALIASES.items():
+            if marker in candidate:
+                return document_type
         for document_type in _STRUCTURED_FIELD_PATTERNS:
             if document_type in candidate:
                 return document_type
         return None
+
+    def _normalize_document_type(self, document_type: str | None) -> str | None:
+        return normalize_document_type(document_type)
 
     def _slice_original_value(self, original_text: str, lowered_value: str) -> str:
         original_lower = original_text.lower()
@@ -262,6 +296,45 @@ class DocumentPipelineService:
         if start == -1:
             return lowered_value.strip()
         return original_text[start : start + len(lowered_value)].strip()
+
+    def _extract_funding_source(
+        self,
+        normalized_text: str,
+        *,
+        document_type: str | None = None,
+    ) -> str | None:
+        if (
+            document_type not in _FUNDING_DOCUMENT_TYPES
+            and not any(keyword in normalized_text for keyword in _FUNDING_KEYWORDS)
+        ):
+            return None
+
+        keyword_groups = (
+            ("employer", ("employer", "company", "corporate", "work sponsor")),
+            (
+                "school",
+                ("scholarship", "stipend", "assistantship", "fellowship"),
+            ),
+            (
+                "self",
+                (
+                    "self-funded",
+                    "self funded",
+                    "personal savings",
+                    "my own",
+                    "own funds",
+                ),
+            ),
+            (
+                "parents",
+                ("parent", "parents", "father", "mother", "mom", "dad"),
+            ),
+            ("sponsor", ("sponsor",)),
+        )
+        for source, keywords in keyword_groups:
+            if any(keyword in normalized_text for keyword in keywords):
+                return source
+        return None
 
     def _parsed_from_multimodal(self, result) -> object:
         from app.integrations.parsers import ParsedDocument, ParsedSegment

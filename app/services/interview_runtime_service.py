@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,58 +16,56 @@ from app.domain.runtime import (
     RuntimeTraceEntry,
     ScoreHistoryEntry,
 )
-from app.repositories.session_repo import SessionRepository
 from app.services.consistency_service import ConsistencyService
 from app.services.evidence_service import EvidenceService
 from app.services.extractor_service import ExtractorService
-from app.services.governor_service import GovernorService
 from app.services.retrieval_service import RetrievalService
 from app.services.scoring_service import ScoringService
+
+
+@dataclass
+class InterviewTurnAnalysis:
+    profile: ApplicantProfile
+    trace_entries: list[RuntimeTraceEntry]
+    score: ScoreState
+    findings: list[dict[str, Any]]
 
 
 class InterviewRuntimeService:
     def __init__(self, db: Session | Any) -> None:
         self.db = db
-        self.session_repo = SessionRepository(db)
         self.model_factory = AgentModelFactory()
         self.extractor = ExtractorService(db)
         self.consistency = ConsistencyService()
         self.scoring = ScoringService(db)
-        self.governor = GovernorService()
 
-    def run_turn(self, record: SessionRecord, message_text: str) -> dict:
+    def analyze_turn(
+        self,
+        record: SessionRecord,
+        message_text: str,
+        recent_turns: list[Any] | None = None,
+    ) -> InterviewTurnAnalysis:
         profile = self._load_profile(record.session_id, record.profile_json)
         trace_entries: list[RuntimeTraceEntry] = []
 
         trace_entries.append(self._receive_input())
-        profile = self._extract_claims(record, profile, message_text, trace_entries)
+        profile = self._extract_claims(
+            record,
+            profile,
+            message_text,
+            trace_entries,
+            recent_turns=recent_turns,
+        )
         self._resolve_evidence(profile, trace_entries)
         findings = self._consistency_check(profile, trace_entries)
         score = self._score_case(profile, findings, trace_entries)
-        governor = self._governor_decide(record, profile, score, trace_entries)
-        action = self._build_next_action(record, profile, score, governor, trace_entries)
 
-        record.profile_json = profile.model_dump(mode="json")
-        record.current_governor_decision = governor["decision"]
-        self.session_repo.append_runtime_history(
-            record,
-            runtime_trace=trace_entries,
-            score_history=[self._build_score_history_entry(score)],
-            governor_history=[self._build_governor_history_entry(governor["decision"])],
+        return InterviewTurnAnalysis(
+            profile=profile,
+            trace_entries=trace_entries,
+            score=score,
+            findings=findings,
         )
-        self.session_repo.save(record)
-
-        return {
-            "assistant_message": action.assistant_message,
-            "governor_decision": governor["decision"],
-            "score_summary": {
-                "category_fit": score.category_fit,
-                "document_readiness": score.document_readiness,
-                "narrative_consistency": score.narrative_consistency,
-                "confidence": score.confidence,
-            },
-            "requested_documents": action.requested_documents,
-        }
 
     def _receive_input(self) -> RuntimeTraceEntry:
         return RuntimeTraceEntry(
@@ -80,11 +79,17 @@ class InterviewRuntimeService:
         profile: ApplicantProfile,
         message_text: str,
         trace_entries: list[RuntimeTraceEntry],
+        *,
+        recent_turns: list[Any] | None = None,
     ) -> ApplicantProfile:
         profile.profile_version += 1
         profile.visa_intent["declared_family"] = record.declared_family
         previous_profile = profile.model_copy(deep=True)
-        updated_profile = self.extractor.apply_message(profile, message_text)
+        updated_profile = self.extractor.apply_message(
+            profile,
+            message_text,
+            recent_turns=recent_turns,
+        )
         updated_profile = self._preserve_gate_ready_fields(previous_profile, updated_profile)
         trace_entries.append(
             RuntimeTraceEntry(
@@ -140,46 +145,29 @@ class InterviewRuntimeService:
         )
         return score
 
-    def _governor_decide(
+    def build_question_action(
         self,
-        record: SessionRecord,
+        session_id: str,
         profile: ApplicantProfile,
         score: ScoreState,
-        trace_entries: list[RuntimeTraceEntry],
-    ) -> dict[str, Any]:
-        early_term_candidate = self._build_early_term_candidate(
-            record.declared_family,
-            score,
-        )
-        governor = self.governor.decide(profile, score, early_term_candidate)
-        trace_entries.append(
-            RuntimeTraceEntry(
-                node_name="governor_decide",
-                summary=f"decision={governor['decision']}",
-            )
-        )
-        return governor
-
-    def _build_next_action(
-        self,
-        record: SessionRecord,
-        profile: ApplicantProfile,
-        score: ScoreState,
-        governor: dict[str, Any],
-        trace_entries: list[RuntimeTraceEntry],
+        governor_decision: str,
+        trace_entries: list[RuntimeTraceEntry] | None = None,
+        recent_turns: list[Any] | None = None,
     ) -> InterviewNextAction:
         action = self._question_action(
-            record.session_id,
+            session_id,
             profile,
             score,
-            governor["decision"],
+            governor_decision,
+            recent_turns=recent_turns,
         )
-        trace_entries.append(
-            RuntimeTraceEntry(
-                node_name="build_next_action",
-                summary=f"requested_documents={len(action.requested_documents)}",
+        if trace_entries is not None:
+            trace_entries.append(
+                RuntimeTraceEntry(
+                    node_name="build_next_action",
+                    summary=f"requested_documents={len(action.requested_documents)}",
+                )
             )
-        )
         return action
 
     def _build_score_history_entry(self, score: ScoreState) -> ScoreHistoryEntry:
@@ -244,49 +232,61 @@ class InterviewRuntimeService:
             updated_profile.funding["primary_source"] = previous_profile.funding["primary_source"]
         return updated_profile
 
-    def _build_early_term_candidate(
-        self,
-        declared_family: str | None,
-        score: ScoreState,
-    ) -> dict | None:
-        family = declared_family or "unknown"
-        for risk_flag in score.risk_flags:
-            if (
-                risk_flag.severity == "high"
-                and risk_flag.status == "confirmed"
-                and risk_flag.evidence_refs
-            ):
-                return {
-                    "eligible": True,
-                    "policy_id": f"{family}.tp.{risk_flag.code}",
-                    "confirmation_required": False,
-                    "evidence_refs": risk_flag.evidence_refs,
-                }
-        return None
-
     def _question_action(
         self,
         session_id: str,
         profile: ApplicantProfile,
         score: ScoreState,
         governor_decision: str,
+        recent_turns: list[Any] | None = None,
     ) -> InterviewNextAction:
         if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
             return self._fallback_question_action(governor_decision, score)
 
-        model, _runtime = self.model_factory.build("question_agent", "interview_turn")
+        declared_family = profile.visa_intent.get("declared_family")
+        model, runtime = self._build_question_agent_runtime(declared_family)
         if model is not None:
             try:
-                action = QuestionAgentRunner(model=model).run(
+                action = QuestionAgentRunner(
+                    model=model,
+                    instructions=runtime.get("instructions")
+                    or self.model_factory.build_instructions(
+                        "question_agent",
+                        declared_family=declared_family,
+                    ),
+                ).run(
                     deps=self._build_agent_deps(session_id),
                     profile_payload=profile.model_dump(mode="json"),
                     score_payload=score.model_dump(mode="json"),
                     governor_decision=governor_decision,
                 )
+                return self._finalize_question_action(governor_decision, score, action)
             except Exception:
-                return self._fallback_question_action(governor_decision, score)
-            return self._finalize_question_action(governor_decision, score, action)
-        return self._fallback_question_action(governor_decision, score)
+                return self._fallback_question_action(
+                    governor_decision,
+                    score,
+                    recent_turns=recent_turns,
+                )
+        return self._fallback_question_action(
+            governor_decision,
+            score,
+            recent_turns=recent_turns,
+        )
+
+    def _build_question_agent_runtime(
+        self,
+        declared_family: str | None,
+    ) -> tuple[Any | None, dict[str, Any]]:
+        try:
+            return self.model_factory.build(
+                "question_agent",
+                "interview_turn",
+                declared_family=declared_family,
+            )
+        except TypeError as exc:
+            if "declared_family" not in str(exc):
+                raise
+            return self.model_factory.build("question_agent", "interview_turn")
 
     def _build_agent_deps(self, session_id: str) -> AgentRuntimeDeps:
         return AgentRuntimeDeps(
@@ -301,10 +301,15 @@ class InterviewRuntimeService:
         score: ScoreState,
         action: InterviewNextAction,
     ) -> InterviewNextAction:
-        requested_documents = list(action.requested_documents)
-        if governor_decision == GovernorDecision.NEED_MORE_EVIDENCE.value and not requested_documents:
-            requested_documents = list(score.missing_evidence)
+        del score
+        if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:
+            return InterviewNextAction(
+                assistant_message=action.assistant_message,
+                requested_documents=[],
+                decision_hint=action.decision_hint,
+            )
 
+        requested_documents = self._coerce_requested_documents(action.requested_documents)
         return InterviewNextAction(
             assistant_message=action.assistant_message,
             requested_documents=requested_documents,
@@ -315,10 +320,13 @@ class InterviewRuntimeService:
         self,
         governor_decision: str,
         score: ScoreState,
+        *,
+        recent_turns: list[Any] | None = None,
     ) -> InterviewNextAction:
+        del score
         if governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value:
             return InterviewNextAction(
-                assistant_message="What is the purpose of your travel?",
+                assistant_message=self._next_continue_interview_question(recent_turns),
                 requested_documents=[],
                 decision_hint="continue_interview",
             )
@@ -339,11 +347,44 @@ class InterviewRuntimeService:
         if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:
             return InterviewNextAction(
                 assistant_message="This case needs additional review before the interview can continue.",
-                requested_documents=list(score.missing_evidence),
+                requested_documents=[],
                 decision_hint="high_risk_review",
             )
         return InterviewNextAction(
-            assistant_message="Please upload funding proof.",
-            requested_documents=list(score.missing_evidence),
+            assistant_message="Please provide the key supporting document for this point.",
+            requested_documents=[],
             decision_hint="need_more_evidence",
         )
+
+    def _coerce_requested_documents(
+        self,
+        *document_groups: list[str] | None,
+    ) -> list[str]:
+        for document_group in document_groups:
+            if not document_group:
+                continue
+            for item in document_group:
+                document_type = item.strip()
+                if document_type:
+                    return [document_type]
+        return []
+
+    def _next_continue_interview_question(
+        self,
+        recent_turns: list[Any] | None,
+    ) -> str:
+        previous_assistant_turn = None
+        if recent_turns is not None:
+            previous_assistant_turn = next(
+                (turn for turn in reversed(recent_turns) if getattr(turn, "role", None) == "assistant"),
+                None,
+            )
+        if previous_assistant_turn is None:
+            return "What is the purpose of your travel?"
+
+        lowered = previous_assistant_turn.content.lower()
+        if "purpose of your travel" in lowered:
+            return "Which school admitted you, and why did you choose it?"
+        if "which school admitted you" in lowered:
+            return "How will you pay for your studies?"
+        return "What is the purpose of your travel?"

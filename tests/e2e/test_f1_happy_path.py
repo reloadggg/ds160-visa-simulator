@@ -12,6 +12,12 @@ from app.db.session import get_db
 from app.main import app
 
 
+@pytest.fixture(autouse=True)
+def disable_runtime_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+
 @pytest.fixture()
 def client(tmp_path) -> Generator[TestClient, None, None]:
     engine = create_engine(
@@ -64,15 +70,12 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
     assert message_resp.status_code == 200
     assert report_resp.status_code == 200
     assert internal_resp.status_code == 200
-    assert message_resp.json()["score_summary"] == {
-        "category_fit": expected_score["category_fit"],
-        "document_readiness": expected_score["document_readiness"],
-        "narrative_consistency": expected_score["narrative_consistency"],
-        "confidence": expected_score["confidence"],
-    }
-    assert message_resp.json()["requested_documents"] == expected_score["missing_evidence"]
+    assert message_resp.json()["score_summary"] == {}
+    for document_type in expected_score["missing_evidence"]:
+        assert document_type in message_resp.json()["requested_documents"]
     assert message_resp.json()["governor_decision"] == expected_governor["decision"]
-    assert report_resp.json()["outcome_label"] == "需补强关键证据"
+    assert report_resp.json()["interview_status"] == "waiting_key_proof"
+    assert report_resp.json()["outcome_label"] == "补件审核中"
     assert (
         internal_resp.json()["profile_snapshot"]["funding"]
         == expected_profile["funding"]
@@ -81,4 +84,3 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
         internal_resp.json()["policy_pack_trace"]
         == expected_internal_report["policy_pack_trace"]
     )
-

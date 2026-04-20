@@ -111,7 +111,49 @@ def test_scoring_service_maps_proposal_fields_to_score_state(monkeypatch) -> Non
     assert [flag.code for flag in score.risk_flags] == ["supporting_evidence_missing"]
     assert score.risk_flags[0].severity == "medium"
     assert score.risk_flags[0].status == "supported"
-    assert score.missing_evidence == ["travel_history", "funding_proof"]
+    assert score.missing_evidence == ["travel_history"]
+
+
+def test_scoring_service_keeps_requested_documents_internal_only(monkeypatch) -> None:
+    profile = ApplicantProfile.minimal("profile-score-2b")
+    profile.visa_intent["declared_family"] = "f1"
+
+    monkeypatch.setattr(
+        "app.services.scoring_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "category_fit": 66,
+                    "document_readiness": 55,
+                    "narrative_consistency": 44,
+                    "confidence": 71,
+                    "risk_flags": [],
+                    "missing_evidence": [],
+                    "requested_documents": ["funding_proof"],
+                }
+            ),
+            {"model": "test"},
+        ),
+    )
+
+    monkeypatch.setattr(
+        ScoringService,
+        "_build_agent_deps",
+        lambda self, profile: AgentRuntimeDeps(
+            session_id=profile.profile_id,
+            retrieval=object(),
+            evidence=object(),
+        ),
+    )
+
+    score = ScoringService(db=object()).propose(
+        profile,
+        findings=[],
+        scoring_stage="interview_turn",
+    )
+
+    assert score.missing_evidence == []
 
 
 def test_scoring_service_falls_back_without_model(monkeypatch) -> None:

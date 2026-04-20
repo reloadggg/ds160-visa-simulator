@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import chainlit as cl
@@ -16,21 +17,89 @@ _FAMILY_OPTIONS = [
     ("h1b", "H-1B"),
 ]
 _UPLOAD_ACCEPT = list(ALLOWED_UPLOAD_MIME_TYPES)
+_INTERVIEW_STATUS_LABELS = {
+    "continue_interview": "继续问答",
+    "verify_key_issue": "核验关键问题",
+    "waiting_key_proof": "等待关键证明",
+    "high_risk_review": "高风险复核",
+    "simulated_refusal": "模拟拒签",
+}
+_RISK_LEVEL_LABELS = {
+    "none": "无明显风险",
+    "low": "低风险",
+    "medium": "中风险",
+    "high": "高风险",
+}
+_ALLOWED_NEXT_ACTION_LABELS = {
+    "answer_question": "继续回答当前问题",
+    "continue_interview": "继续面谈",
+    "clarify_key_issue": "补充说明当前关键问题",
+    "upload_key_proof": "上传关键证明",
+    "explain_missing_proof": "先说明暂时缺少的原因",
+    "wait_for_review": "等待进一步复核",
+    "review_refusal_result": "查看模拟拒签结果并准备补强",
+}
+_UPLOAD_FEEDBACK_STATUS_LABELS = {
+    "helpful": "上传反馈：已帮助当前主线。",
+    "partial_helpful": "上传反馈：部分帮助当前主线。",
+    "not_helpful": "上传反馈：对当前主线没有直接帮助。",
+}
+_UNSPECIFIED_DOCUMENT_TYPE_LABEL = "其他材料 / 暂不指定类型"
+_DOCUMENT_TYPE_SELECTION_CANCELLED = object()
 
 
 def _client() -> ChainlitBackendClient:
-    return ChainlitBackendClient()
+    configured_base_url = os.getenv("CHAINLIT_BACKEND_BASE_URL")
+    if configured_base_url:
+        return ChainlitBackendClient(base_url=configured_base_url)
+
+    from app.main import app as fastapi_app
+
+    return ChainlitBackendClient(app=fastapi_app)
+
+
+def _map_interview_status(status: str | None) -> str:
+    if not status:
+        return "状态待确认"
+    return _INTERVIEW_STATUS_LABELS.get(status, "状态待确认")
+
+
+def _map_risk_level(risk_level: str | None) -> str:
+    if not risk_level:
+        return "风险待确认"
+    return _RISK_LEVEL_LABELS.get(risk_level, "风险待确认")
+
+
+def _map_allowed_next_actions(actions: list[str]) -> str:
+    if not actions:
+        return "暂无"
+    return "、".join(
+        _ALLOWED_NEXT_ACTION_LABELS.get(action, "请按当前指引继续操作")
+        for action in actions
+    )
 
 
 def _format_user_report(report: dict) -> str:
     lines = [
         f"当前结论：{report.get('outcome_label', '未知')}",
         f"摘要：{report.get('summary', '暂无摘要')}",
+        (
+            "当前状态："
+            f"{_map_interview_status(report.get('interview_status'))}"
+            f"（{_map_risk_level(report.get('risk_level'))}）"
+        ),
+        f"当前关键问题：{report.get('current_key_question') or '暂无'}",
+        f"当前关键证明：{report.get('current_key_proof') or '暂无'}",
     ]
 
     missing_evidence = list(report.get("missing_evidence", []) or [])
     if missing_evidence:
         lines.append(f"缺失材料：{', '.join(missing_evidence)}")
+
+    lines.append(
+        "建议动作："
+        + _map_allowed_next_actions(list(report.get("allowed_next_actions", []) or []))
+    )
 
     recommendations = list(report.get("recommended_improvements", []) or [])
     if recommendations:
@@ -54,6 +123,7 @@ def _save_session_state(
     cl.user_session.set("declared_family", declared_family)
     cl.user_session.set("required_initial_package", required_initial_package)
     cl.user_session.set("last_governor_decision", None)
+    cl.user_session.set("last_gate_progress", None)
     cl.user_session.set("pending_requested_documents", list(required_initial_package))
 
 
@@ -78,12 +148,10 @@ def _build_session_actions(pending_requested_documents: list[str]) -> list[cl.Ac
     return actions
 
 
-async def _choose_document_type(options: list[str]) -> str | None:
+async def _choose_document_type(options: list[str]) -> str | None | object:
     unique_options = list(dict.fromkeys(options))
     if not unique_options:
         return None
-    if len(unique_options) == 1:
-        return unique_options[0]
 
     selection = await cl.AskActionMessage(
         content="请先选择这份材料对应的类型",
@@ -94,11 +162,18 @@ async def _choose_document_type(options: list[str]) -> str | None:
                 label=option,
             )
             for option in unique_options
+        ]
+        + [
+            cl.Action(
+                name="select_document_type",
+                payload={"document_type": None},
+                label=_UNSPECIFIED_DOCUMENT_TYPE_LABEL,
+            )
         ],
         timeout=180,
     ).send()
     if not selection:
-        return None
+        return _DOCUMENT_TYPE_SELECTION_CANCELLED
     return selection["payload"]["document_type"]
 
 
@@ -108,11 +183,17 @@ async def _send_report_actions() -> None:
     )
     await cl.Message(
         content=(
-            "可随时查看当前报告。若仍缺材料，可点击“上传材料”或使用输入框附件按钮上传 "
+            "可继续回答当前问题。若当前最缺材料，可点击“上传材料”或使用输入框附件按钮随时补充 "
             "PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
         ),
         actions=_build_session_actions(pending_requested_documents),
     ).send()
+
+
+def _build_soft_gate_cta(requested_documents: list[str]) -> str | None:
+    if not requested_documents:
+        return None
+    return f"当前最缺 {requested_documents[0]}，可现在上传，也可继续解释。"
 
 
 async def _prompt_for_required_files(requested_documents: list[str]) -> None:
@@ -121,6 +202,32 @@ async def _prompt_for_required_files(requested_documents: list[str]) -> None:
         return
 
     client = _client()
+    uploaded_any = False
+    if not requested_documents:
+        files = await cl.AskFileMessage(
+            content=(
+                "请上传你认为有帮助的材料。"
+                "可先不指定类型，系统会尝试自行归类。"
+                "仅支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
+            ),
+            accept=_UPLOAD_ACCEPT,
+            max_files=1,
+            max_size_mb=MAX_UPLOAD_SIZE_MB,
+            timeout=180,
+        ).send()
+        if files:
+            item = files[0]
+            raw_bytes = Path(item.path).read_bytes()
+            response = await client.upload_file(
+                session_id,
+                item.name,
+                raw_bytes,
+                item.type,
+                document_type=None,
+            )
+            await _handle_upload_response(response)
+            uploaded_any = True
+
     for document_type in requested_documents:
         files = await cl.AskFileMessage(
             content=(
@@ -143,12 +250,38 @@ async def _prompt_for_required_files(requested_documents: list[str]) -> None:
             item.type,
             document_type=document_type,
         )
-        feedback_message = response.get("feedback_message")
-        if feedback_message:
-            await cl.Message(content=feedback_message).send()
+        await _handle_upload_response(response)
+        uploaded_any = True
 
-    cl.user_session.set("pending_requested_documents", list(requested_documents))
-    await cl.Message(content="材料已接收，请继续发送下一条消息。").send()
+    if uploaded_any:
+        await cl.Message(content="材料已接收，可继续回答或继续上传。").send()
+
+
+def _format_upload_feedback(response: dict) -> str | None:
+    main_flow_feedback = response.get("main_flow_feedback") or {}
+    feedback_message = (
+        main_flow_feedback.get("message") or response.get("feedback_message") or ""
+    ).strip()
+    if not feedback_message:
+        return None
+
+    status = main_flow_feedback.get("status")
+    status_label = _UPLOAD_FEEDBACK_STATUS_LABELS.get(status)
+    if not status_label:
+        return feedback_message
+    return f"{status_label}\n{feedback_message}"
+
+
+async def _handle_upload_response(response: dict) -> None:
+    cl.user_session.set(
+        "pending_requested_documents",
+        list(response.get("requested_documents", []) or []),
+    )
+    cl.user_session.set("last_gate_progress", response.get("gate_progress"))
+
+    feedback = _format_upload_feedback(response)
+    if feedback:
+        await cl.Message(content=feedback).send()
 
 
 async def _upload_message_elements(message: cl.Message) -> int:
@@ -162,9 +295,6 @@ async def _upload_message_elements(message: cl.Message) -> int:
 
     uploaded_count = 0
     client = _client()
-    pending_requested_documents = list(cl.user_session.get("pending_requested_documents", []))
-    required_initial_package = list(cl.user_session.get("required_initial_package", []))
-    upload_options = pending_requested_documents or required_initial_package
     for element in elements:
         path = getattr(element, "path", None)
         name = getattr(element, "name", None)
@@ -173,7 +303,19 @@ async def _upload_message_elements(message: cl.Message) -> int:
 
         raw_bytes = Path(path).read_bytes()
         content_type = getattr(element, "mime", None) or "application/octet-stream"
-        document_type = await _choose_document_type(upload_options)
+        pending_requested_documents = list(
+            cl.user_session.get("pending_requested_documents", [])
+        )
+        required_initial_package = list(
+            cl.user_session.get("required_initial_package", [])
+        )
+        upload_options = pending_requested_documents or required_initial_package
+        if upload_options:
+            document_type = await _choose_document_type(upload_options)
+            if document_type is _DOCUMENT_TYPE_SELECTION_CANCELLED:
+                continue
+        else:
+            document_type = None
         response = await client.upload_file(
             session_id,
             name,
@@ -181,9 +323,7 @@ async def _upload_message_elements(message: cl.Message) -> int:
             content_type,
             document_type,
         )
-        feedback_message = response.get("feedback_message")
-        if feedback_message:
-            await cl.Message(content=feedback_message).send()
+        await _handle_upload_response(response)
         uploaded_count += 1
 
     return uploaded_count
@@ -195,14 +335,17 @@ async def upload_requested_documents(_action) -> None:
     required_initial_package = list(cl.user_session.get("required_initial_package", []))
     upload_options = requested_documents or required_initial_package
     if not upload_options:
-        await cl.Message(content="当前没有可上传的材料类型。").send()
+        await _prompt_for_required_files([])
         return
     if requested_documents:
         await _prompt_for_required_files(requested_documents)
         return
 
     document_type = await _choose_document_type(upload_options)
-    if not document_type:
+    if document_type is _DOCUMENT_TYPE_SELECTION_CANCELLED:
+        return
+    if document_type is None:
+        await _prompt_for_required_files([])
         return
     await _prompt_for_required_files([document_type])
 
@@ -260,7 +403,8 @@ async def on_chat_start() -> None:
     await cl.Message(
         content=(
             f"已创建 {declared_family} 会话。\n"
-            f"必需材料包：{', '.join(required['required_initial_package'])}\n"
+            f"当前建议优先准备：{', '.join(required['required_initial_package'])}\n"
+            "你可以先开始回答，也可以随时上传材料补充主线。\n"
             "上传支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
         )
     ).send()
@@ -276,28 +420,30 @@ async def on_message(message: cl.Message) -> None:
 
     uploaded_count = await _upload_message_elements(message)
     if uploaded_count and not message.content.strip():
-        await cl.Message(content="材料已接收，请继续发送下一条消息。").send()
+        await cl.Message(content="材料已接收，可继续回答或继续上传。").send()
         await _send_report_actions()
         return
+    if not uploaded_count and getattr(message, "elements", None) and not message.content.strip():
+        return
 
-    previous_pending = cl.user_session.get("pending_requested_documents", [])
     response = await _client().post_message(session_id, message.content)
     cl.user_session.set("last_governor_decision", response["governor_decision"])
+    cl.user_session.set("last_gate_progress", response.get("gate_progress"))
     await cl.Message(content=response["assistant_message"]).send()
 
     requested_documents = list(response.get("requested_documents", []))
     gate_overall_status = (
         response.get("gate_progress", {}) or {}
     ).get("overall_status")
-    should_prompt_upload = (
+    should_send_soft_gate_cta = (
         response["governor_decision"] == "need_more_evidence"
         and bool(requested_documents)
-        and requested_documents != previous_pending
         and gate_overall_status != "waiting_for_parse"
     )
-    if should_prompt_upload:
-        await _prompt_for_required_files(requested_documents)
-    else:
-        cl.user_session.set("pending_requested_documents", requested_documents)
+    cl.user_session.set("pending_requested_documents", requested_documents)
+    if should_send_soft_gate_cta:
+        cta_message = _build_soft_gate_cta(requested_documents)
+        if cta_message:
+            await cl.Message(content=cta_message).send()
 
     await _send_report_actions()

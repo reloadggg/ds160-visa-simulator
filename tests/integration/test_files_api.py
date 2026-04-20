@@ -9,6 +9,7 @@ import fitz
 from app.db.base import Base
 from app.db.models import DocumentRecord, JobRecord, SessionRecord
 from app.db.session import get_db
+from app.domain.runtime import build_initial_gate_status
 from app.main import app
 
 
@@ -177,3 +178,220 @@ def test_upload_file_returns_feedback_message_for_document_type(
     payload = response.json()
     assert payload["document_type"] == "passport_bio"
     assert "passport_bio" in payload["feedback_message"]
+
+
+def test_upload_file_reports_helpful_feedback_for_current_key_proof(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_id = "sess-current-proof"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="upload-helpful",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    class RelevantExtractionResult:
+        fields = [object()]
+
+    monkeypatch.setattr(
+        "app.services.file_service.MultimodalExtractionService.extract",
+        lambda self, **kwargs: RelevantExtractionResult(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        data={"document_type": "funding_proof"},
+        files={
+            "file": (
+                "funding-proof.pdf",
+                build_pdf_bytes("Parent sponsor bank statement"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+    assert payload["main_flow_feedback"] == {
+        "status": "helpful",
+        "supported_document_type": "funding_proof",
+        "current_focus_document_type": "funding_proof",
+        "message": (
+            "这份材料对当前关键证明 funding_proof 有帮助。"
+            " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
+        ),
+    }
+
+
+def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_id = "sess-partial-help"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="upload-partial-help",
+            required_documents=["ds160", "funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    class RelevantExtractionResult:
+        fields = [object()]
+
+    monkeypatch.setattr(
+        "app.services.file_service.MultimodalExtractionService.extract",
+        lambda self, **kwargs: RelevantExtractionResult(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        data={"document_type": "funding_proof"},
+        files={
+            "file": (
+                "funding-proof.pdf",
+                build_pdf_bytes("Parent sponsor bank statement"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["requested_documents"] == ["ds160"]
+    assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+    assert payload["main_flow_feedback"] == {
+        "status": "partial_helpful",
+        "supported_document_type": "funding_proof",
+        "current_focus_document_type": "ds160",
+        "message": (
+            "这份材料对 funding_proof 有帮助，但当前主线没有改变。"
+            " 当前最缺的关键证明是 ds160。"
+        ),
+    }
+
+
+def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_id = "sess-not-helpful"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="upload-not-helpful",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    class IrrelevantExtractionResult:
+        fields: list[object] = []
+
+    monkeypatch.setattr(
+        "app.services.file_service.MultimodalExtractionService.extract",
+        lambda self, **kwargs: IrrelevantExtractionResult(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        data={"document_type": "funding_proof"},
+        files={
+            "file": (
+                "funding-proof.pdf",
+                build_pdf_bytes("Tourism flyer"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["gate_progress"]["overall_status"] == "pending_documents"
+    assert payload["gate_progress"]["uploaded_count"] == 0
+    assert payload["main_flow_feedback"] == {
+        "status": "not_helpful",
+        "supported_document_type": None,
+        "current_focus_document_type": "funding_proof",
+        "message": (
+            "这份材料对当前主线没有直接帮助。"
+            " 当前最缺的关键证明是 funding_proof。"
+        ),
+    }
+
+
+def test_upload_file_maps_funding_alias_into_gate_flow(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_id = "sess-funding-alias"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="upload-funding-alias",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    class RelevantExtractionResult:
+        fields = [object()]
+
+    monkeypatch.setattr(
+        "app.services.file_service.MultimodalExtractionService.extract",
+        lambda self, **kwargs: RelevantExtractionResult(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        data={"document_type": "bank_statement"},
+        files={
+            "file": (
+                "bank-statement.pdf",
+                build_pdf_bytes("Parent sponsor bank statement"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+    assert payload["main_flow_feedback"] == {
+        "status": "helpful",
+        "supported_document_type": "funding_proof",
+        "current_focus_document_type": "funding_proof",
+        "message": (
+            "这份材料对当前关键证明 funding_proof 有帮助。"
+            " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
+        ),
+    }

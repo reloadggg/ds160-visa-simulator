@@ -2,12 +2,12 @@ from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
 
 from app.db.base import Base
-from app.db.models import SessionRecord
+from app.db.models import SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
 from app.workers.parse_worker import ParseWorker
@@ -101,8 +101,20 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
 
     assert record is not None
+    assert first.json()["assistant_message"] != second.json()["assistant_message"]
+    assert [(turn.turn_index, turn.role) for turn in turns] == [
+        (1, "user"),
+        (2, "assistant"),
+        (3, "user"),
+        (4, "assistant"),
+    ]
     assert len(record.runtime_trace_json) == 14
     assert len(record.score_history_json) == 2
     assert len(record.governor_history_json) == 2

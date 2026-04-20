@@ -23,6 +23,8 @@ def get_user_report(
         profile_json=record.profile_json,
         phase_state=record.phase_state,
         gate_status=record.gate_status_json,
+        interviewer_state_json=record.interviewer_state_json,
+        current_focus_json=record.current_focus_json,
     )
 
 
@@ -42,4 +44,6 @@ def get_internal_report(
         runtime_trace=record.runtime_trace_json,
         score_history=record.score_history_json,
         governor_history=record.governor_history_json,
+        interviewer_state_json=record.interviewer_state_json,
+        current_focus_json=record.current_focus_json,
     )

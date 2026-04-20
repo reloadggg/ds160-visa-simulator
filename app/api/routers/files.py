@@ -38,4 +38,7 @@ async def upload_file(
         "document_type": result.document_type,
         "feedback_message": result.feedback_message,
         "relevant": result.relevant,
+        "main_flow_feedback": result.main_flow_feedback,
+        "requested_documents": list(result.requested_documents or []),
+        "gate_progress": result.gate_progress,
     }

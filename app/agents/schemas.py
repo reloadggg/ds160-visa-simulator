@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.domain.contracts import FieldState
 from app.domain.evidence import DocumentSourceType
 
-ConsistencyFindingType = Literal["gap", "hard_conflict"]
+ConsistencyFindingType = Literal[
+    "gap",
+    "hard_conflict",
+    "record_conflict",
+    "evasive_answer",
+    "unresolved_key_proof_gap",
+]
 RiskSeverity = Literal["low", "medium", "high"]
 FindingStatus = Literal["supported", "confirmed"]
 DecisionHint = Literal[
@@ -96,6 +103,107 @@ class InterviewNextAction(BaseModel):
     assistant_message: str
     requested_documents: list[str] = Field(default_factory=list)
     decision_hint: DecisionHint
+
+    @field_validator("assistant_message")
+    @classmethod
+    def validate_assistant_message(cls, value: str) -> str:
+        message = value.strip()
+        if not message:
+            raise ValueError("assistant_message must not be empty")
+        return message
+
+    @field_validator("requested_documents")
+    @classmethod
+    def validate_requested_documents(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            document_type = item.strip()
+            if not document_type:
+                continue
+            if document_type not in normalized:
+                normalized.append(document_type)
+        if len(normalized) > 1:
+            raise ValueError("requested_documents must contain at most one document")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_single_focus_output(self) -> "InterviewNextAction":
+        if self._looks_like_summary_or_checklist(self.assistant_message):
+            raise ValueError(
+                "assistant_message must stay focused on one point without summary or checklist output"
+            )
+        if self.requested_documents and not self._looks_like_material_request(
+            self.assistant_message,
+            self.requested_documents,
+        ):
+            raise ValueError(
+                "assistant_message must align with the single requested document focus"
+            )
+        return self
+
+    @staticmethod
+    def _looks_like_summary_or_checklist(message: str) -> bool:
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        bullet_pattern = re.compile(
+            r"^(?:[-*•]|\d+[.)]|[一二三四五六七八九十]+[、.)])\s*"
+        )
+        if "\n\n" in message:
+            return True
+        if len(lines) >= 3:
+            return True
+        if sum(bool(bullet_pattern.match(line)) for line in lines) >= 2:
+            return True
+        normalized = " ".join(lines).lower()
+        obvious_markers = (
+            "总结如下",
+            "材料清单",
+            "请提供以下",
+            "以下材料",
+            "需要准备",
+            "please provide the following",
+            "the following documents",
+            "summary:",
+            "in summary",
+            "checklist",
+        )
+        if any(marker in normalized for marker in obvious_markers):
+            return True
+        return bool(re.search(r"\b1[.)]\s+.+\b2[.)]\s+", normalized))
+
+    @staticmethod
+    def _looks_like_material_request(
+        message: str,
+        requested_documents: list[str],
+    ) -> bool:
+        normalized = message.lower()
+        request_markers = (
+            "upload",
+            "provide",
+            "submit",
+            "send",
+            "document",
+            "documents",
+            "proof",
+            "evidence",
+            "材料",
+            "证明",
+            "补充",
+            "上传",
+            "提供",
+            "提交",
+        )
+        if any(marker in normalized for marker in request_markers):
+            return True
+
+        for document_type in requested_documents:
+            aliases = {
+                document_type.lower(),
+                document_type.lower().replace("_", " "),
+                document_type.lower().replace("_", ""),
+            }
+            if any(alias and alias in normalized for alias in aliases):
+                return True
+        return False
 
 
 class AgentRuntimeDeps(BaseModel):

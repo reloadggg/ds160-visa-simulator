@@ -29,6 +29,8 @@ class SessionRepository:
             runtime_trace_json=empty_runtime_trace(),
             score_history_json=empty_score_history(),
             governor_history_json=empty_governor_history(),
+            interviewer_state_json={},
+            current_focus_json={},
         )
         self.db.add(record)
         self.db.commit()

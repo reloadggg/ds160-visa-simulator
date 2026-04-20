@@ -9,6 +9,7 @@ from app.services.extractor_service import ExtractorService
 @pytest.mark.live_llm
 def test_live_extractor_maps_parental_funding_via_agent_runtime(
     live_db_session_factory,
+    live_expected_runtime_model,
     monkeypatch,
 ) -> None:
     profile = ApplicantProfile.minimal("profile-live-extractor-1")
@@ -42,7 +43,13 @@ def test_live_extractor_maps_parental_funding_via_agent_runtime(
     assert updated.funding["primary_source"] == "parents"
     assert updated.field_states["/funding/primary_source"].state.value == "claimed"
     assert updated.field_provenance["/funding/primary_source"].evidence_refs == []
-    assert build_calls == [("extractor_agent", "interview_turn", "gpt-5.4")]
+    assert build_calls == [
+        (
+            "extractor_agent",
+            "interview_turn",
+            live_expected_runtime_model("extractor_agent", "interview_turn"),
+        )
+    ]
     assert run_calls
     assert run_calls[-1] == "live-extractor-1"
 
@@ -50,6 +57,7 @@ def test_live_extractor_maps_parental_funding_via_agent_runtime(
 @pytest.mark.live_llm
 def test_live_extractor_keeps_unknown_when_funding_not_decided(
     live_db_session_factory,
+    live_expected_runtime_model,
     monkeypatch,
 ) -> None:
     profile = ApplicantProfile.minimal("profile-live-extractor-2")
@@ -82,6 +90,12 @@ def test_live_extractor_keeps_unknown_when_funding_not_decided(
 
     assert updated.field_states["/funding/primary_source"].state.value == "unknown"
     assert "primary_source" not in updated.funding
-    assert build_calls == [("extractor_agent", "interview_turn", "gpt-5.4")]
+    assert build_calls == [
+        (
+            "extractor_agent",
+            "interview_turn",
+            live_expected_runtime_model("extractor_agent", "interview_turn"),
+        )
+    ]
     assert run_calls
     assert run_calls[-1] == "live-extractor-2"

@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import asyncio
 
 from fastapi.testclient import TestClient
 import pytest
@@ -12,6 +13,7 @@ from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
 from app.workers.parse_worker import ParseWorker
+from app.workers.parse_worker import stop_parse_worker_runtime
 
 
 def build_pdf_bytes(*pages: str) -> bytes:
@@ -52,11 +54,13 @@ def client(
         finally:
             db.close()
 
+    asyncio.run(stop_parse_worker_runtime(app))
     monkeypatch.setenv("PARSE_WORKER_INLINE", "0")
     app.state.parse_worker_session_factory = None
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
+    asyncio.run(stop_parse_worker_runtime(app))
     app.dependency_overrides.clear()
     app.state.parse_worker_session_factory = None
 

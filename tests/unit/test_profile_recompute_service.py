@@ -142,6 +142,222 @@ def test_recompute_session_clears_stale_documented_state_without_evidence(
         engine.dispose()
 
 
+def test_recompute_session_preserves_claimed_funding_without_document_evidence(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'profile-recompute-claimed-funding.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    profile = ApplicantProfile.minimal("profile-sess-1")
+    profile.funding["primary_source"] = "self"
+    profile.field_states["/funding/primary_source"] = FieldStateRecord(
+        state=FieldState.CLAIMED
+    )
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    profile_json=profile.model_dump(mode="json"),
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            recomputed = ProfileRecomputeService(db).recompute_session("sess-1")
+
+            assert recomputed.funding["primary_source"] == "self"
+            assert (
+                recomputed.field_states["/funding/primary_source"].state
+                == FieldState.CLAIMED
+            )
+            assert (
+                recomputed.field_provenance["/funding/primary_source"].evidence_refs
+                == []
+            )
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_recompute_session_preserves_claimed_identity_field_without_documents(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'profile-recompute-claimed-identity.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    profile = ApplicantProfile.minimal("profile-sess-1")
+    profile.identity["passport_number"] = "P1234567"
+    profile.field_states["/identity/passport_number"] = FieldStateRecord(
+        state=FieldState.CLAIMED
+    )
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    profile_json=profile.model_dump(mode="json"),
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            recomputed = ProfileRecomputeService(db).recompute_session("sess-1")
+
+            assert recomputed.identity["passport_number"] == "P1234567"
+            assert (
+                recomputed.field_states["/identity/passport_number"].state
+                == FieldState.CLAIMED
+            )
+            assert (
+                recomputed.field_provenance["/identity/passport_number"].evidence_refs
+                == []
+            )
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_recompute_session_marks_claimed_value_conflicted_when_document_disagrees(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'profile-recompute-claimed-conflict.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    profile = ApplicantProfile.minimal("profile-sess-1")
+    profile.funding["primary_source"] = "parents"
+    profile.field_states["/funding/primary_source"] = FieldStateRecord(
+        state=FieldState.CLAIMED
+    )
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    profile_json=profile.model_dump(mode="json"),
+                )
+            )
+            db.add(
+                EvidenceItemRecord(
+                    evidence_id="evi-funding",
+                    session_id="sess-1",
+                    document_id="doc-funding",
+                    chunk_id="chunk-funding",
+                    evidence_type="funding_proof",
+                    field_path="/funding/primary_source",
+                    value="self",
+                    excerpt="Self-funded bank statement",
+                    confidence=1.0,
+                    metadata_json={},
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            recomputed = ProfileRecomputeService(db).recompute_session("sess-1")
+
+            assert "primary_source" not in recomputed.funding
+            assert (
+                recomputed.field_states["/funding/primary_source"].state
+                == FieldState.CONFLICTED
+            )
+            assert (
+                recomputed.field_provenance["/funding/primary_source"].evidence_refs
+                == ["evi-funding"]
+            )
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_recompute_session_archives_claim_with_turn_metadata_when_document_disagrees(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'profile-recompute-claimed-conflict-history.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    profile = ApplicantProfile.minimal("profile-sess-1")
+    profile.funding["primary_source"] = "parents"
+    profile.field_states["/funding/primary_source"] = FieldStateRecord(
+        state=FieldState.CLAIMED
+    )
+    profile.ds160_view["turn_history"] = [
+        {
+            "turn_id": "turn-1",
+            "turn_index": 1,
+            "role": "user",
+            "content": "My parents will pay for my studies.",
+            "source": "user_message",
+        }
+    ]
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    profile_json=profile.model_dump(mode="json"),
+                )
+            )
+            db.add(
+                EvidenceItemRecord(
+                    evidence_id="evi-funding",
+                    session_id="sess-1",
+                    document_id="doc-funding",
+                    chunk_id="chunk-funding",
+                    evidence_type="funding_proof",
+                    field_path="/funding/primary_source",
+                    value="self",
+                    excerpt="Self-funded bank statement",
+                    confidence=1.0,
+                    metadata_json={},
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            recomputed = ProfileRecomputeService(db).recompute_session("sess-1")
+
+            field_history = recomputed.ds160_view["field_claim_history"][
+                "/funding/primary_source"
+            ]
+            assert field_history == [
+                {
+                    "value": "parents",
+                    "content": "My parents will pay for my studies.",
+                    "turn_id": "turn-1",
+                    "turn_index": 1,
+                    "source": "user_message",
+                }
+            ]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_recompute_session_populates_identity_and_education_from_document_evidence(
     tmp_path,
 ) -> None:
@@ -225,7 +441,7 @@ def test_recompute_session_populates_identity_and_education_from_document_eviden
         engine.dispose()
 
 
-def test_recompute_session_prefers_highest_confidence_and_clears_stale_document_fields(
+def test_recompute_session_marks_conflicting_document_evidence_and_clears_stale_fields(
     tmp_path,
 ) -> None:
     engine = create_engine(
@@ -287,8 +503,13 @@ def test_recompute_session_prefers_highest_confidence_and_clears_stale_document_
         with testing_session_local() as db:
             recomputed = ProfileRecomputeService(db).recompute_session("sess-1")
 
-            assert recomputed.identity["full_name"] == "Ada Lovelace"
-            assert "/identity/nationality" not in recomputed.identity
+            assert "full_name" not in recomputed.identity
+            assert recomputed.field_states["/identity/full_name"].state == FieldState.CONFLICTED
+            assert recomputed.field_provenance["/identity/full_name"].evidence_refs == [
+                "evi-name-high",
+                "evi-name-low",
+            ]
+            assert "nationality" not in recomputed.identity
             assert recomputed.field_states["/identity/nationality"].state == FieldState.UNKNOWN
             assert recomputed.field_provenance["/identity/nationality"].evidence_refs == []
     finally:

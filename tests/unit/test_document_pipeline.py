@@ -198,6 +198,186 @@ def test_process_passport_and_i20_extract_structured_evidence(tmp_path) -> None:
         engine.dispose()
 
 
+def test_process_document_uses_declared_document_type_for_evidence_extraction(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-declared-type.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-passport",
+                    session_id="sess-1",
+                    filename="upload-001.txt",
+                    raw_bytes=(
+                        b"Full Name: Ada Lovelace\n"
+                        b"Passport Number: P1234567\n"
+                        b"Nationality: UK"
+                    ),
+                    artifact_json={"document_type": "passport_bio"},
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            result = DocumentPipelineService(db).process_document("doc-passport")
+            db.commit()
+
+            evidence = db.scalars(
+                select(EvidenceItemRecord).order_by(EvidenceItemRecord.field_path)
+            ).all()
+
+            assert result["evidence_count"] == 3
+            extracted = {(item.evidence_type, item.field_path): item.value for item in evidence}
+            assert extracted[("passport_bio", "/identity/full_name")] == "Ada Lovelace"
+            assert extracted[("passport_bio", "/identity/passport_number")] == "P1234567"
+            assert extracted[("passport_bio", "/identity/nationality")] == "UK"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_process_document_extracts_non_parent_funding_source(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-funding.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-funding",
+                    session_id="sess-1",
+                    filename="funding_proof.txt",
+                    raw_bytes=b"Employer sponsor bank statement for tuition support",
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            result = DocumentPipelineService(db).process_document("doc-funding")
+            db.commit()
+
+            evidence = db.scalars(select(EvidenceItemRecord)).all()
+
+            assert result["evidence_count"] == 1
+            assert len(evidence) == 1
+            assert evidence[0].field_path == "/funding/primary_source"
+            assert evidence[0].value == "employer"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_process_document_normalizes_declared_funding_document_alias(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-funding-alias.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-bank",
+                    session_id="sess-1",
+                    filename="upload-001.txt",
+                    raw_bytes=b"Employer sponsor bank statement for tuition support",
+                    artifact_json={"document_type": "bank_statement"},
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            DocumentPipelineService(db).process_document("doc-bank")
+            db.commit()
+
+            document = DocumentRepository(db).get_document("doc-bank")
+            evidence = db.scalars(select(EvidenceItemRecord)).all()
+
+            assert document is not None
+            assert document.artifact_json["metadata"]["document_type"] == "funding_proof"
+            assert len(evidence) == 1
+            assert evidence[0].evidence_type == "funding_proof"
+            assert evidence[0].value == "employer"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_process_document_preserves_gate_feedback_metadata_from_upload_stage(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-upload-feedback.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="passport_bio.txt",
+                    raw_bytes=b"Travel flyer",
+                    artifact_json={
+                        "document_type": "passport_bio",
+                        "counts_toward_gate": False,
+                        "feedback_message": "这份文件看起来不像当前要求的 passport_bio 材料，请检查后重新上传。",
+                        "relevant": False,
+                        "main_flow_feedback": {
+                            "status": "not_helpful",
+                            "supported_document_type": None,
+                            "current_focus_document_type": "passport_bio",
+                            "message": "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 passport_bio。",
+                        },
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            DocumentPipelineService(db).process_document("doc-1")
+            db.commit()
+
+            document = DocumentRepository(db).get_document("doc-1")
+
+            assert document is not None
+            assert document.artifact_json["metadata"]["document_type"] == "passport_bio"
+            assert document.artifact_json["metadata"]["counts_toward_gate"] is False
+            assert document.artifact_json["metadata"]["feedback_message"] == (
+                "这份文件看起来不像当前要求的 passport_bio 材料，请检查后重新上传。"
+            )
+            assert document.artifact_json["metadata"]["relevant"] is False
+            assert document.artifact_json["metadata"]["main_flow_feedback"] == {
+                "status": "not_helpful",
+                "supported_document_type": None,
+                "current_focus_document_type": "passport_bio",
+                "message": "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 passport_bio。",
+            }
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_process_supported_pdf_uses_multimodal_structured_extraction(tmp_path) -> None:
     class StubMultimodalService:
         def __init__(self) -> None:

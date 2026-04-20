@@ -1,10 +1,12 @@
 from collections.abc import Generator
 
 from fastapi.testclient import TestClient
+import fitz
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agents.model_factory import AgentModelFactory
 from app.core.settings import settings
 from app.db.base import Base
 from app.db.session import get_db
@@ -67,3 +69,29 @@ def live_api_client(live_db_session_factory) -> Generator[TestClient, None, None
         app.dependency_overrides.pop(get_db, None)
     else:
         app.dependency_overrides[get_db] = previous_override
+
+
+@pytest.fixture()
+def live_expected_runtime_model():
+    factory = AgentModelFactory()
+
+    def _resolve(module_key: str, stage_key: str) -> str | None:
+        return factory.registry.get(module_key, stage_key).get("model")
+
+    return _resolve
+
+
+def build_pdf_bytes(*pages: str) -> bytes:
+    pdf = fitz.open()
+    for text in pages:
+        page = pdf.new_page()
+        page.insert_text((72, 72), text)
+    try:
+        return pdf.tobytes()
+    finally:
+        pdf.close()
+
+
+@pytest.fixture()
+def live_build_pdf_bytes():
+    return build_pdf_bytes

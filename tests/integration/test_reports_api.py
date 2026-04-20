@@ -51,6 +51,7 @@ def test_user_report_returns_summary_shape(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "outcome_label" in response.json()
+    assert "interview_status" in response.json()
 
 
 def test_reports_api_returns_gate_review_copy_and_internal_histories(
@@ -101,6 +102,7 @@ def test_reports_api_returns_gate_review_copy_and_internal_histories(
     internal_response = client.get(f"/v1/sessions/{session_id}/reports/internal")
 
     assert user_response.status_code == 200
+    assert user_response.json()["interview_status"] == "waiting_key_proof"
     assert user_response.json()["outcome_label"] == "补件审核中"
     assert (
         user_response.json()["summary"]
@@ -180,8 +182,45 @@ def test_reports_api_returns_interview_copy(
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["interview_status"] == "continue_interview"
     assert payload["outcome_label"] == "正式问答进行中"
     assert payload["summary"] == "当前已进入正式 interview 阶段，可继续回答后续问题。"
     assert payload["recommended_improvements"] == [
         "继续回答后续问题，并保持叙事一致。",
     ]
+
+
+def test_reports_api_distinguishes_high_risk_review_from_simulated_refusal(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    high_risk_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    high_risk_session_id = high_risk_resp.json()["session_id"]
+    refusal_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    refusal_session_id = refusal_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        high_risk_record = db.get(SessionRecord, high_risk_session_id)
+        refusal_record = db.get(SessionRecord, refusal_session_id)
+        assert high_risk_record is not None
+        assert refusal_record is not None
+
+        for record, decision in (
+            (high_risk_record, "high_risk_review"),
+            (refusal_record, "simulated_refusal"),
+        ):
+            record.phase_state = "interview"
+            record.current_governor_decision = decision
+            record.profile_json = {"funding": {"primary_source": "self"}}
+            db.add(record)
+        db.commit()
+
+    high_risk_response = client.get(f"/v1/sessions/{high_risk_session_id}/reports/user")
+    refusal_response = client.get(f"/v1/sessions/{refusal_session_id}/reports/user")
+
+    assert high_risk_response.status_code == 200
+    assert refusal_response.status_code == 200
+    assert high_risk_response.json()["interview_status"] == "high_risk_review"
+    assert high_risk_response.json()["outcome_label"] == "高风险待复核"
+    assert refusal_response.json()["interview_status"] == "simulated_refusal"
+    assert refusal_response.json()["outcome_label"] == "模拟拒签结果"

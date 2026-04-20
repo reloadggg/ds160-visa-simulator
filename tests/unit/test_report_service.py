@@ -60,3 +60,35 @@ def test_user_report_stays_in_gate_review_copy_until_ready() -> None:
         == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
     )
     assert payload["recommended_improvements"] == ["等待解析完成后再继续。"]
+
+
+def test_user_report_prefers_interview_copy_when_public_status_already_continues() -> None:
+    service = ReportService()
+    gate_status = build_initial_gate_status(
+        declared_family="f1",
+        scenario_key="parent_sponsored",
+        required_documents=["funding_proof"],
+    )
+    gate_status["status"] = "pending_documents"
+
+    payload = service.user_report(
+        session_id="sess-1",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={"funding": {"primary_source": "parents"}},
+        phase_state="gate_review",
+        gate_status=gate_status,
+        interviewer_state_json={
+            "public_status": "continue_interview",
+            "current_key_question": "What is the purpose of your travel?",
+            "allowed_next_actions": ["answer_question", "continue_interview"],
+        },
+    )
+
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["outcome_label"] == "正式问答进行中"
+    assert (
+        payload["summary"]
+        == "当前已进入正式 interview 阶段，当前关键问题是：What is the purpose of your travel?"
+    )
+    assert payload["recommended_improvements"] == ["继续回答后续问题，并保持叙事一致。"]

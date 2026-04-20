@@ -8,6 +8,7 @@ from app.workers.parse_worker import ParseWorker
 @pytest.mark.live_llm
 def test_live_messages_api_requests_funding_proof(
     live_api_client,
+    live_expected_runtime_model,
     monkeypatch,
 ) -> None:
     build_calls: list[tuple[str, str, str | None]] = []
@@ -53,7 +54,13 @@ def test_live_messages_api_requests_funding_proof(
         or "upload" in payload["assistant_message"].lower()
         or "evidence" in payload["assistant_message"].lower()
     )
-    assert build_calls == [("question_agent", "interview_turn", "gpt-5.4")]
+    assert build_calls == [
+        (
+            "question_agent",
+            "interview_turn",
+            live_expected_runtime_model("question_agent", "interview_turn"),
+        )
+    ]
     assert run_calls == [session_id]
 
 
@@ -61,6 +68,8 @@ def test_live_messages_api_requests_funding_proof(
 def test_live_messages_api_continues_after_funding_document_upload(
     live_api_client,
     live_db_session_factory,
+    live_build_pdf_bytes,
+    live_expected_runtime_model,
     monkeypatch,
 ) -> None:
     build_calls: list[tuple[str, str, str | None]] = []
@@ -100,9 +109,9 @@ def test_live_messages_api_continues_after_funding_document_upload(
         f"/v1/sessions/{session_id}/files",
         files={
             "file": (
-                "funding_proof.txt",
-                b"Parent sponsor bank statement for tuition",
-                "text/plain",
+                "funding_proof.pdf",
+                live_build_pdf_bytes("Parent sponsor bank statement for tuition"),
+                "application/pdf",
             )
         },
     )
@@ -111,7 +120,10 @@ def test_live_messages_api_continues_after_funding_document_upload(
         json={"role": "user", "content": "I will study computer science."},
     )
     with live_db_session_factory() as db:
-        assert ParseWorker(db).run_once() is True
+        processed_any = False
+        while ParseWorker(db).run_once():
+            processed_any = True
+    assert processed_any is True
     response = live_api_client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "I will study computer science."},
@@ -126,5 +138,9 @@ def test_live_messages_api_continues_after_funding_document_upload(
     assert payload["assistant_message"]
     assert payload["requested_documents"] == []
     assert build_calls
-    assert build_calls[-1] == ("question_agent", "interview_turn", "gpt-5.4")
+    assert build_calls[-1] == (
+        "question_agent",
+        "interview_turn",
+        live_expected_runtime_model("question_agent", "interview_turn"),
+    )
     assert run_calls[-1] == session_id

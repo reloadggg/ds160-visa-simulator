@@ -160,3 +160,38 @@ def test_tool_based_scoring_does_not_misclassify_documented_parent_funding(
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_tool_based_scoring_does_not_turn_requested_documents_into_missing_evidence(
+    monkeypatch,
+) -> None:
+    profile = ApplicantProfile.minimal("profile-tool-score-3")
+    profile.visa_intent["declared_family"] = "f1"
+    findings = ConsistencyService().evaluate(profile)
+
+    monkeypatch.setattr(
+        "app.services.scoring_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "category_fit": 72,
+                    "document_readiness": 64,
+                    "narrative_consistency": 68,
+                    "confidence": 70,
+                    "risk_flags": [],
+                    "missing_evidence": [],
+                    "requested_documents": ["funding_proof"],
+                },
+            ),
+            {"model": "test"},
+        ),
+    )
+
+    score = ScoringService(db=object()).propose(
+        profile,
+        findings=findings,
+        scoring_stage="interview_turn",
+    )
+
+    assert score.missing_evidence == []

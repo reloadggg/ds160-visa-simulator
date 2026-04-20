@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import DocumentRecord, JobRecord, SessionRecord
+from app.domain.document_types import normalize_document_type
 from app.domain.runtime import GateOverallStatus
 from app.repositories.session_repo import SessionRepository
 
@@ -46,7 +47,10 @@ class GateRuntimeService:
         for item in required_documents:
             doc_type = item["document_type"]
             matched_documents = [
-                document for document in documents if self._matches_document_type(document, doc_type)
+                document
+                for document in documents
+                if self._counts_toward_gate(document)
+                and self._matches_document_type(document, doc_type)
             ]
             matched_jobs = [
                 job
@@ -98,11 +102,9 @@ class GateRuntimeService:
         gate_status = record.gate_status_json or {}
         overall_status = gate_status.get("status", GateOverallStatus.PENDING_DOCUMENTS)
         gate_progress = self._build_gate_progress(gate_status)
-        requested_documents = [
-            item["document_type"]
-            for item in gate_status.get("required_documents", [])
-            if not item.get("meets_minimum_fields", False)
-        ]
+        requested_documents = self._primary_requested_documents(
+            gate_status.get("required_documents", [])
+        )
 
         if overall_status == GateOverallStatus.FAMILY_NOT_SELECTED:
             return {
@@ -151,6 +153,43 @@ class GateRuntimeService:
             "gate_progress": gate_progress,
         }
 
+    def build_gate_support(self, record: SessionRecord) -> dict:
+        gate_status = record.gate_status_json or {}
+        gate_progress = self._build_gate_progress(gate_status)
+        primary_document_item = self._pick_primary_document(
+            gate_status.get("required_documents", [])
+        )
+        support_message = self._build_support_message(primary_document_item)
+
+        return {
+            "requested_documents": (
+                []
+                if primary_document_item is None
+                else [primary_document_item["document_type"]]
+            ),
+            "primary_document": (
+                None
+                if primary_document_item is None
+                else primary_document_item["document_type"]
+            ),
+            "support_message": support_message,
+            "gate_progress": gate_progress,
+        }
+
+    def merge_interview_response(self, response: dict, record: SessionRecord) -> dict:
+        support = self.build_gate_support(record)
+        requested_documents = list(response.get("requested_documents", []))
+        assistant_message = str(response.get("assistant_message", "")).strip()
+        if not assistant_message and not requested_documents:
+            assistant_message = support["support_message"] or ""
+            requested_documents = list(support["requested_documents"])
+
+        merged = dict(response)
+        merged["assistant_message"] = assistant_message
+        merged["requested_documents"] = requested_documents
+        merged["gate_progress"] = support["gate_progress"]
+        return merged
+
     def _build_gate_progress(self, gate_status: dict) -> dict:
         documents = []
         ready_count = 0
@@ -187,15 +226,23 @@ class GateRuntimeService:
 
     def _matches_document_type(self, document: DocumentRecord, document_type: str) -> bool:
         artifact_json = document.artifact_json or {}
-        artifact_document_type = (
+        artifact_document_type = normalize_document_type(
             artifact_json.get("document_type")
             or artifact_json.get("metadata", {}).get("document_type")
         )
         if artifact_document_type is not None:
-            return artifact_document_type == document_type
+            return artifact_document_type == normalize_document_type(document_type)
 
         filename = document.filename.lower()
         return document_type in filename
+
+    def _counts_toward_gate(self, document: DocumentRecord) -> bool:
+        artifact_json = document.artifact_json or {}
+        if artifact_json.get("counts_toward_gate") is False:
+            return False
+        if artifact_json.get("metadata", {}).get("counts_toward_gate") is False:
+            return False
+        return True
 
     def _meets_minimum_fields(
         self,
@@ -220,6 +267,30 @@ class GateRuntimeService:
             .get("evidence_refs", [])
         )
         return field_state == "documented" and bool(evidence_refs)
+
+    def _pick_primary_document(self, required_documents: list[dict]) -> dict | None:
+        for item in required_documents:
+            if item.get("status") == "missing":
+                return item
+        for item in required_documents:
+            if not item.get("meets_minimum_fields", False):
+                return item
+        return None
+
+    def _build_support_message(self, primary_document_item: dict | None) -> str | None:
+        if primary_document_item is None:
+            return None
+
+        document_type = primary_document_item["document_type"]
+        if primary_document_item.get("status") == "uploaded":
+            return f"当前最关键的证明是 {document_type}，系统正在等待解析结果。"
+        return f"当前最缺的关键证明是 {document_type}。"
+
+    def _primary_requested_documents(self, required_documents: list[dict]) -> list[str]:
+        primary_document_item = self._pick_primary_document(required_documents)
+        if primary_document_item is None:
+            return []
+        return [primary_document_item["document_type"]]
 
     def _persist(self, record: SessionRecord, *, save: bool) -> SessionRecord:
         if save:

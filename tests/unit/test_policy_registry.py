@@ -58,6 +58,10 @@ def test_runtime_policy_registry_get_returns_defensive_copy() -> None:
 def test_runtime_policy_registry_applies_default_env_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(
+        "RUNTIME_SCORING_AGENT_INTERVIEW_TURN_REASONING_EFFORT",
+        raising=False,
+    )
     monkeypatch.setenv("RUNTIME_DEFAULT_MODEL", "gpt-5.4")
     monkeypatch.setenv("RUNTIME_DEFAULT_REASONING_EFFORT", "high")
 

@@ -119,6 +119,206 @@ def test_refresh_session_marks_uploaded_funding_proof_waiting_for_parse(
         engine.dispose()
 
 
+def test_refresh_session_ignores_uploaded_document_marked_outside_gate_flow(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-ignore-uploaded.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="ignore-uploaded",
+                        required_documents=["funding_proof"],
+                    ),
+                )
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="funding_proof.txt",
+                    status="uploaded",
+                    artifact_json={
+                        "status": "uploaded",
+                        "filename": "funding_proof.txt",
+                        "document_type": "funding_proof",
+                        "counts_toward_gate": False,
+                    },
+                )
+            )
+            db.add(
+                JobRecord(
+                    job_id="job-1",
+                    session_id="sess-1",
+                    kind="gate_parse",
+                    status="queued",
+                    payload_json={"document_id": "doc-1"},
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            record = GateRuntimeService(db).refresh_session("sess-1")
+
+            assert record.phase_state == "gate_review"
+            assert record.gate_status_json["status"] == "pending_documents"
+            funding_doc = next(
+                item
+                for item in record.gate_status_json["required_documents"]
+                if item["document_type"] == "funding_proof"
+            )
+            assert funding_doc == {
+                "document_type": "funding_proof",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            }
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_build_gate_support_reports_primary_missing_document_without_blocking(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-support-pending.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="parent_sponsored",
+                        required_documents=["ds160", "passport_bio", "funding_proof"],
+                    ),
+                )
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="passport_bio.txt",
+                    status="uploaded",
+                    artifact_json={"status": "uploaded", "filename": "passport_bio.txt"},
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            service = GateRuntimeService(db)
+            record = service.refresh_session("sess-1")
+            support = service.build_gate_support(record)
+
+            assert support == {
+                "requested_documents": ["ds160"],
+                "primary_document": "ds160",
+                "support_message": "当前最缺的关键证明是 ds160。",
+                "gate_progress": {
+                    "overall_status": "waiting_for_parse",
+                    "ready_count": 0,
+                    "uploaded_count": 1,
+                    "missing_count": 2,
+                    "documents": [
+                        {
+                            "document_type": "ds160",
+                            "status": "missing",
+                            "is_uploaded": False,
+                            "is_parsed": False,
+                            "meets_minimum_fields": False,
+                        },
+                        {
+                            "document_type": "passport_bio",
+                            "status": "uploaded",
+                            "is_uploaded": True,
+                            "is_parsed": False,
+                            "meets_minimum_fields": False,
+                        },
+                        {
+                            "document_type": "funding_proof",
+                            "status": "missing",
+                            "is_uploaded": False,
+                            "is_parsed": False,
+                            "meets_minimum_fields": False,
+                        },
+                    ],
+                },
+            }
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_merge_interview_response_keeps_single_focus_from_interview_output(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-merge.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-merge",
+                    declared_family="f1",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="parent_sponsored",
+                        required_documents=["ds160", "passport_bio", "funding_proof"],
+                    ),
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            service = GateRuntimeService(db)
+            record = service.refresh_session("sess-merge")
+
+            merged = service.merge_interview_response(
+                {
+                    "assistant_message": "Why do you want to study in the U.S.?",
+                    "governor_decision": "continue_interview",
+                    "score_summary": {
+                        "category_fit": 65,
+                        "document_readiness": 20,
+                        "narrative_consistency": 60,
+                        "confidence": 55,
+                    },
+                    "requested_documents": [],
+                },
+                record,
+            )
+
+            assert merged["assistant_message"] == "Why do you want to study in the U.S.?"
+            assert merged["requested_documents"] == []
+            assert merged["gate_progress"]["missing_count"] == 3
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_refresh_session_keeps_pending_when_only_funding_proof_is_ready(
     tmp_path,
 ) -> None:
@@ -193,6 +393,69 @@ def test_refresh_session_keeps_pending_when_only_funding_proof_is_ready(
 
             assert record.phase_state == "gate_review"
             assert record.gate_status_json["status"] == "pending_documents"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_refresh_session_ignores_parsed_document_marked_outside_gate_flow_in_metadata(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-ignore-parsed.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="ignore-parsed",
+                        required_documents=["passport_bio"],
+                    ),
+                )
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="passport_bio.pdf",
+                    status="parsed",
+                    artifact_json={
+                        "status": "parsed",
+                        "filename": "passport_bio.pdf",
+                        "metadata": {
+                            "document_type": "passport_bio",
+                            "counts_toward_gate": False,
+                        },
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            record = GateRuntimeService(db).refresh_session("sess-1")
+
+            assert record.phase_state == "gate_review"
+            assert record.gate_status_json["status"] == "pending_documents"
+            passport_doc = next(
+                item
+                for item in record.gate_status_json["required_documents"]
+                if item["document_type"] == "passport_bio"
+            )
+            assert passport_doc == {
+                "document_type": "passport_bio",
+                "status": "missing",
+                "is_uploaded": False,
+                "is_parsed": False,
+                "meets_minimum_fields": False,
+            }
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

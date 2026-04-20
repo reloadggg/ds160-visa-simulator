@@ -22,6 +22,21 @@ class GovernorDecision(str, Enum):
     SIMULATED_REFUSAL = "simulated_refusal"
 
 
+class InterviewStateStatus(str, Enum):
+    CONTINUE_INTERVIEW = "continue_interview"
+    VERIFY_KEY_ISSUE = "verify_key_issue"
+    WAITING_KEY_PROOF = "waiting_key_proof"
+    HIGH_RISK_REVIEW = "high_risk_review"
+    SIMULATED_REFUSAL = "simulated_refusal"
+
+
+class InterviewRiskLevel(str, Enum):
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class FieldStateRecord(BaseModel):
     state: FieldState
     last_updated_at: str | None = None

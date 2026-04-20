@@ -7,6 +7,7 @@ from typing import Any
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from app.services.interviewer_prompt_registry import InterviewerPromptRegistry
 from app.services.runtime_policies import RuntimePolicyRegistry
 
 
@@ -21,7 +22,11 @@ SUPPORTED_PROVIDERS = {"openai", "openai_compatible"}
 
 
 class AgentModelFactory:
-    def __init__(self, runtime_policy_path: str | None = None) -> None:
+    def __init__(
+        self,
+        runtime_policy_path: str | None = None,
+        prompt_dir: str | None = None,
+    ) -> None:
         if runtime_policy_path is None:
             runtime_policy_path = str(
                 Path(__file__).resolve().parents[1]
@@ -29,16 +34,24 @@ class AgentModelFactory:
                 / "default.yaml"
             )
         self.registry = RuntimePolicyRegistry(runtime_policy_path)
+        self.prompt_registry = InterviewerPromptRegistry(prompt_dir=prompt_dir)
 
     def build(
         self,
         module_key: str,
         stage_key: str,
+        declared_family: str | None = None,
     ) -> tuple[OpenAIChatModel | None, dict[str, Any]]:
         try:
             runtime = self.registry.get(module_key, stage_key)
         except KeyError:
             return None, dict(EMPTY_RUNTIME)
+
+        if module_key.endswith("_agent"):
+            runtime["instructions"] = self.prompt_registry.build_instructions(
+                module_key,
+                declared_family=declared_family,
+            )
 
         if runtime.get("provider") not in SUPPORTED_PROVIDERS:
             return None, runtime
@@ -52,3 +65,13 @@ class AgentModelFactory:
         provider = OpenAIProvider(base_url=base_url, api_key=api_key)
         model = OpenAIChatModel(runtime["model"], provider=provider)
         return model, runtime
+
+    def build_instructions(
+        self,
+        module_key: str,
+        declared_family: str | None = None,
+    ) -> str:
+        return self.prompt_registry.build_instructions(
+            module_key,
+            declared_family=declared_family,
+        )

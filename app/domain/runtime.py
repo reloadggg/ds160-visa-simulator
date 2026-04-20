@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from app.domain.contracts import InterviewRiskLevel, InterviewStateStatus
 
 
 class GateOverallStatus:
@@ -77,6 +80,34 @@ class ScoreHistoryEntry(BaseModel):
 class GovernorHistoryEntry(BaseModel):
     decision: str
     summary: str | None = None
+
+
+class InterviewAllowedNextAction(str, Enum):
+    ANSWER_QUESTION = "answer_question"
+    CONTINUE_INTERVIEW = "continue_interview"
+    CLARIFY_KEY_ISSUE = "clarify_key_issue"
+    UPLOAD_KEY_PROOF = "upload_key_proof"
+    EXPLAIN_MISSING_PROOF = "explain_missing_proof"
+    WAIT_FOR_REVIEW = "wait_for_review"
+    REVIEW_REFUSAL_RESULT = "review_refusal_result"
+
+
+class InterviewStateSnapshot(BaseModel):
+    owner: str = "interviewer_runtime_service"
+    status: InterviewStateStatus
+    public_status: InterviewStateStatus
+    decision: str
+    governor_decision: str
+    next_action: str
+    decision_hint: str
+    current_key_question: str | None = None
+    current_key_proof: str | None = None
+    current_risk_code: str | None = None
+    risk_level: InterviewRiskLevel = InterviewRiskLevel.NONE
+    allowed_next_actions: list[InterviewAllowedNextAction] = Field(default_factory=list)
+    requested_documents: list[str] = Field(default_factory=list)
+    risk_codes: list[str] = Field(default_factory=list)
+    history_turn_count: int = 0
 
 
 def build_initial_gate_status(

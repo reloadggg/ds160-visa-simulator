@@ -22,11 +22,19 @@ class ScoringService:
         scoring_stage: str,
     ) -> ScoreState:
         typed_findings = self._normalize_findings(findings)
-        model, _runtime = self.model_factory.build("scoring_agent", scoring_stage)
+        declared_family = profile.visa_intent.get("declared_family")
+        model, runtime = self._build_agent_runtime(scoring_stage, declared_family)
 
         if model is not None and self.db is not None:
             try:
-                proposal = ScoringAgentRunner(model=model).run(
+                proposal = ScoringAgentRunner(
+                    model=model,
+                    instructions=runtime.get("instructions")
+                    or self.model_factory.build_instructions(
+                        "scoring_agent",
+                        declared_family=declared_family,
+                    ),
+                ).run(
                     deps=self._build_agent_deps(profile),
                     profile_payload=profile.model_dump(mode="json"),
                     findings=typed_findings,
@@ -39,6 +47,22 @@ class ScoringService:
             return self._apply_findings_guards(score, typed_findings, include_gap=False)
 
         return self._fallback_score(profile, typed_findings, scoring_stage)
+
+    def _build_agent_runtime(
+        self,
+        scoring_stage: str,
+        declared_family: str | None,
+    ) -> tuple[Any | None, dict[str, Any]]:
+        try:
+            return self.model_factory.build(
+                "scoring_agent",
+                scoring_stage,
+                declared_family=declared_family,
+            )
+        except TypeError as exc:
+            if "declared_family" not in str(exc):
+                raise
+            return self.model_factory.build("scoring_agent", scoring_stage)
 
     def _build_agent_deps(self, profile: ApplicantProfile) -> AgentRuntimeDeps:
         return AgentRuntimeDeps(
@@ -82,7 +106,7 @@ class ScoringService:
             for item in proposal.risk_flags
         ]
 
-        for item in [*proposal.missing_evidence, *proposal.requested_documents]:
+        for item in proposal.missing_evidence:
             normalized_item = self._normalize_missing_evidence_item(item)
             if normalized_item and normalized_item not in score.missing_evidence:
                 score.missing_evidence.append(normalized_item)

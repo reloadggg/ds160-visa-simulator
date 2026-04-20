@@ -13,11 +13,11 @@ class ChainlitBackendClient:
         self,
         base_url: str | None = None,
         *,
+        app: Any | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self.base_url = base_url or os.getenv(
-            "CHAINLIT_BACKEND_BASE_URL", "http://127.0.0.1:8000"
-        )
+        self.base_url = base_url or os.getenv("CHAINLIT_BACKEND_BASE_URL")
+        self._app = app
         self._client = client
 
     async def create_session(self, declared_family: str) -> dict[str, Any]:
@@ -77,7 +77,17 @@ class ChainlitBackendClient:
     def _use_client(self):
         if self._client is not None:
             return _BorrowedAsyncClient(self._client)
-        return httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
+        if self.base_url:
+            return httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
+        if self._app is not None:
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=self._app),
+                base_url="http://chainlit.local",
+                timeout=30.0,
+            )
+        raise ValueError(
+            "Chainlit backend base URL is not configured and no local ASGI app was provided."
+        )
 
 
 class _BorrowedAsyncClient:

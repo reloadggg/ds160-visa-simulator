@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, LargeBinary, String, Text
+from sqlalchemy import JSON, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,6 +20,28 @@ class SessionRecord(Base):
     runtime_trace_json: Mapped[list] = mapped_column(JSON, default=list)
     score_history_json: Mapped[list] = mapped_column(JSON, default=list)
     governor_history_json: Mapped[list] = mapped_column(JSON, default=list)
+    interviewer_state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    current_focus_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class SessionTurnRecord(Base):
+    __tablename__ = "session_turns"
+    __table_args__ = (
+        Index(
+            "ux_session_turns_session_id_turn_index",
+            "session_id",
+            "turn_index",
+            unique=True,
+        ),
+    )
+
+    turn_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    turn_index: Mapped[int] = mapped_column(Integer)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(32))
+    content: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(64))
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class DocumentRecord(Base):
