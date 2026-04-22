@@ -4,6 +4,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.domain.evidence import (
+    DocumentAssessment,
     DocumentArtifact,
     DocumentChunk,
     DocumentSourceType,
@@ -81,9 +82,9 @@ class DocumentPipelineService:
             raise LookupError(f"Document not found: {document_id}")
 
         previous_artifact = dict(document.artifact_json or {})
-        previous_metadata = dict(previous_artifact.get("metadata", {}))
+        upload_assessment = DocumentAssessment.from_artifact(previous_artifact)
         document_type = self._normalize_document_type(
-            previous_artifact.get("document_type")
+            upload_assessment.document_type
         ) or self._classify_document_type(document.filename)
         parsed = parse_document(document.filename, document.raw_bytes)
         multimodal_result = self.multimodal_service.extract(
@@ -95,9 +96,13 @@ class DocumentPipelineService:
         if multimodal_result is not None:
             parsed = self._parsed_from_multimodal(multimodal_result)
         artifact_status = self._resolve_status(parsed.source_type)
+        upload_assessment = upload_assessment.model_copy(
+            update={"document_type": document_type}
+        )
         artifact_metadata = {
             "multimodal_used": multimodal_result is not None,
             "document_type": document_type,
+            "document_assessment": upload_assessment.to_metadata_payload(),
         }
         for key in (
             "counts_toward_gate",
@@ -105,8 +110,10 @@ class DocumentPipelineService:
             "relevant",
             "main_flow_feedback",
         ):
-            value = previous_artifact.get(key, previous_metadata.get(key))
+            value = getattr(upload_assessment, key)
             if value is not None:
+                if hasattr(value, "model_dump"):
+                    value = value.model_dump(mode="json")
                 artifact_metadata[key] = value
         artifact = DocumentArtifact(
             document_id=document.document_id,

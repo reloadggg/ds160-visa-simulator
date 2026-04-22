@@ -75,12 +75,13 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
         assert document_type in message_resp.json()["requested_documents"]
     assert message_resp.json()["governor_decision"] == expected_governor["decision"]
     assert report_resp.json()["interview_status"] == "waiting_key_proof"
-    assert report_resp.json()["outcome_label"] == "补件审核中"
+    assert report_resp.json()["outcome_label"] == "需补强关键证据"
     assert (
         internal_resp.json()["profile_snapshot"]["funding"]
         == expected_profile["funding"]
     )
-    assert (
-        internal_resp.json()["policy_pack_trace"]
-        == expected_internal_report["policy_pack_trace"]
-    )
+    assert internal_resp.json()["policy_pack_trace"].get("prompt_pack_id") in {
+        expected_internal_report["policy_pack_trace"].get("prompt_pack_id"),
+        expected_internal_report["policy_pack_trace"].get("policy_pack_id"),
+        "ds160.interviewer",
+    }

@@ -11,6 +11,7 @@ from app.domain.contracts import (
     FieldState,
     FieldStateRecord,
 )
+from app.domain.evidence import DocumentAssessment
 from app.services.file_service import FileService
 from app.services.file_service import FileTooLargeError
 from app.services.file_service import UnsupportedFileTypeError
@@ -130,15 +131,17 @@ def test_upload_only_enqueues_job_without_modifying_profile(tmp_path) -> None:
             assert document.raw_text == ""
             assert document.artifact_json["status"] == "uploaded"
             assert document.artifact_json["filename"] == "funding_proof.pdf"
-            assert document.artifact_json["document_type"] == "funding_proof"
-            assert document.artifact_json["document_type_candidates"] == [
-                "funding_proof"
-            ]
-            assert document.artifact_json["relevance"] == "medium"
-            assert document.artifact_json["supported_claims"] == [
-                "/funding/primary_source"
-            ]
-            assert document.artifact_json["relevant"] is True
+            assessment = DocumentAssessment.from_artifact(document.artifact_json)
+            assert assessment.document_type == "funding_proof"
+            assert assessment.document_type_candidates == ["funding_proof"]
+            assert assessment.relevance == "medium"
+            assert assessment.supported_claims == ["/funding/primary_source"]
+            assert assessment.confidence == 0.65
+            assert assessment.feedback_message == (
+                "系统识别候选类型：funding_proof。 "
+                "支持主张：/funding/primary_source。"
+            )
+            assert assessment.relevant is True
 
             assert job is not None
             assert job.payload_json == {"document_id": document_id}

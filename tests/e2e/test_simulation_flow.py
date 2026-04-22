@@ -242,11 +242,11 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert first_completion.status_code == 200
     first_payload = first_completion.json()
     session_id = first_payload["metadata"]["session_id"]
-    assert first_payload["metadata"] == {
-        "session_id": session_id,
-        "phase_state": "gate_review",
-        "context_mode": "new_session",
-    }
+    assert first_payload["metadata"]["session_id"] == session_id
+    assert first_payload["metadata"]["phase_state"] == "interview"
+    assert first_payload["metadata"]["context_mode"] == "new_session"
+    assert first_payload["metadata"]["governor_decision"] == "need_more_evidence"
+    assert "funding_proof" in first_payload["metadata"]["requested_documents"]
 
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
@@ -278,11 +278,10 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
 
     assert second_completion.status_code == 200
     second_payload = second_completion.json()
-    assert second_payload["metadata"] == {
-        "session_id": session_id,
-        "phase_state": "gate_review",
-        "context_mode": "existing_session",
-    }
+    assert second_payload["metadata"]["session_id"] == session_id
+    assert second_payload["metadata"]["phase_state"] == "interview"
+    assert second_payload["metadata"]["context_mode"] == "existing_session"
+    assert second_payload["metadata"]["governor_decision"] == "need_more_evidence"
 
     with db_session_factory() as db:
         processed_any = False
@@ -308,11 +307,9 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
 
     assert third_completion.status_code == 200
     third_payload = third_completion.json()
-    assert third_payload["metadata"] == {
-        "session_id": session_id,
-        "phase_state": "interview",
-        "context_mode": "existing_session",
-    }
+    assert third_payload["metadata"]["session_id"] == session_id
+    assert third_payload["metadata"]["phase_state"] == "interview"
+    assert third_payload["metadata"]["context_mode"] == "existing_session"
     assert third_payload["choices"][0]["message"]["role"] == "assistant"
     assert third_payload["choices"][0]["message"]["content"]
 

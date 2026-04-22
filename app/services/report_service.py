@@ -1,3 +1,5 @@
+from typing import Any
+
 from app.domain.contracts import GovernorDecision, InterviewStateStatus
 
 
@@ -10,14 +12,28 @@ class ReportService:
         profile_json: dict,
         phase_state: str = "intake",
         gate_status: dict | None = None,
+        runtime_view_state: dict[str, Any] | None = None,
         interviewer_state_json: dict | None = None,
         current_focus_json: dict | None = None,
     ) -> dict:
         interviewer_state_json = interviewer_state_json or {}
-        current_focus_json = current_focus_json or {}
+        runtime_view_state = self._runtime_view_state_payload(runtime_view_state)
+        has_runtime_turn = bool(runtime_view_state.get("source_turn_id"))
+        effective_interviewer_state = self._effective_interviewer_state(
+            runtime_view_state=runtime_view_state,
+            interviewer_state_json=interviewer_state_json,
+        )
+        if has_runtime_turn:
+            current_focus_json = dict(runtime_view_state.get("current_focus") or {})
+        else:
+            current_focus_json = dict(
+                runtime_view_state.get("current_focus")
+                or current_focus_json
+                or {}
+            )
         missing_evidence = self._resolve_missing_evidence(
             profile_json=profile_json,
-            interviewer_state_json=interviewer_state_json,
+            interviewer_state_json=effective_interviewer_state,
             current_focus_json=current_focus_json,
         )
         gate_status = gate_status or {}
@@ -27,20 +43,26 @@ class ReportService:
             phase_state=phase_state,
             gate_status=gate_status,
             missing_evidence=missing_evidence,
-            interviewer_state_json=interviewer_state_json,
+            interviewer_state_json=effective_interviewer_state,
         )
         risk_level = self._resolve_risk_level(
             interview_status=interview_status,
-            interviewer_state_json=interviewer_state_json,
+            interviewer_state_json=effective_interviewer_state,
         )
-        current_key_question = interviewer_state_json.get("current_key_question")
-        current_key_proof = interviewer_state_json.get("current_key_proof")
-        current_risk_code = interviewer_state_json.get("current_risk_code")
-        allowed_next_actions = list(interviewer_state_json.get("allowed_next_actions", []))
-        advisory_context = dict(interviewer_state_json.get("advisory_context", {}) or {})
-        prompt_trace = dict(interviewer_state_json.get("prompt_trace", {}) or {})
+        current_key_question = effective_interviewer_state.get("current_key_question")
+        current_key_proof = effective_interviewer_state.get("current_key_proof")
+        current_risk_code = effective_interviewer_state.get("current_risk_code")
+        allowed_next_actions = list(
+            effective_interviewer_state.get("allowed_next_actions", [])
+        )
+        advisory_context = dict(
+            effective_interviewer_state.get("advisory_context", {}) or {}
+        )
+        prompt_trace = dict(
+            effective_interviewer_state.get("prompt_trace", {}) or {}
+        )
         turn_decision = {
-            "decision": interviewer_state_json.get("decision", governor_decision),
+            "decision": effective_interviewer_state.get("decision", governor_decision),
             "current_key_question": current_key_question,
             "current_key_proof": current_key_proof,
             "current_risk_code": current_risk_code,
@@ -117,6 +139,8 @@ class ReportService:
         visa_family: str,
         governor_decision: str,
         profile_json: dict,
+        runtime_ledger: dict[str, Any] | None = None,
+        runtime_view_state: dict[str, Any] | None = None,
         runtime_trace: list | None = None,
         score_history: list | None = None,
         governor_history: list | None = None,
@@ -125,29 +149,110 @@ class ReportService:
     ) -> dict:
         interviewer_state_json = interviewer_state_json or {}
         current_focus_json = current_focus_json or {}
+        runtime_ledger_payload = self._runtime_ledger_payload(runtime_ledger)
+        runtime_view_state_payload = self._runtime_view_state_payload(runtime_view_state)
+        runtime_trace_payload = self._legacy_event_payloads(
+            runtime_ledger_payload,
+            event_type="trace",
+        ) or list(runtime_trace or [])
+        score_history_payload = self._legacy_event_payloads(
+            runtime_ledger_payload,
+            event_type="scorer",
+        ) or list(score_history or [])
+        governor_history_payload = self._legacy_event_payloads(
+            runtime_ledger_payload,
+            event_type="boundary",
+        ) or list(governor_history or [])
         return {
             "session_id": session_id,
             "policy_pack_trace": dict(
-                interviewer_state_json.get("prompt_trace", {})
+                runtime_view_state_payload.get("prompt_trace")
+                or interviewer_state_json.get("prompt_trace", {})
                 or {"prompt_pack_id": f"{visa_family}.default.v1"}
             ),
-            "runtime_trace": list(runtime_trace or []),
-            "score_history": list(score_history or []),
-            "governor_history": list(governor_history or []),
+            "runtime_trace": runtime_trace_payload,
+            "score_history": score_history_payload,
+            "governor_history": governor_history_payload,
+            "runtime_ledger": runtime_ledger_payload,
+            "runtime_view_state": runtime_view_state_payload,
             "interviewer_state": dict(interviewer_state_json),
             "current_focus": dict(current_focus_json),
             "profile_snapshot": profile_json,
             "turn_decision": {
-                "decision": interviewer_state_json.get("decision", governor_decision),
-                "governor_decision": interviewer_state_json.get(
-                    "governor_decision",
-                    governor_decision,
-                ),
+                "decision": runtime_view_state_payload.get("decision")
+                or interviewer_state_json.get("decision", governor_decision),
+                "governor_decision": runtime_view_state_payload.get("governor_decision")
+                or interviewer_state_json.get("governor_decision", governor_decision),
             },
             "advisory_context": dict(
-                interviewer_state_json.get("advisory_context", {}) or {}
+                runtime_view_state_payload.get("advisory_context")
+                or interviewer_state_json.get("advisory_context", {})
+                or {}
             ),
         }
+
+    def _runtime_ledger_payload(
+        self,
+        runtime_ledger: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(runtime_ledger, dict):
+            return {}
+        return dict(runtime_ledger)
+
+    def _runtime_view_state_payload(
+        self,
+        runtime_view_state: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(runtime_view_state, dict):
+            return {}
+        return dict(runtime_view_state)
+
+    def _effective_interviewer_state(
+        self,
+        *,
+        runtime_view_state: dict[str, Any],
+        interviewer_state_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(interviewer_state_json or {})
+        has_runtime_turn = bool(runtime_view_state.get("source_turn_id"))
+        for key in (
+            "decision",
+            "governor_decision",
+            "public_status",
+            "risk_level",
+            "current_key_question",
+            "current_key_proof",
+            "current_risk_code",
+            "requested_documents",
+            "allowed_next_actions",
+            "advisory_context",
+            "prompt_trace",
+        ):
+            if key not in runtime_view_state:
+                continue
+            value = runtime_view_state.get(key)
+            if not has_runtime_turn and value in (None, [], {}):
+                continue
+            payload[key] = value
+        return payload
+
+    def _legacy_event_payloads(
+        self,
+        runtime_ledger: dict[str, Any],
+        *,
+        event_type: str,
+    ) -> list[dict[str, Any]]:
+        events = runtime_ledger.get("events", [])
+        if not isinstance(events, list):
+            return []
+        payloads: list[dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, dict) or event.get("event_type") != event_type:
+                continue
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                payloads.append(dict(payload))
+        return payloads
 
     def _resolve_missing_evidence(
         self,

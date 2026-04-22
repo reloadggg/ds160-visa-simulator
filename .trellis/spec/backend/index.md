@@ -31,6 +31,14 @@
 
 - `app/services/interview_runtime_service.py`
 - `app/services/interviewer_runtime_service.py`
+- `app/services/interviewer_turn_projector_service.py`
+- `app/platform/turn_record.py`
+- `app/services/advisory_review_service.py`
+- `app/services/boundary_policy_service.py`
+- `app/services/risk_watch_service.py`
+- `app/services/score_state_builder.py`
+- `app/evals/replay_runner.py`
+- `app/cli/main.py`
 - `app/agents/question_agent.py`
 - `app/agents/schemas.py`
 - `app/domain/runtime.py`
@@ -46,8 +54,11 @@
 
 当改动以下路径时，必须先读上传合同：
 
+- `app/domain/evidence.py`
 - `app/services/multimodal_extraction_service.py`
 - `app/services/file_service.py`
+- `app/services/document_pipeline.py`
+- `app/services/gate_runtime_service.py`
 - `app/api/routers/files.py`
 - `chainlit_app.py`
 

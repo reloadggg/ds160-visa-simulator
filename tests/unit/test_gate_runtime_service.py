@@ -587,6 +587,16 @@ def test_matches_document_type_prefers_uploaded_document_type_metadata(
             assert service._matches_document_type(document, "funding_proof") is True
             assert service._matches_document_type(document, "passport_bio") is False
 
+            document.artifact_json = {
+                "status": "parsed",
+                "metadata": {
+                    "document_assessment": {"document_type": "funding_proof"},
+                },
+            }
+
+            assert service._matches_document_type(document, "funding_proof") is True
+            assert service._matches_document_type(document, "passport_bio") is False
+
             document.filename = "funding_proof-final.pdf"
             document.artifact_json = {
                 "status": "uploaded",

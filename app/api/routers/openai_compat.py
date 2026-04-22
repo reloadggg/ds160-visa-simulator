@@ -9,6 +9,8 @@ from app.db.session import get_db
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_service import GateService
 from app.services.message_service import MessageService, SessionNotFoundError
+from app.services.runtime_view_contract_service import RuntimeViewContractService
+from app.services.session_read_model_service import SessionReadModelService
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["openai-compat"])
 
@@ -60,6 +62,11 @@ def chat_completions(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     session_record = session_repo.get(session_record.session_id) or session_record
+    read_model = SessionReadModelService(db).build_from_record(session_record)
+    runtime_view_state = RuntimeViewContractService.payload(
+        read_model.runtime_view_state,
+        anchored_only=True,
+    )
     return {
         "id": f"chatcmpl-{session_record.session_id}",
         "object": "chat.completion",
@@ -72,11 +79,24 @@ def chat_completions(
         ],
         "metadata": {
             "session_id": session_record.session_id,
-            "phase_state": session_record.phase_state,
+            "phase_state": read_model.phase_state,
             "context_mode": context_mode,
-            "governor_decision": result.get("governor_decision"),
-            "requested_documents": list(result.get("requested_documents", []) or []),
-            "turn_decision": dict(result.get("turn_decision", {}) or {}),
-            "prompt_trace": dict(result.get("prompt_trace", {}) or {}),
+            "governor_decision": RuntimeViewContractService.governor_decision(
+                runtime_view_state,
+                result,
+            ),
+            "requested_documents": RuntimeViewContractService.requested_documents(
+                runtime_view_state,
+                result,
+            ),
+            "turn_decision": RuntimeViewContractService.turn_decision(
+                runtime_view_state,
+                result,
+            ),
+            "prompt_trace": RuntimeViewContractService.prompt_trace(
+                runtime_view_state,
+                result,
+            ),
+            "runtime_view_state": runtime_view_state,
         },
     }

@@ -12,7 +12,6 @@ from app.db.models import SessionRecord
 from app.domain.contracts import ApplicantProfile, GovernorDecision, ScoreState
 from app.domain.runtime import (
     GovernorHistoryEntry,
-    InterviewRiskLevel,
     PromptRoleContract,
     RiskFlagHistoryEntry,
     RuntimeTraceEntry,
@@ -20,6 +19,7 @@ from app.domain.runtime import (
     TurnAdvisoryContext,
     TurnContextSnapshot,
 )
+from app.services.advisory_review_service import AdvisoryReviewService
 from app.services.consistency_service import ConsistencyService
 from app.services.evidence_service import EvidenceService
 from app.services.extractor_service import ExtractorService
@@ -42,6 +42,7 @@ class InterviewRuntimeService:
         self.extractor = ExtractorService(db)
         self.consistency = ConsistencyService()
         self.scoring = ScoringService(db)
+        self.advisory_review = AdvisoryReviewService()
 
     def analyze_turn(
         self,
@@ -532,31 +533,10 @@ class InterviewRuntimeService:
         return payload
 
     def _build_advisory_context(self, score: ScoreState) -> TurnAdvisoryContext:
-        missing_evidence = list(score.missing_evidence)
-        return TurnAdvisoryContext(
-            score_summary={
-                "category_fit": score.category_fit,
-                "document_readiness": score.document_readiness,
-                "narrative_consistency": score.narrative_consistency,
-                "confidence": score.confidence,
-            },
-            risk_codes=[item.code for item in score.risk_flags],
-            missing_evidence=missing_evidence,
-            risk_level=self._risk_level_from_score(score),
-            missing_evidence_summary=(
-                ", ".join(missing_evidence) if missing_evidence else None
-            ),
-        )
+        return self.advisory_review.build_context(score)
 
     def _risk_level_from_score(self, score: ScoreState) -> InterviewRiskLevel:
-        severities = {item.severity for item in score.risk_flags}
-        if "high" in severities:
-            return InterviewRiskLevel.HIGH
-        if "medium" in severities:
-            return InterviewRiskLevel.MEDIUM
-        if "low" in severities:
-            return InterviewRiskLevel.LOW
-        return InterviewRiskLevel.NONE
+        return self.advisory_review.derive_risk_level(score)
 
     def _build_turn_decision_trace(
         self,

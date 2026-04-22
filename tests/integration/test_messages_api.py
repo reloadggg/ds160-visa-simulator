@@ -359,6 +359,15 @@ def test_message_turn_uses_question_agent_output_for_continue_interview(
     assert payload["governor_decision"] == "continue_interview"
     assert payload["assistant_message"] == "What is the purpose of your travel?"
     assert payload["requested_documents"] == []
+    assert payload["runtime_view_state"]["decision"] == "continue_interview"
+    assert payload["runtime_view_state"]["governor_decision"] == "continue_interview"
+    assert payload["runtime_view_state"]["current_key_question"] == (
+        "What is the purpose of your travel?"
+    )
+    assert payload["runtime_view_state"]["prompt_trace"] == payload["prompt_trace"]
+    assert payload["turn_decision"]["current_key_question"] == (
+        "What is the purpose of your travel?"
+    )
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
@@ -454,6 +463,61 @@ def test_message_turn_uses_turn_history_to_advance_second_question(
             "source": "user_message",
         },
     ]
+
+
+def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (None, {"model": None}),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My parents will pay for my studies."},
+    )
+
+    assert response.status_code == 200
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    user_turn = turns[0]
+    assistant_turn = turns[1]
+    turn_record = assistant_turn.metadata_json["turn_record"]
+    runtime_view_state = assistant_turn.metadata_json["runtime_view_state"]
+
+    assert turn_record["turn_id"] == assistant_turn.turn_id
+    assert turn_record["assistant_turn_id"] == assistant_turn.turn_id
+    assert turn_record["user_turn_id"] == user_turn.turn_id
+    assert turn_record["session_id"] == session_id
+    assert turn_record["decision"] == "continue_interview"
+    assert turn_record["assistant_message"] == "What is the purpose of your travel?"
+    assert turn_record["trace_refs"] == [
+        "receive_input",
+        "extract_claims",
+        "resolve_evidence",
+        "consistency_check",
+        "score_case",
+        "governor_decide",
+        "turn_decision",
+    ]
+    assert assistant_turn.metadata_json["requested_documents"] == []
+    assert assistant_turn.metadata_json["turn_decision"] == "continue_interview"
+    assert runtime_view_state["source_turn_id"] == assistant_turn.turn_id
+    assert runtime_view_state["decision"] == "continue_interview"
+    assert runtime_view_state["current_key_question"] == (
+        "What is the purpose of your travel?"
+    )
 
 
 def test_message_turn_falls_back_when_question_agent_errors(

@@ -216,3 +216,219 @@ resolved_document_type = (
     or top_assessment_document_type
 )
 ```
+
+## Scenario: standardized document assessment with compatibility mirrors
+
+### 1. Scope / Trigger
+
+- Trigger：修改 `DocumentAssessment`、上传 artifact 写入、document pipeline 透传、files API 响应或 gate/document 消费逻辑
+- 关键文件：
+  - `app/domain/evidence.py`
+  - `app/services/file_service.py`
+  - `app/services/document_pipeline.py`
+  - `app/services/gate_runtime_service.py`
+  - `app/api/routers/files.py`
+  - `chainlit_app.py`
+
+### 2. Signatures
+
+```python
+DocumentAssessment.from_artifact(
+    artifact_json: dict[str, Any] | None,
+) -> DocumentAssessment
+
+DocumentAssessment.to_metadata_payload() -> dict[str, Any]
+
+FileService.upload(
+    session_id: str,
+    filename: str,
+    raw_bytes: bytes,
+    content_type: str | None = None,
+    document_type: str | None = None,
+) -> FileUploadResult
+
+DocumentPipelineService.process_document(document_id: str) -> dict[str, int]
+```
+
+### 3. Contracts
+
+#### 3.1 Standardized nested assessment contract
+
+`app/domain/evidence.py::DocumentAssessment`
+
+```json
+{
+  "document_type": "funding_proof",
+  "document_type_hint": null,
+  "document_type_candidates": ["funding_proof"],
+  "relevance": "medium",
+  "supported_claims": ["/funding/primary_source"],
+  "confidence": 0.65,
+  "feedback_message": "string | null",
+  "relevant": true,
+  "counts_toward_gate": true,
+  "main_flow_feedback": {
+    "status": "helpful | partial_helpful | not_helpful",
+    "supported_document_type": "funding_proof",
+    "current_focus_document_type": "funding_proof",
+    "message": "string"
+  }
+}
+```
+
+读取优先级：
+
+1. `artifact_json["document_assessment"]`
+2. `artifact_json["metadata"]["document_assessment"]`
+3. 旧 root-level mirror 字段
+4. 旧 metadata root 字段
+
+规则：
+
+- 标准化 nested shape 优先于旧镜像字段
+- `from_artifact()` 必须能同时读取新旧两种形状
+- `to_metadata_payload()` 必须输出可直接放入 API/metadata/artifact 的 JSON 结构
+
+#### 3.2 Compatibility mirror write contract
+
+上传写入 `artifact_json` 时，必须同时保留：
+
+- root-level mirror 字段：
+  - `document_type`
+  - `document_type_hint`
+  - `document_type_candidates`
+  - `relevance`
+  - `supported_claims`
+  - `confidence`
+  - `feedback_message`
+  - `relevant`
+  - `counts_toward_gate`（如有）
+  - `main_flow_feedback`（如有）
+- 标准 nested 字段：
+  - `document_assessment`
+
+原因：
+
+- files API / Chainlit / gate runtime 仍有兼容期消费者
+- 但新的主断言必须优先走 `DocumentAssessment.from_artifact(...)`
+
+#### 3.3 Pipeline preservation contract
+
+`DocumentPipelineService.process_document()` 必须把上传阶段 assessment 透传到解析后 artifact：
+
+- `DocumentArtifact.metadata["document_assessment"]`
+- `DocumentArtifact.metadata["document_type"]`
+- 如存在以下字段，也必须保留：
+  - `counts_toward_gate`
+  - `feedback_message`
+  - `relevant`
+  - `main_flow_feedback`
+
+规则：
+
+- parse 阶段不允许把上传阶段 assessment 丢掉
+- parse 阶段可以更新 `document_type`，但必须写回 standardized assessment
+
+#### 3.4 Files API response contract
+
+`POST /v1/sessions/{session_id}/files` 在兼容期必须同时返回：
+
+```json
+{
+  "document_type": "funding_proof",
+  "document_assessment": {
+    "document_type": "funding_proof"
+  },
+  "document_type_candidates": ["funding_proof"],
+  "relevance": "medium",
+  "supported_claims": ["/funding/primary_source"],
+  "confidence": 0.65,
+  "feedback_message": "string | null",
+  "relevant": true,
+  "main_flow_feedback": {},
+  "requested_documents": [],
+  "gate_progress": {}
+}
+```
+
+规则：
+
+- `document_assessment` 是主合同
+- 旧平铺字段暂时保留，直到所有消费者完成迁移
+- `main_flow_feedback` 与 `document_assessment.main_flow_feedback` 必须一致
+
+### 4. Validation & Error Matrix
+
+| Scenario | Input | Expected Behavior | Assertion Point |
+|----------|-------|-------------------|-----------------|
+| 只有旧 artifact shape | root-level 字段，无 nested | `from_artifact()` 仍能正确解析 | `tests/unit/test_document_assessment_contract.py` |
+| 新旧字段同时存在 | nested 与 mirror 冲突 | nested standardized shape 优先 | `tests/unit/test_document_assessment_contract.py` |
+| 上传后尚无主流程反馈 | `main_flow_feedback=None` | API 和 artifact 仍包含 `document_assessment`，但可省略 `main_flow_feedback` | `tests/unit/test_file_service.py` |
+| 上传后拿到主流程反馈 | `main_flow_feedback` 存在 | root-level 与 nested 两处都同步 | `tests/integration/test_files_api.py` |
+| document pipeline 重写 artifact | parse 后写 `DocumentArtifact` | 不能丢失 upload assessment | `tests/unit/test_document_pipeline.py` |
+| gate runtime 读 document type | 解析后 artifact | 应通过 `DocumentAssessment.from_artifact(...)` 读取主合同 | `tests/unit/test_gate_runtime_service.py` |
+
+### 5. Good/Base/Bad Cases
+
+#### Good
+
+- `FileService.upload()` 返回 `document_assessment`，同时保留平铺字段镜像
+- `DocumentPipelineService.process_document()` 继续透传 upload assessment
+- files API 与 Chainlit 都优先消费 `document_assessment`
+
+#### Base
+
+- 旧 artifact 仍可被读取，但新测试主断言改为 `DocumentAssessment.from_artifact(...)`
+- `counts_toward_gate` 没有值时可以省略，不强行写 `null`
+
+#### Bad
+
+- 只写平铺字段，不写 `document_assessment`
+- 解析后 artifact 重新覆盖掉上传阶段 assessment
+- API 返回里 `main_flow_feedback` 和 nested assessment 内的 `main_flow_feedback` 不一致
+- gate/document consumer 继续手写一套字段优先级，而不复用 `from_artifact()`
+
+### 6. Tests Required
+
+- `tests/unit/test_document_assessment_contract.py`
+  - 断言新旧 shape 的解析优先级
+- `tests/unit/test_file_service.py`
+  - 断言 upload 写入 mirror + nested 双形状
+- `tests/unit/test_document_pipeline.py`
+  - 断言 parse 后仍保留 standardized assessment
+- `tests/unit/test_gate_runtime_service.py`
+  - 断言 gate 逻辑通过 `DocumentAssessment.from_artifact(...)` 读取类型和 gate 计数
+- `tests/integration/test_files_api.py`
+  - 断言 files API 同时返回 nested assessment 与兼容平铺字段
+- `tests/unit/test_chainlit_app.py`
+  - 断言上传反馈优先消费 `document_assessment`
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+artifact_json = {
+    "document_type": resolved_document_type,
+    "relevance": assessment.relevance,
+}
+```
+
+```python
+document_type = document.artifact_json.get("document_type")
+```
+
+#### Correct
+
+```python
+artifact_json = {
+    "document_type": document_assessment.document_type,
+    "relevance": document_assessment.relevance,
+    "document_assessment": document_assessment.to_metadata_payload(),
+}
+```
+
+```python
+assessment = DocumentAssessment.from_artifact(document.artifact_json)
+document_type = assessment.document_type
+```

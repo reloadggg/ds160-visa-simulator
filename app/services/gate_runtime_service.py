@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import DocumentRecord, JobRecord, SessionRecord
 from app.domain.document_types import normalize_document_type
+from app.domain.evidence import DocumentAssessment
 from app.domain.runtime import GateOverallStatus
 from app.repositories.session_repo import SessionRepository
 
@@ -225,10 +226,8 @@ class GateRuntimeService:
         }
 
     def _matches_document_type(self, document: DocumentRecord, document_type: str) -> bool:
-        artifact_json = document.artifact_json or {}
         artifact_document_type = normalize_document_type(
-            artifact_json.get("document_type")
-            or artifact_json.get("metadata", {}).get("document_type")
+            DocumentAssessment.from_artifact(document.artifact_json).document_type
         )
         if artifact_document_type is not None:
             return artifact_document_type == normalize_document_type(document_type)
@@ -237,10 +236,7 @@ class GateRuntimeService:
         return document_type in filename
 
     def _counts_toward_gate(self, document: DocumentRecord) -> bool:
-        artifact_json = document.artifact_json or {}
-        if artifact_json.get("counts_toward_gate") is False:
-            return False
-        if artifact_json.get("metadata", {}).get("counts_toward_gate") is False:
+        if DocumentAssessment.from_artifact(document.artifact_json).counts_toward_gate is False:
             return False
         return True
 

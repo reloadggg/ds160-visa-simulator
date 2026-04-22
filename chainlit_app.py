@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -110,7 +111,29 @@ def _format_user_report(report: dict) -> str:
 
 
 def _format_internal_report(report: dict) -> str:
-    return "内部报告（调试信息）\n" + str(report)
+    runtime_view_state = dict(report.get("runtime_view_state", {}) or {})
+    lines = ["内部报告（调试信息）"]
+    if runtime_view_state:
+        lines.extend(
+            [
+                "最新运行时视图：",
+                f"- decision: {runtime_view_state.get('decision') or '暂无'}",
+                (
+                    "- governor_decision: "
+                    f"{runtime_view_state.get('governor_decision') or '暂无'}"
+                ),
+                (
+                    "- current_key_question: "
+                    f"{runtime_view_state.get('current_key_question') or '暂无'}"
+                ),
+                (
+                    "- current_key_proof: "
+                    f"{runtime_view_state.get('current_key_proof') or '暂无'}"
+                ),
+            ]
+        )
+    lines.append(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return "\n".join(lines)
 
 
 def _save_session_state(
@@ -258,14 +281,26 @@ async def _prompt_for_required_files(requested_documents: list[str]) -> None:
 
 
 def _format_upload_feedback(response: dict) -> str | None:
-    main_flow_feedback = response.get("main_flow_feedback") or {}
+    assessment = _resolve_upload_assessment(response)
+    main_flow_feedback = dict(assessment.get("main_flow_feedback", {}) or {})
     feedback_message = (
-        main_flow_feedback.get("message") or response.get("feedback_message") or ""
+        main_flow_feedback.get("message")
+        or assessment.get("feedback_message")
+        or response.get("feedback_message")
+        or ""
     ).strip()
-    candidates = list(response.get("document_type_candidates", []) or [])
-    supported_claims = list(response.get("supported_claims", []) or [])
-    relevance = response.get("relevance")
-    confidence = response.get("confidence")
+    candidates = list(
+        assessment.get("document_type_candidates")
+        or response.get("document_type_candidates", [])
+        or []
+    )
+    supported_claims = list(
+        assessment.get("supported_claims")
+        or response.get("supported_claims", [])
+        or []
+    )
+    relevance = assessment.get("relevance", response.get("relevance"))
+    confidence = assessment.get("confidence", response.get("confidence"))
     extras: list[str] = []
     if candidates:
         extras.append(f"候选类型：{', '.join(candidates)}")
@@ -287,9 +322,19 @@ def _format_upload_feedback(response: dict) -> str | None:
     if feedback_message:
         lines.append(feedback_message)
     lines.extend(extras)
-    if candidates and response.get("document_type") not in candidates:
+    resolved_document_type = (
+        assessment.get("document_type") or response.get("document_type")
+    )
+    if candidates and resolved_document_type not in candidates:
         lines.append("如识别类型不准，可在前端下次上传时手动指定类型纠偏。")
     return "\n".join(lines)
+
+
+def _resolve_upload_assessment(response: dict) -> dict:
+    payload = response.get("document_assessment")
+    if isinstance(payload, dict):
+        return payload
+    return {}
 
 
 async def _handle_upload_response(response: dict) -> None:

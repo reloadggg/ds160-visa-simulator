@@ -36,6 +36,11 @@ async def upload_file(
         "job_id": result.job_id,
         "job_status": "queued",
         "document_type": result.document_type,
+        "document_assessment": (
+            None
+            if result.document_assessment is None
+            else result.document_assessment.to_metadata_payload()
+        ),
         "document_type_candidates": list(result.document_type_candidates or []),
         "relevance": result.relevance,
         "supported_claims": list(result.supported_claims or []),

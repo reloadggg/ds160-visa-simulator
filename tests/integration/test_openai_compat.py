@@ -64,10 +64,16 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
         "requested_documents",
         "turn_decision",
         "prompt_trace",
+        "runtime_view_state",
     }
     assert payload["metadata"]["session_id"].startswith("sess-")
     assert payload["metadata"]["phase_state"] == "interview"
     assert payload["metadata"]["context_mode"] == "new_session"
+    assert isinstance(payload["metadata"]["runtime_view_state"], dict)
+    assert payload["metadata"]["runtime_view_state"]["decision"]
+    assert payload["metadata"]["runtime_view_state"]["prompt_trace"] == payload["metadata"][
+        "prompt_trace"
+    ]
 
 
 def test_chat_completions_uses_same_runtime_gate_initialization(
@@ -178,6 +184,7 @@ def test_chat_completions_reuses_existing_session_when_metadata_session_id_prese
         "requested_documents": [],
         "turn_decision": {},
         "prompt_trace": {},
+        "runtime_view_state": {},
     }
 
     with db_session_factory() as db:

@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord
-from app.domain.evidence import DocumentSourceType
+from app.domain.evidence import DocumentAssessment, DocumentSourceType
 from app.repositories.document_repo import DocumentRepository
 from app.services.document_pipeline import DocumentPipelineService
 from app.services.multimodal_extraction_service import (
@@ -310,7 +310,8 @@ def test_process_document_normalizes_declared_funding_document_alias(tmp_path) -
             evidence = db.scalars(select(EvidenceItemRecord)).all()
 
             assert document is not None
-            assert document.artifact_json["metadata"]["document_type"] == "funding_proof"
+            assessment = DocumentAssessment.from_artifact(document.artifact_json)
+            assert assessment.document_type == "funding_proof"
             assert len(evidence) == 1
             assert evidence[0].evidence_type == "funding_proof"
             assert evidence[0].value == "employer"
@@ -362,17 +363,21 @@ def test_process_document_preserves_gate_feedback_metadata_from_upload_stage(
 
             assert document is not None
             assert document.artifact_json["metadata"]["document_type"] == "passport_bio"
-            assert document.artifact_json["metadata"]["counts_toward_gate"] is False
-            assert document.artifact_json["metadata"]["feedback_message"] == (
+            assessment = DocumentAssessment.from_artifact(document.artifact_json)
+            assert assessment.document_type == "passport_bio"
+            assert assessment.document_type_candidates == []
+            assert assessment.counts_toward_gate is False
+            assert assessment.feedback_message == (
                 "这份文件看起来不像当前要求的 passport_bio 材料，请检查后重新上传。"
             )
-            assert document.artifact_json["metadata"]["relevant"] is False
-            assert document.artifact_json["metadata"]["main_flow_feedback"] == {
-                "status": "not_helpful",
-                "supported_document_type": None,
-                "current_focus_document_type": "passport_bio",
-                "message": "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 passport_bio。",
-            }
+            assert assessment.supported_claims == []
+            assert assessment.relevant is False
+            assert assessment.main_flow_feedback is not None
+            assert assessment.main_flow_feedback.status == "not_helpful"
+            assert assessment.main_flow_feedback.current_focus_document_type == "passport_bio"
+            assert assessment.main_flow_feedback.message == (
+                "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 passport_bio。"
+            )
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

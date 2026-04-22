@@ -8,7 +8,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.domain.document_types import DOCUMENT_TYPE_ALIASES, normalize_document_type
-from app.domain.evidence import DocumentSourceType
+from app.domain.evidence import (
+    DocumentAssessment,
+    DocumentAssessmentMainFlowFeedback,
+    DocumentSourceType,
+)
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_runtime_service import GateRuntimeService
@@ -60,6 +64,7 @@ class FileUploadResult:
     document_id: str
     job_id: str
     document_type: str | None
+    document_assessment: DocumentAssessment | None = None
     document_type_candidates: list[str] | None = None
     relevance: str | None = None
     supported_claims: list[str] | None = None
@@ -174,22 +179,34 @@ class FileService:
             or supported_document_type
             or top_assessment_document_type
         )
+        document_assessment = DocumentAssessment(
+            document_type=resolved_document_type,
+            document_type_hint=document_type,
+            document_type_candidates=[
+                item.document_type for item in assessment.document_type_candidates
+            ],
+            relevance=assessment.relevance,
+            supported_claims=list(assessment.supported_claims),
+            confidence=assessment.confidence,
+            feedback_message=feedback_message,
+            relevant=relevant,
+            counts_toward_gate=counts_toward_gate,
+        )
         artifact_json = {
             "status": "uploaded",
             "filename": filename,
-            "document_type": resolved_document_type,
-            "document_type_hint": document_type,
-            "document_type_candidates": [
-                item.document_type for item in assessment.document_type_candidates
-            ],
-            "relevance": assessment.relevance,
-            "supported_claims": list(assessment.supported_claims),
-            "confidence": assessment.confidence,
-            "feedback_message": feedback_message,
-            "relevant": relevant,
+            "document_type": document_assessment.document_type,
+            "document_type_hint": document_assessment.document_type_hint,
+            "document_type_candidates": list(document_assessment.document_type_candidates),
+            "relevance": document_assessment.relevance,
+            "supported_claims": list(document_assessment.supported_claims),
+            "confidence": document_assessment.confidence,
+            "feedback_message": document_assessment.feedback_message,
+            "relevant": document_assessment.relevant,
+            "document_assessment": document_assessment.to_metadata_payload(),
         }
-        if counts_toward_gate is not None:
-            artifact_json["counts_toward_gate"] = counts_toward_gate
+        if document_assessment.counts_toward_gate is not None:
+            artifact_json["counts_toward_gate"] = document_assessment.counts_toward_gate
 
         try:
             document = self.repo.create_document(
@@ -213,9 +230,19 @@ class FileService:
                 post_upload_support=post_upload_support,
             )
             if main_flow_feedback is not None:
+                document_assessment = document_assessment.model_copy(
+                    update={
+                        "main_flow_feedback": (
+                            DocumentAssessmentMainFlowFeedback.model_validate(
+                                main_flow_feedback
+                            )
+                        )
+                    }
+                )
                 document.artifact_json = {
                     **(document.artifact_json or {}),
                     "main_flow_feedback": main_flow_feedback,
+                    "document_assessment": document_assessment.to_metadata_payload(),
                 }
             self.db.commit()
         except Exception:
@@ -225,6 +252,7 @@ class FileService:
             document_id=document.document_id,
             job_id=job.job_id,
             document_type=resolved_document_type,
+            document_assessment=document_assessment,
             document_type_candidates=[
                 item.document_type for item in assessment.document_type_candidates
             ],

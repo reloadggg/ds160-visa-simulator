@@ -92,3 +92,96 @@ def test_user_report_prefers_interview_copy_when_public_status_already_continues
         == "当前已进入正式 interview 阶段，当前关键问题是：What is the purpose of your travel?"
     )
     assert payload["recommended_improvements"] == ["继续回答后续问题，并保持叙事一致。"]
+
+
+def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-2",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={"funding": {"primary_source": "self"}},
+        phase_state="interview",
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-2",
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "public_status": "continue_interview",
+            "risk_level": "none",
+            "current_focus": {
+                "kind": "interview_question",
+                "question": "What is the purpose of your travel?",
+            },
+            "current_key_question": "What is the purpose of your travel?",
+            "current_key_proof": None,
+            "current_risk_code": None,
+            "requested_documents": [],
+            "allowed_next_actions": ["answer_question", "continue_interview"],
+            "advisory_context": {
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.interviewer",
+                "prompt_version": "v2",
+                "provider": "openai",
+                "model": "gpt-5.4",
+            },
+        },
+        interviewer_state_json={
+            "public_status": "waiting_key_proof",
+            "current_key_question": "STALE QUESTION",
+            "current_key_proof": "funding_proof",
+            "allowed_next_actions": ["upload_key_proof"],
+        },
+    )
+
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["current_key_question"] == "What is the purpose of your travel?"
+    assert payload["current_key_proof"] is None
+    assert payload["allowed_next_actions"] == ["answer_question", "continue_interview"]
+    assert payload["prompt_trace"]["model"] == "gpt-5.4"
+
+
+def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:
+    service = ReportService()
+
+    payload = service.internal_report(
+        session_id="sess-3",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={"funding": {"primary_source": "self"}},
+        runtime_ledger={"events": []},
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-3",
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "advisory_context": {
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.interviewer",
+                "prompt_version": "v2",
+                "provider": "openai",
+                "model": "gpt-5.4",
+            },
+        },
+        interviewer_state_json={
+            "decision": "need_more_evidence",
+            "governor_decision": "need_more_evidence",
+            "advisory_context": {"risk_level": "medium"},
+            "prompt_trace": {"model": "stale-model"},
+        },
+    )
+
+    assert payload["policy_pack_trace"]["model"] == "gpt-5.4"
+    assert payload["turn_decision"] == {
+        "decision": "continue_interview",
+        "governor_decision": "continue_interview",
+    }
+    assert payload["advisory_context"]["risk_level"] == "none"
+    assert payload["runtime_view_state"]["decision"] == "continue_interview"

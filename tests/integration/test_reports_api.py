@@ -9,6 +9,7 @@ from app.db.base import Base
 from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
+from app.repositories.session_turn_repo import SessionTurnRepository
 from app.main import app
 
 
@@ -132,6 +133,16 @@ def test_reports_api_returns_gate_review_copy_and_internal_histories(
             "summary": "decision=need_more_evidence",
         }
     ]
+    assert internal_payload["runtime_ledger"]["session_id"] == session_id
+    assert internal_payload["runtime_ledger"]["turns"] == []
+    assert [event["event_type"] for event in internal_payload["runtime_ledger"]["events"]] == [
+        "trace",
+        "scorer",
+        "boundary",
+    ]
+    assert internal_payload["runtime_ledger"]["events"][0]["event_id"].startswith(
+        "session-orphan:trace:"
+    )
 
 
 def test_reports_api_returns_interview_copy(
@@ -188,6 +199,106 @@ def test_reports_api_returns_interview_copy(
     assert payload["recommended_improvements"] == [
         "继续回答后续问题，并保持叙事一致。",
     ]
+
+
+def test_user_report_can_derive_runtime_view_state_from_ledger_when_state_is_empty(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        record.profile_json = {"funding": {"primary_source": "self"}}
+        record.interviewer_state_json = {}
+        record.current_focus_json = {}
+        record.runtime_trace_json = [
+            {
+                "node_name": "turn_decision",
+                "prompt_pack_id": "ds160.interviewer",
+                "prompt_version": "v2",
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "metadata": {"reasoning_effort": "high"},
+                "turn_decision": "continue_interview",
+            }
+        ]
+        record.score_history_json = [
+            {
+                "scoring_stage": "interview_turn",
+                "category_fit": 78,
+                "document_readiness": 82,
+                "narrative_consistency": 75,
+                "confidence": 80,
+                "missing_evidence": [],
+                "risk_flags": [],
+                "summary": "missing=0 risk_flags=0",
+            }
+        ]
+        record.governor_history_json = [
+            {
+                "decision": "continue_interview",
+                "summary": "decision=continue_interview",
+            }
+        ]
+        repo = SessionTurnRepository(db)
+        repo.append_user_turn(
+            session_id=session_id,
+            content="I want to study computer science.",
+            source="user_message",
+            commit=False,
+        )
+        repo.append_assistant_turn(
+            session_id=session_id,
+            content="What is the purpose of your travel?",
+            source="interviewer_runtime_service",
+            metadata_json={
+                "turn_record": {
+                    "decision": "continue_interview",
+                    "requested_documents": [],
+                    "focus": {
+                        "kind": "interview_question",
+                        "question": "What is the purpose of your travel?",
+                    },
+                    "advisory_summary": {
+                        "risk_codes": [],
+                        "missing_evidence": [],
+                        "risk_level": "none",
+                    },
+                }
+            },
+            commit=False,
+        )
+        db.add(record)
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/reports/user")
+    internal_response = client.get(f"/v1/sessions/{session_id}/reports/internal")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["current_key_question"] == "What is the purpose of your travel?"
+    assert payload["allowed_next_actions"] == [
+        "answer_question",
+        "continue_interview",
+    ]
+    assert payload["prompt_trace"] == {
+        "prompt_pack_id": "ds160.interviewer",
+        "prompt_version": "v2",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "reasoning_effort": "high",
+    }
+
+    assert internal_response.status_code == 200
+    assert internal_response.json()["runtime_view_state"]["current_key_question"] == (
+        "What is the purpose of your travel?"
+    )
 
 
 def test_reports_api_distinguishes_high_risk_review_from_simulated_refusal(

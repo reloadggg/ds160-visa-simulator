@@ -77,6 +77,7 @@ def test_upload_file_creates_document_and_job(
     payload = response.json()
     assert payload["document_status"] == "uploaded"
     assert payload["job_status"] == "queued"
+    assert payload["document_assessment"]["document_type"] == "i20"
 
     with db_session_factory() as db:
         document = db.scalar(
@@ -177,6 +178,7 @@ def test_upload_file_returns_feedback_message_for_document_type(
     assert response.status_code == 202
     payload = response.json()
     assert payload["document_type"] == "passport_bio"
+    assert payload["document_assessment"]["document_type"] == "passport_bio"
     assert "passport_bio" in payload["feedback_message"]
 
 
@@ -232,6 +234,7 @@ def test_upload_file_reports_helpful_feedback_for_current_key_proof(
             " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
         ),
     }
+    assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
 
 
 def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
@@ -286,6 +289,7 @@ def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
             " 当前最缺的关键证明是 ds160。"
         ),
     }
+    assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
 
 
 def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus(
@@ -335,6 +339,14 @@ def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus
     assert payload["main_flow_feedback"] == {
         "status": "not_helpful",
         "supported_document_type": None,
+        "current_focus_document_type": "funding_proof",
+        "message": (
+            "这份材料对当前主线没有直接帮助。"
+            " 当前最缺的关键证明是 funding_proof。"
+        ),
+    }
+    assert payload["document_assessment"]["main_flow_feedback"] == {
+        "status": "not_helpful",
         "current_focus_document_type": "funding_proof",
         "message": (
             "这份材料对当前主线没有直接帮助。"
@@ -395,3 +407,4 @@ def test_upload_file_maps_funding_alias_into_gate_flow(
             " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
         ),
     }
+    assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]

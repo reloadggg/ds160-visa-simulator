@@ -134,6 +134,26 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
     assert response["turn_decision"]["decision"] == "continue_interview"
     assert response["advisory_context"]["risk_codes"] == ["supporting_evidence_missing"]
     assert response["prompt_trace"] == {}
+    assert response["turn_record"] == {
+        "turn_id": "sess-1:pending-turn",
+        "session_id": "sess-1",
+        "user_input": "I will study computer science.",
+        "decision": "continue_interview",
+        "assistant_message": "What is the purpose of your travel?",
+        "requested_documents": [],
+        "focus": {
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "What is the purpose of your travel?",
+        },
+        "trace_refs": ["receive_input"],
+        "artifacts": [],
+        "advisory_summary": {
+            "risk_codes": ["supporting_evidence_missing"],
+            "missing_evidence": [],
+            "risk_level": "medium",
+        },
+    }
     assert record.profile_json == profile.model_dump(mode="json")
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
@@ -525,6 +545,100 @@ def test_run_turn_leaves_turn_persistence_to_message_service(monkeypatch) -> Non
     assert response["assistant_message"] == "What is the purpose of your travel?"
     assert rollbacks == []
     assert events == []
+
+
+def test_run_turn_builds_turn_record_from_latest_user_turn(monkeypatch) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-turn-record")
+    score = _build_score(missing_evidence=["funding_proof"])
+    record = SessionRecord(
+        session_id="sess-turn-record",
+        declared_family="f1",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={},
+    )
+    history_turns = [
+        SimpleNamespace(role="assistant", turn_id="turn-old-assistant"),
+        SimpleNamespace(role="user", turn_id="turn-user-latest"),
+    ]
+
+    monkeypatch.setattr(
+        service.session_turn_repo,
+        "list_session_turns",
+        lambda session_id: history_turns,
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[
+                RuntimeTraceEntry(node_name="receive_input"),
+                RuntimeTraceEntry(node_name="turn_decision"),
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_decide_governor",
+        lambda current_record, current_profile, current_score, trace_entries, findings=None: {
+            "decision": "need_more_evidence",
+            "blocked_actions": [],
+            "rationale_refs": [],
+            "requested_documents": ["funding_proof"],
+        },
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        lambda session_id, current_profile, current_score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Please upload funding proof.",
+            requested_documents=["funding_proof"],
+            decision_hint="need_more_evidence",
+        ),
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+    monkeypatch.setattr(service.session_repo, "save", lambda current_record: current_record)
+    monkeypatch.setattr(service.session_turn_repo, "append_user_turn", lambda **kwargs: None)
+    monkeypatch.setattr(service.session_turn_repo, "append_assistant_turn", lambda **kwargs: None)
+
+    response = service.run_turn(record, "I can upload it later.")
+
+    assert response["turn_record"] == {
+        "turn_id": "turn-user-latest",
+        "session_id": "sess-turn-record",
+        "user_turn_id": "turn-user-latest",
+        "user_input": "I can upload it later.",
+        "decision": "need_more_evidence",
+        "assistant_message": "Please upload funding proof.",
+        "requested_documents": ["funding_proof"],
+        "focus": {
+            "owner": "interviewer_runtime_service",
+            "kind": "required_document",
+            "document_type": "funding_proof",
+        },
+        "trace_refs": ["receive_input", "turn_decision"],
+        "artifacts": [
+            {
+                "kind": "requested_document",
+                "document_type": "funding_proof",
+            }
+        ],
+        "advisory_summary": {
+            "risk_codes": [],
+            "missing_evidence": ["funding_proof"],
+            "risk_level": "none",
+        },
+    }
 
 
 def test_is_evasive_answer_uses_question_topic_instead_of_fixed_prompt_text() -> None:

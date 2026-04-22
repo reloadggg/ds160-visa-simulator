@@ -1,10 +1,14 @@
 from sqlalchemy.orm import Session
 
+from app.db.models import SessionTurnRecord
 from app.domain.runtime import GateOverallStatus
+from app.platform.turn_record import TurnRecord
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.interviewer_runtime_service import InterviewerRuntimeService
+from app.services.runtime_view_contract_service import RuntimeViewContractService
+from app.services.session_read_model_service import SessionReadModelService
 
 
 class SessionNotFoundError(LookupError):
@@ -27,6 +31,7 @@ class MessageService:
         self.session_turn_repo = SessionTurnRepository(db)
         self.gate_runtime = GateRuntimeService(db)
         self.interviewer_runtime = InterviewerRuntimeService(db)
+        self.session_read_model = SessionReadModelService(db)
 
     def handle_user_turn(self, session_id: str, message_text: str) -> dict:
         record = self.session_repo.get(session_id)
@@ -47,13 +52,15 @@ class MessageService:
 
             if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
                 response = self.gate_runtime.build_gate_response(record)
-                self._append_assistant_turn(record, response)
+                assistant_turn = self._append_assistant_turn(record, response)
+                self._sync_runtime_view_contract(record, response, assistant_turn)
                 self.session_repo.save(record)
                 return response
 
             interview_response = self.interviewer_runtime.run_turn(record, message_text)
             response = self.gate_runtime.merge_interview_response(interview_response, record)
-            self._append_assistant_turn(record, response)
+            assistant_turn = self._append_assistant_turn(record, response)
+            self._sync_runtime_view_contract(record, response, assistant_turn)
             self.session_repo.save(record)
             return response
         except Exception:
@@ -79,13 +86,13 @@ class MessageService:
         self,
         record,
         response: dict,
-    ) -> None:
+    ) -> SessionTurnRecord:
         source = (
             "gate_runtime_service"
             if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED
             else "interviewer_runtime_service"
         )
-        self.session_turn_repo.append_assistant_turn(
+        assistant_turn = self.session_turn_repo.append_assistant_turn(
             session_id=record.session_id,
             content=response["assistant_message"],
             source=source,
@@ -98,3 +105,73 @@ class MessageService:
             },
             commit=False,
         )
+        turn_record = self._finalize_turn_record(response, assistant_turn.turn_id)
+        if turn_record is not None:
+            assistant_turn.metadata_json = {
+                **(assistant_turn.metadata_json or {}),
+                "turn_record": turn_record,
+            }
+        return assistant_turn
+
+    def _sync_runtime_view_contract(
+        self,
+        record,
+        response: dict,
+        assistant_turn: SessionTurnRecord,
+    ) -> None:
+        read_model = self.session_read_model.build_from_record(record)
+        runtime_view_state = RuntimeViewContractService.payload(
+            read_model.runtime_view_state
+        )
+        response["governor_decision"] = RuntimeViewContractService.governor_decision(
+            runtime_view_state,
+            response,
+        )
+        response["requested_documents"] = RuntimeViewContractService.requested_documents(
+            runtime_view_state,
+            response,
+        )
+        response["turn_decision"] = RuntimeViewContractService.turn_decision(
+            runtime_view_state,
+            response,
+        )
+        response["prompt_trace"] = RuntimeViewContractService.prompt_trace(
+            runtime_view_state,
+            response,
+        )
+        response["runtime_view_state"] = runtime_view_state
+
+        metadata = dict(assistant_turn.metadata_json or {})
+        current_focus = dict(
+            runtime_view_state.get("current_focus")
+            or record.current_focus_json
+            or {}
+        )
+        metadata.update(
+            {
+                "phase_state": read_model.phase_state,
+                "governor_decision": response.get("governor_decision"),
+                "requested_documents": list(response.get("requested_documents", []) or []),
+                "turn_decision": (response.get("turn_decision", {}) or {}).get("decision"),
+                "current_focus_kind": current_focus.get("kind"),
+                "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+            }
+        )
+        if runtime_view_state.get("source_turn_id") == assistant_turn.turn_id:
+            metadata["runtime_view_state"] = runtime_view_state
+        assistant_turn.metadata_json = metadata
+
+    def _finalize_turn_record(
+        self,
+        response: dict,
+        assistant_turn_id: str,
+    ) -> dict | None:
+        payload = response.get("turn_record")
+        if not isinstance(payload, dict) or not payload:
+            return None
+        finalized = TurnRecord.model_validate(payload).with_assistant_turn(
+            assistant_turn_id
+        )
+        payload_json = finalized.model_dump(mode="json", exclude_none=True)
+        response["turn_record"] = payload_json
+        return payload_json

@@ -215,7 +215,7 @@ def test_format_user_report_ignores_score_summary_details() -> None:
 def test_format_internal_report_marks_debug_content() -> None:
     formatted = _format_internal_report({"session_id": "sess-1"})
 
-    assert formatted == "内部报告（调试信息）\n{'session_id': 'sess-1'}"
+    assert formatted == '内部报告（调试信息）\n{\n  "session_id": "sess-1"\n}'
 
 
 @pytest.mark.asyncio
@@ -370,18 +370,20 @@ async def test_upload_message_elements_prefers_main_flow_feedback_and_refreshes_
             assert content_type == "application/pdf"
             assert document_type == "funding_proof"
             return {
-                "feedback_message": "旧版上传回执",
+                "document_assessment": {
+                    "document_type": "funding_proof",
+                    "main_flow_feedback": {
+                        "status": "helpful",
+                        "message": (
+                            "这份材料对当前关键证明 funding_proof 有帮助。"
+                            " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
+                        ),
+                    },
+                },
                 "requested_documents": [],
                 "gate_progress": {
                     "overall_status": "waiting_for_parse",
                     "uploaded_count": 1,
-                },
-                "main_flow_feedback": {
-                    "status": "helpful",
-                    "message": (
-                        "这份材料对当前关键证明 funding_proof 有帮助。"
-                        " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
-                    ),
                 },
             }
 
@@ -459,7 +461,10 @@ async def test_upload_message_elements_falls_back_to_feedback_message_when_main_
         ) -> dict[str, object]:
             assert document_type == "passport_bio"
             return {
-                "feedback_message": "旧版上传回执",
+                "document_assessment": {
+                    "document_type": "passport_bio",
+                    "feedback_message": "新版上传回执",
+                },
                 "requested_documents": [],
                 "gate_progress": {"overall_status": "waiting_for_parse"},
             }
@@ -505,7 +510,7 @@ async def test_upload_message_elements_falls_back_to_feedback_message_when_main_
     )
 
     assert count == 1
-    assert sent_messages == ["旧版上传回执"]
+    assert sent_messages == ["新版上传回执"]
     assert session_state["pending_requested_documents"] == []
     assert session_state["last_gate_progress"] == {
         "overall_status": "waiting_for_parse",
@@ -550,15 +555,17 @@ async def test_prompt_for_required_files_uses_not_helpful_copy_and_response_pend
         ) -> dict[str, object]:
             assert document_type == "funding_proof"
             return {
-                "feedback_message": "旧版上传回执",
+                "document_assessment": {
+                    "document_type": "funding_proof",
+                    "main_flow_feedback": {
+                        "status": "not_helpful",
+                        "message": "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 funding_proof。",
+                    },
+                },
                 "requested_documents": ["funding_proof"],
                 "gate_progress": {
                     "overall_status": "pending_documents",
                     "uploaded_count": 0,
-                },
-                "main_flow_feedback": {
-                    "status": "not_helpful",
-                    "message": "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 funding_proof。",
                 },
             }
 
@@ -1264,7 +1271,15 @@ async def test_show_internal_report_marks_debug_output(
     class DummyClient:
         async def get_internal_report(self, session_id: str) -> dict[str, object]:
             assert session_id == "sess-1"
-            return {"session_id": "sess-1", "runtime_trace": []}
+            return {
+                "session_id": "sess-1",
+                "runtime_trace": [],
+                "runtime_view_state": {
+                    "decision": "continue_interview",
+                    "governor_decision": "continue_interview",
+                    "current_key_question": "What is the purpose of your travel?",
+                },
+            }
 
     class DummyMessage:
         def __init__(self, **kwargs):
@@ -1280,5 +1295,19 @@ async def test_show_internal_report_marks_debug_output(
     await show_internal_report(None)
 
     assert sent_messages == [
-        "内部报告（调试信息）\n{'session_id': 'sess-1', 'runtime_trace': []}"
+        "内部报告（调试信息）\n"
+        "最新运行时视图：\n"
+        "- decision: continue_interview\n"
+        "- governor_decision: continue_interview\n"
+        "- current_key_question: What is the purpose of your travel?\n"
+        "- current_key_proof: 暂无\n"
+        "{\n"
+        '  "runtime_trace": [],\n'
+        '  "runtime_view_state": {\n'
+        '    "current_key_question": "What is the purpose of your travel?",\n'
+        '    "decision": "continue_interview",\n'
+        '    "governor_decision": "continue_interview"\n'
+        "  },\n"
+        '  "session_id": "sess-1"\n'
+        "}"
     ]
