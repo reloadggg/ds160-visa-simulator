@@ -68,6 +68,12 @@ For each boundary:
 
 **Good**: Each layer only knows its neighbors
 
+### Mistake 4: Frontend Owns Backend Classification Logic
+
+**Bad**: Chat UI reads free text and decides backend `document_type` before upload
+
+**Good**: UI forwards raw text and file, backend resolves hinting and classification
+
 ---
 
 ## Checklist for Cross-Layer Features
@@ -78,6 +84,7 @@ Before implementation:
 - [ ] Defined format at each boundary
 - [ ] Decided where validation happens
 - [ ] If you changed runtime payload names, trace node names, or metadata fields, did you update every consumer and test surface (`messages`, `openai_compat`, `report`, `UI`, `live tests`)?
+- [ ] If a single chat message can contain text plus attachments, did you keep semantic classification in exactly one backend layer?
 
 After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)

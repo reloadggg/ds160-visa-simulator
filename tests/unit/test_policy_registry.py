@@ -12,7 +12,14 @@ def test_policy_registry_loads_all_supported_families() -> None:
     assert families == ["b1_b2", "f1", "h1b", "j1", "l1a", "l1b", "m1", "o1"]
 
 
-def test_runtime_policy_registry_returns_scoring_engine_config() -> None:
+def test_runtime_policy_registry_returns_scoring_engine_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RUNTIME_DEFAULT_PROVIDER", raising=False)
+    monkeypatch.delenv(
+        "RUNTIME_SCORING_ENGINE_INTERVIEW_TURN_PROVIDER",
+        raising=False,
+    )
     registry = RuntimePolicyRegistry("app/runtime_policies/default.yaml")
 
     policy = registry.get("scoring_engine", "interview_turn")
@@ -44,7 +51,14 @@ def test_policy_registry_get_returns_defensive_copy() -> None:
     ]
 
 
-def test_runtime_policy_registry_get_returns_defensive_copy() -> None:
+def test_runtime_policy_registry_get_returns_defensive_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RUNTIME_DEFAULT_PROVIDER", raising=False)
+    monkeypatch.delenv(
+        "RUNTIME_SCORING_ENGINE_INTERVIEW_TURN_PROVIDER",
+        raising=False,
+    )
     registry = RuntimePolicyRegistry("app/runtime_policies/default.yaml")
 
     policy = registry.get("scoring_engine", "interview_turn")

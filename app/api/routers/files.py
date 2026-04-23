@@ -13,6 +13,7 @@ async def upload_file(
     session_id: str,
     file: UploadFile = File(),
     document_type: str | None = Form(default=None),
+    context_text: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
     raw_bytes = await file.read()
@@ -23,6 +24,7 @@ async def upload_file(
             raw_bytes,
             file.content_type,
             document_type,
+            context_text,
         )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

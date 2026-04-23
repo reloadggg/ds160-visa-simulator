@@ -6,6 +6,7 @@
 
 - Trigger：修改上传识别、document type 候选、文件 API、Chainlit 上传反馈、artifact_json 或 gate 反馈语义
 - 关键文件：
+  - `app/ui/chainlit_client.py`
   - `app/services/multimodal_extraction_service.py`
   - `app/services/file_service.py`
   - `app/api/routers/files.py`
@@ -14,6 +15,23 @@
 ### 2. Signatures
 
 ```python
+ChainlitBackendClient.upload_file(
+    session_id: str,
+    filename: str,
+    raw_bytes: bytes,
+    content_type: str = "application/octet-stream",
+    document_type: str | None = None,
+    context_text: str | None = None,
+) -> dict[str, Any]
+
+upload_file(
+    session_id: str,
+    file: UploadFile = File(),
+    document_type: str | None = Form(default=None),
+    context_text: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+) -> dict
+
 MultimodalExtractionService.extract(
     *,
     filename: str,
@@ -36,10 +54,17 @@ FileService.upload(
     raw_bytes: bytes,
     content_type: str | None = None,
     document_type: str | None = None,
+    context_text: str | None = None,
 ) -> FileUploadResult
 ```
 
 ### 3. Contracts
+
+#### 3.0 Request contract
+
+- `file` 是必填 multipart 字段。
+- `document_type` 是可选显式覆盖，属于后端输入，不应成为 Chainlit 必经交互。
+- `context_text` 是同一条聊天消息里的原始用户文本，Chainlit 只允许原样透传，不允许先把它解析成结构化类型。
 
 #### 3.1 Upload assessment output
 
@@ -64,6 +89,7 @@ FileService.upload(
 - 候选类型由模型先给出，前端/用户可以纠偏
 - `supported_claims` 表示该文件能支撑的字段或主张，不再只给布尔 `relevant`
 - `confidence` 表示 assessment 总体置信度，不等于 field extraction 的单字段置信度
+- `document_type_hint` 可以来自显式 `document_type`，也可以来自后端基于 `context_text` 的弱先验推断
 
 #### 3.2 Document type resolution priority
 
@@ -72,10 +98,12 @@ FileService.upload(
 优先级固定为：
 
 1. 用户显式指定的 `document_type`
-2. assessment 与当前 required documents 对齐后的 `supported_document_type`
-3. `document_type_candidates` 第一候选
+2. 后端基于 `context_text` 推断出的 `document_type_hint`
+3. assessment 与当前 required documents 对齐后的 `supported_document_type`
+4. `document_type_candidates` 第一候选
 
 不要把“前端未提前选择 document_type”当成阻塞条件。
+不要在 Chainlit 里复写一套 `context_text -> document_type` 的映射规则。
 
 #### 3.3 Stored artifact contract
 
@@ -138,6 +166,14 @@ FileService.upload(
 
 - Chainlit 必须展示候选类型、相关性、支持主张与反馈文案
 - 前端不允许只消费旧的 `relevant: bool`
+- Chainlit 必须把同一条消息里的 `message.content` 作为 `context_text` 透传给 `/files`
+- Chainlit 不允许在上传前弹出 document type 选择器，也不允许把自由文本先解析成 `document_type`
+
+#### 3.5 Main flow feedback priority
+
+- 若 `current_focus_json.owner == "interviewer_runtime_service"` 且 `kind == "required_document"`，`main_flow_feedback.current_focus_document_type` 必须优先采用 interviewer focus。
+- gate primary document 仍可作为 support message 出现在反馈里，用于说明门控层当前缺口。
+- 当候选类型与 resolved type 不一致时，反馈文案只能提示“在同一条消息里说明材料类型，让后端结合文本纠偏”，不能把纠偏责任推回前端强制选择。
 
 ### 4. Validation & Error Matrix
 
@@ -149,6 +185,9 @@ FileService.upload(
 | 模型未启用 | 未配置 live model | `extract()` 返回 `None`；`assess_document()` 降级到启发式 | `tests/unit/test_file_service.py` |
 | 模型调用成功 | multimodal 响应合法 | `extract()` 必须返回结果，不能吞成 `None` | `tests/unit/test_multimodal_extraction_service.py` |
 | 用户未手填类型 | `document_type=None` | 仍返回 `document_type_candidates` 与 `supported_claims` | files API / Chainlit |
+| `context_text` 为空 | `None` / 空串 / 全空白 | 不推断 hint，继续走模型候选与已有 gate 匹配 | `tests/unit/test_file_service.py` |
+| `context_text` 命中唯一 required document | `"这是我的 DS-2019 表。"` | `document_assessment.document_type_hint == "ds2019"` | `tests/unit/test_file_service.py` / `tests/integration/test_files_api.py` |
+| interviewer focus 与 gate primary 不同 | interviewer 要 `ds2019`，gate 仍缺 `ds160` | `main_flow_feedback` 以 interviewer focus 为主，但 support message 保留 `ds160` 缺口 | `tests/unit/test_file_service.py` / `tests/integration/test_files_api.py` |
 
 ### 5. Good/Base/Bad Cases
 
@@ -156,29 +195,34 @@ FileService.upload(
 
 - funding proof 上传后返回 `document_type_candidates=["funding_proof"]`
 - Chainlit 直接展示“候选类型 + 支持主张 + 当前主流程反馈”
+- 用户在同一条消息里写“这是我的护照首页”，Chainlit 原样透传文本，后端自己推断 `passport_bio`
 - parse 前后允许主线继续推进到下一个缺口，而不是死锁在“用户没先选类型”
 
 #### Base
 
 - 模型不可用时，仍能通过启发式候选给前端最小可纠偏信息
 - `document_type_hint` 存在时，优先尝试按 hint 解析；解析不可用再降级
+- 没有 `context_text` 也必须能正常上传，hint 不是前置必填步骤
 
 #### Bad
 
 - 上传链路只返回 `relevant: bool`，不返回候选类型和支持主张
 - 强迫用户在上传前先准确选择唯一 `document_type`
+- 前端根据 `"这是我的护照首页"` 直接构造 `document_type="passport_bio"` 再上传
 - `extract()` 成功拿到模型响应却仍返回 `None`
 
 ### 6. Tests Required
 
 - `tests/unit/test_multimodal_extraction_service.py`
   - 断言图片/PDF 均能构造 multimodal payload，并正确解析结果
+- `tests/unit/test_chainlit_client.py`
+  - 断言 multipart 请求体包含 `context_text`
 - `tests/unit/test_file_service.py`
-  - 断言 resolved document type 优先级、artifact_json 字段与 feedback
+  - 断言 resolved document type 优先级、artifact_json 字段、`context_text` hint 与 feedback
 - `tests/integration/test_files_api.py`
-  - 断言 files API response 字段完整
+  - 断言 files API response 字段完整，且支持 `context_text`
 - `tests/unit/test_chainlit_app.py`
-  - 断言 Chainlit 能显示候选类型、相关性、支持主张
+  - 断言 Chainlit 透传 `context_text`，不再强制前端选类型
 - `tests/integration/live/test_live_messages_api.py`
   - 断言上传并解析后主线至少不会继续卡在旧的 `funding_proof`
 
@@ -198,6 +242,18 @@ if resolved_document_type is None:
     raise ValueError("document_type is required")
 ```
 
+```python
+# chainlit_app.py
+document_type = infer_document_type_from_message(message.content)
+await client.upload_file(
+    session_id,
+    filename,
+    raw_bytes,
+    content_type,
+    document_type=document_type,
+)
+```
+
 #### Correct
 
 ```python
@@ -212,8 +268,22 @@ return {
 ```python
 resolved_document_type = (
     normalize_document_type(document_type)
+    or self._document_type_hint_from_context_text(
+        context_text,
+        required_document_types=required_document_types,
+    )
     or supported_document_type
     or top_assessment_document_type
+)
+```
+
+```python
+await client.upload_file(
+    session_id,
+    filename,
+    raw_bytes,
+    content_type,
+    context_text=message.content,
 )
 ```
 

@@ -6,7 +6,6 @@ import pytest
 import chainlit as cl
 
 from chainlit_app import _build_session_actions
-from chainlit_app import _choose_document_type
 from chainlit_app import _format_internal_report
 from chainlit_app import _format_user_report
 from chainlit_app import _send_report_actions
@@ -36,67 +35,6 @@ def test_build_session_actions_hides_upload_when_nothing_pending() -> None:
         "upload_requested_documents",
         "show_user_report",
         "show_internal_report",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_choose_document_type_includes_fallback_other_option(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    asked_options: list[tuple[str | None, str]] = []
-
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            asked_options.extend(
-                (
-                    action.payload["document_type"],
-                    action.label,
-                )
-                for action in kwargs["actions"]
-            )
-
-        async def send(self):
-            return {"payload": {"document_type": None}}
-
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
-
-    selected = await _choose_document_type(["passport_bio", "ds160"])
-
-    assert selected is None
-    assert asked_options == [
-        ("passport_bio", "passport_bio"),
-        ("ds160", "ds160"),
-        (None, "其他材料 / 暂不指定类型"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_choose_document_type_keeps_fallback_option_with_single_recommendation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    asked_options: list[tuple[str | None, str]] = []
-
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            asked_options.extend(
-                (
-                    action.payload["document_type"],
-                    action.label,
-                )
-                for action in kwargs["actions"]
-            )
-
-        async def send(self):
-            return {"payload": {"document_type": None}}
-
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
-
-    selected = await _choose_document_type(["passport_bio"])
-
-    assert selected is None
-    assert asked_options == [
-        ("passport_bio", "passport_bio"),
-        (None, "其他材料 / 暂不指定类型"),
     ]
 
 
@@ -290,7 +228,7 @@ async def test_upload_message_elements_pushes_browser_uploads_to_backend(
 ) -> None:
     upload_path = tmp_path / "passport.png"
     upload_path.write_bytes(b"png-bytes")
-    captured: list[tuple[str, str, bytes, str]] = []
+    captured: list[tuple[str, str, bytes, str, str | None, str | None]] = []
 
     class DummyClient:
         async def upload_file(
@@ -300,19 +238,14 @@ async def test_upload_message_elements_pushes_browser_uploads_to_backend(
             raw_bytes: bytes,
             content_type: str,
             document_type: str | None = None,
+            context_text: str | None = None,
         ) -> dict[str, str]:
-            captured.append((session_id, filename, raw_bytes, content_type, document_type))
+            captured.append(
+                (session_id, filename, raw_bytes, content_type, document_type, context_text)
+            )
             return {"document_status": "uploaded"}
 
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def send(self):
-            return {"payload": {"document_type": "passport_bio"}}
-
     monkeypatch.setattr("chainlit_app._client", lambda: DummyClient())
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
     monkeypatch.setattr(
         cl.user_session,
         "get",
@@ -337,7 +270,71 @@ async def test_upload_message_elements_pushes_browser_uploads_to_backend(
     )
 
     assert count == 1
-    assert captured == [("sess-1", "passport.png", b"png-bytes", "image/png", "passport_bio")]
+    assert captured == [
+        ("sess-1", "passport.png", b"png-bytes", "image/png", None, None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_upload_message_elements_uses_explicit_text_hint_when_user_says_what_document_is(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upload_path = tmp_path / "passport.png"
+    upload_path.write_bytes(b"png-bytes")
+    captured: list[tuple[str, str, bytes, str, str | None]] = []
+
+    class DummyClient:
+        async def upload_file(
+            self,
+            session_id: str,
+            filename: str,
+            raw_bytes: bytes,
+            content_type: str,
+            document_type: str | None = None,
+            context_text: str | None = None,
+        ) -> dict[str, str]:
+            captured.append(
+                (session_id, filename, raw_bytes, content_type, document_type, context_text)
+            )
+            return {"document_status": "uploaded"}
+
+    monkeypatch.setattr("chainlit_app._client", lambda: DummyClient())
+    monkeypatch.setattr(
+        cl.user_session,
+        "get",
+        lambda key, default=None: {
+            "session_id": "sess-1",
+            "pending_requested_documents": ["passport_bio", "ds160"],
+            "required_initial_package": ["passport_bio", "ds160"],
+        }.get(key, default),
+    )
+    monkeypatch.setattr(cl.user_session, "set", lambda key, value: None)
+
+    count = await _upload_message_elements(
+        SimpleNamespace(
+            content="这是我的护照首页。",
+            elements=[
+                SimpleNamespace(
+                    path=Path(upload_path),
+                    name="passport.png",
+                    mime="image/png",
+                )
+            ],
+        )
+    )
+
+    assert count == 1
+    assert captured == [
+        (
+            "sess-1",
+            "passport.png",
+            b"png-bytes",
+            "image/png",
+            None,
+            "这是我的护照首页。",
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -363,12 +360,14 @@ async def test_upload_message_elements_prefers_main_flow_feedback_and_refreshes_
             raw_bytes: bytes,
             content_type: str,
             document_type: str | None = None,
+            context_text: str | None = None,
         ) -> dict[str, object]:
             assert session_id == "sess-1"
             assert filename == "funding-proof.pdf"
             assert raw_bytes == b"pdf-bytes"
             assert content_type == "application/pdf"
-            assert document_type == "funding_proof"
+            assert document_type is None
+            assert context_text is None
             return {
                 "document_assessment": {
                     "document_type": "funding_proof",
@@ -394,16 +393,8 @@ async def test_upload_message_elements_prefers_main_flow_feedback_and_refreshes_
         async def send(self):
             sent_messages.append(self.content)
 
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def send(self):
-            return {"payload": {"document_type": "funding_proof"}}
-
     monkeypatch.setattr("chainlit_app._client", lambda: DummyClient())
     monkeypatch.setattr(cl, "Message", DummyMessage)
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
     monkeypatch.setattr(
         cl.user_session,
         "get",
@@ -458,8 +449,10 @@ async def test_upload_message_elements_falls_back_to_feedback_message_when_main_
             raw_bytes: bytes,
             content_type: str,
             document_type: str | None = None,
+            context_text: str | None = None,
         ) -> dict[str, object]:
-            assert document_type == "passport_bio"
+            assert document_type is None
+            assert context_text is None
             return {
                 "document_assessment": {
                     "document_type": "passport_bio",
@@ -476,16 +469,8 @@ async def test_upload_message_elements_falls_back_to_feedback_message_when_main_
         async def send(self):
             sent_messages.append(self.content)
 
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def send(self):
-            return {"payload": {"document_type": "passport_bio"}}
-
     monkeypatch.setattr("chainlit_app._client", lambda: DummyClient())
     monkeypatch.setattr(cl, "Message", DummyMessage)
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
     monkeypatch.setattr(
         cl.user_session,
         "get",
@@ -553,7 +538,7 @@ async def test_prompt_for_required_files_uses_not_helpful_copy_and_response_pend
             content_type: str,
             document_type: str | None = None,
         ) -> dict[str, object]:
-            assert document_type == "funding_proof"
+            assert document_type is None
             return {
                 "document_assessment": {
                     "document_type": "funding_proof",
@@ -591,7 +576,7 @@ async def test_prompt_for_required_files_uses_not_helpful_copy_and_response_pend
     assert sent_messages == [
         "上传反馈：对当前主线没有直接帮助。\n"
         "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 funding_proof。",
-        "材料已接收，可继续回答或继续上传。"
+        "材料已收到，你可以继续回答，我会结合材料继续追问。"
     ]
     assert session_state["pending_requested_documents"] == ["funding_proof"]
     assert session_state["last_gate_progress"] == {
@@ -615,7 +600,6 @@ async def test_upload_message_elements_refreshes_upload_options_between_multiple
         "required_initial_package": ["passport_bio", "ds160"],
         "last_gate_progress": None,
     }
-    asked_options: list[list[str]] = []
     captured_document_types: list[str | None] = []
 
     class DummyClient:
@@ -626,6 +610,7 @@ async def test_upload_message_elements_refreshes_upload_options_between_multiple
             raw_bytes: bytes,
             content_type: str,
             document_type: str | None = None,
+            context_text: str | None = None,
         ) -> dict[str, object]:
             captured_document_types.append(document_type)
             if len(captured_document_types) == 1:
@@ -638,21 +623,7 @@ async def test_upload_message_elements_refreshes_upload_options_between_multiple
                 "gate_progress": {"overall_status": "waiting_for_parse"},
             }
 
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            self.document_types = [
-                action.payload["document_type"] for action in kwargs["actions"]
-            ]
-            asked_options.append(self.document_types)
-
-        async def send(self):
-            for document_type in self.document_types:
-                if document_type is not None:
-                    return {"payload": {"document_type": document_type}}
-            return {"payload": {"document_type": None}}
-
     monkeypatch.setattr("chainlit_app._client", lambda: DummyClient())
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
     monkeypatch.setattr(
         cl.user_session,
         "get",
@@ -682,8 +653,7 @@ async def test_upload_message_elements_refreshes_upload_options_between_multiple
     )
 
     assert count == 2
-    assert asked_options == [["passport_bio", "ds160", None], ["ds160", None]]
-    assert captured_document_types == ["passport_bio", "ds160"]
+    assert captured_document_types == [None, None]
 
 
 @pytest.mark.asyncio
@@ -709,6 +679,7 @@ async def test_upload_message_elements_allows_unspecified_type_without_pending_d
             raw_bytes: bytes,
             content_type: str,
             document_type: str | None = None,
+            context_text: str | None = None,
         ) -> dict[str, object]:
             captured_document_types.append(document_type)
             return {
@@ -752,7 +723,6 @@ async def test_upload_message_elements_allows_unspecified_type_when_pending_is_e
     upload_path = tmp_path / "extra-proof.pdf"
     upload_path.write_bytes(b"extra-proof")
     captured_document_types: list[str | None] = []
-    asked_options: list[list[str | None]] = []
     session_state = {
         "session_id": "sess-1",
         "pending_requested_documents": [],
@@ -768,6 +738,7 @@ async def test_upload_message_elements_allows_unspecified_type_when_pending_is_e
             raw_bytes: bytes,
             content_type: str,
             document_type: str | None = None,
+            context_text: str | None = None,
         ) -> dict[str, object]:
             captured_document_types.append(document_type)
             return {
@@ -775,17 +746,7 @@ async def test_upload_message_elements_allows_unspecified_type_when_pending_is_e
                 "gate_progress": {"overall_status": "waiting_for_parse"},
             }
 
-    class DummyAskActionMessage:
-        def __init__(self, **kwargs):
-            asked_options.append(
-                [action.payload["document_type"] for action in kwargs["actions"]]
-            )
-
-        async def send(self):
-            return {"payload": {"document_type": None}}
-
     monkeypatch.setattr("chainlit_app._client", lambda: DummyClient())
-    monkeypatch.setattr(cl, "AskActionMessage", DummyAskActionMessage)
     monkeypatch.setattr(
         cl.user_session,
         "get",
@@ -810,7 +771,6 @@ async def test_upload_message_elements_allows_unspecified_type_when_pending_is_e
     )
 
     assert count == 1
-    assert asked_options == [["passport_bio", None]]
     assert captured_document_types == [None]
 
 
@@ -882,7 +842,7 @@ async def test_on_message_with_attachments_only_uses_updated_follow_up_copy(
 
     await on_message(SimpleNamespace(content="   ", elements=[SimpleNamespace()]))
 
-    assert sent_messages == ["材料已接收，可继续回答或继续上传。"]
+    assert sent_messages == ["材料已收到，你可以继续回答，我会结合材料继续追问。"]
 
 
 @pytest.mark.asyncio
@@ -915,8 +875,9 @@ async def test_send_report_actions_uses_soft_gate_copy(
 
     assert sent_payloads == [
         (
-            "可继续回答当前问题。若当前最缺材料，可点击“上传材料”或使用输入框附件按钮随时补充 "
-            "PDF/PNG/JPG/JPEG，单文件不超过 64MB。",
+            "继续像真实面签一样直接回答即可。"
+            "如果你手边有能支持当前说法的表格或证明，也可以随时上传；系统会先自行识别。"
+            "支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。",
             [
                 "upload_requested_documents",
                 "show_user_report",
@@ -974,10 +935,10 @@ async def test_on_chat_start_mentions_can_answer_before_uploading(
     assert sent_messages == [
         "欢迎使用 DS-160 模拟器。请先选择签证家族。",
         (
-            "已创建 f1 会话。\n"
-            "当前建议优先准备：passport_bio, ds160\n"
-            "你可以先开始回答，也可以随时上传材料补充主线。\n"
-            "上传支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
+            "已进入 F-1 模拟面谈。\n"
+            "先按真实面签方式直接回答问题即可；如果后面需要具体材料，我会再提示你。\n"
+            "如你手边已有表格或证明，也可以随时上传，系统会先自行识别。"
+            "支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
         ),
     ]
     assert saved_state["session_id"] == "sess-1"

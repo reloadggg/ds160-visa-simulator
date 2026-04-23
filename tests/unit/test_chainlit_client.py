@@ -69,12 +69,41 @@ async def test_chainlit_client_uploads_file_to_files_endpoint() -> None:
         "funding_proof.pdf",
         b"%PDF-1.7",
         "application/pdf",
+        context_text="这是资金证明",
     )
 
     assert response == expected_response
     assert captured["method"] == "POST"
     assert captured["path"] == "/v1/sessions/sess-1/files"
     assert "multipart/form-data" in str(captured["content_type"])
+
+
+@pytest.mark.asyncio
+async def test_chainlit_client_can_send_document_type_hint_context_to_backend() -> None:
+    captured: dict[str, bytes] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content
+        return httpx.Response(202, json={})
+
+    client = ChainlitBackendClient(
+        base_url="http://testserver",
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="http://testserver",
+        ),
+    )
+
+    await client.upload_file(
+        "sess-1",
+        "passport.png",
+        b"png-bytes",
+        "image/png",
+        context_text="这是我的护照首页",
+    )
+
+    assert b'name="context_text"' in captured["body"]
+    assert "这是我的护照首页".encode("utf-8") in captured["body"]
 
 
 @pytest.mark.asyncio

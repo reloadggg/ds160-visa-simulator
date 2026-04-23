@@ -65,6 +65,7 @@ def test_live_openai_compat_maps_to_domain_flow(
         *,
         deps,
         dynamic_turn_context,
+        tool_outputs=None,
         user_message,
         boundary_decision,
     ):
@@ -75,6 +76,7 @@ def test_live_openai_compat_maps_to_domain_flow(
             self,
             deps=deps,
             dynamic_turn_context=dynamic_turn_context,
+            tool_outputs=tool_outputs,
             user_message=user_message,
             boundary_decision=boundary_decision,
         )
@@ -147,6 +149,7 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
         *,
         deps,
         dynamic_turn_context,
+        tool_outputs=None,
         user_message,
         boundary_decision,
     ):
@@ -157,6 +160,7 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
             self,
             deps=deps,
             dynamic_turn_context=dynamic_turn_context,
+            tool_outputs=tool_outputs,
             user_message=user_message,
             boundary_decision=boundary_decision,
         )

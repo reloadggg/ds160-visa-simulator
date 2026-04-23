@@ -106,29 +106,35 @@ class ExtractorService:
         container = getattr(profile, section)
         existing_state = profile.field_states.get(update.field_path)
         existing_value = container.get(key)
+        normalized_value = self._normalize_field_value(update.field_path, update.value)
+        effective_state = self._normalized_field_state(
+            update.field_path,
+            state=update.state,
+            normalized_value=normalized_value,
+            raw_value=update.value,
+        )
         if (
-            update.state == FieldState.UNKNOWN
+            effective_state == FieldState.UNKNOWN
             and not update.value
             and ((existing_state is not None and existing_state.state != FieldState.UNKNOWN) or existing_value)
         ):
             return
 
-        profile.field_states[update.field_path] = FieldStateRecord(state=update.state)
-        normalized_value = self._normalize_field_value(update.field_path, update.value)
+        profile.field_states[update.field_path] = FieldStateRecord(state=effective_state)
         if normalized_value:
             container[key] = normalized_value
-        elif update.state == FieldState.UNKNOWN:
+        elif effective_state == FieldState.UNKNOWN:
             container.pop(key, None)
 
         # CLAIMED 仍然只是用户自述，不应伪装成 document evidence。
-        if update.state in {FieldState.DOCUMENTED, FieldState.CONFIRMED}:
+        if effective_state in {FieldState.DOCUMENTED, FieldState.CONFIRMED}:
             evidence_refs = list(update.evidence_refs)
         else:
             evidence_refs = []
         profile.field_provenance[update.field_path] = FieldProvenanceRecord(
             evidence_refs=evidence_refs,
         )
-        if update.state == FieldState.CLAIMED and normalized_value:
+        if effective_state == FieldState.CLAIMED and normalized_value:
             self._remember_claimed_value(profile, update.field_path, normalized_value)
 
     def _fallback_apply_message(
@@ -145,9 +151,46 @@ class ExtractorService:
         if not value:
             return None
         normalized = value.strip().lower().replace("-", "_")
+        if self._is_unknown_funding_source(normalized):
+            return None
         if any(token in normalized for token in ("parent", "parents", "mother", "father", "mom", "dad")):
             return "parents"
         return value
+
+    def _is_unknown_funding_source(self, normalized_value: str) -> bool:
+        collapsed = normalized_value.replace("_", " ")
+        return collapsed in {
+            "unknown",
+            "undecided",
+            "not decided",
+            "not sure",
+            "tbd",
+            "to be decided",
+            "to be determined",
+            "unconfirmed",
+            "n/a",
+            "na",
+        }
+
+    def _normalized_field_state(
+        self,
+        field_path: str,
+        *,
+        state: FieldState,
+        normalized_value: str | None,
+        raw_value: str | None,
+    ) -> FieldState:
+        if (
+            field_path == "/funding/primary_source"
+            and state == FieldState.CLAIMED
+            and normalized_value is None
+            and isinstance(raw_value, str)
+            and self._is_unknown_funding_source(
+                raw_value.strip().lower().replace("-", "_")
+            )
+        ):
+            return FieldState.UNKNOWN
+        return state
 
     def _normalize_field_value(
         self,

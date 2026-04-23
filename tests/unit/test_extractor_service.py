@@ -430,3 +430,49 @@ def test_extractor_service_does_not_clear_known_funding_with_unknown_update(
 
     assert updated.funding["primary_source"] == "parents"
     assert updated.field_states["/funding/primary_source"].state.value == "claimed"
+
+
+def test_extractor_service_normalizes_undecided_funding_claim_to_unknown(
+    monkeypatch,
+) -> None:
+    profile = ApplicantProfile.minimal("profile-extractor-6")
+
+    monkeypatch.setattr(
+        "app.services.extractor_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "field_updates": [
+                        {
+                            "field_path": "/funding/primary_source",
+                            "value": "Undecided",
+                            "state": "claimed",
+                            "evidence_refs": [],
+                        }
+                    ],
+                    "required_evidence_queries": [],
+                    "notes": [],
+                },
+            ),
+            {"model": "gpt-5.4"},
+        ),
+    )
+    monkeypatch.setattr(
+        ExtractorService,
+        "_build_agent_deps",
+        lambda self, profile: AgentRuntimeDeps(
+            session_id=profile.profile_id,
+            retrieval=object(),
+            evidence=object(),
+        ),
+    )
+
+    updated = ExtractorService(db=object()).apply_message(
+        profile,
+        "I have not decided who will pay yet.",
+    )
+
+    assert "primary_source" not in updated.funding
+    assert updated.field_states["/funding/primary_source"].state.value == "unknown"
+    assert updated.field_provenance["/funding/primary_source"].evidence_refs == []

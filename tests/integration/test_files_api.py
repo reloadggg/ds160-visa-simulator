@@ -292,6 +292,116 @@ def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
 
 
+def test_upload_file_prefers_interviewer_focus_over_gate_primary_in_feedback(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_id = "sess-interviewer-focus"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.declared_family = "j1"
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="j1",
+            scenario_key="interviewer-focus-feedback",
+            required_documents=["ds160", "ds2019"],
+        )
+        record.current_focus_json = {
+            "owner": "interviewer_runtime_service",
+            "kind": "required_document",
+            "document_type": "ds2019",
+        }
+        record.interviewer_state_json = {
+            "requested_documents": ["ds2019"],
+        }
+        db.add(record)
+        db.commit()
+
+    class RelevantExtractionResult:
+        fields = [object()]
+
+    monkeypatch.setattr(
+        "app.services.file_service.MultimodalExtractionService.extract",
+        lambda self, **kwargs: RelevantExtractionResult(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        data={"document_type": "ds2019"},
+        files={
+            "file": (
+                "ds2019.pdf",
+                build_pdf_bytes("SEVIS sponsor form"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["requested_documents"] == ["ds160"]
+    assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+    assert payload["main_flow_feedback"] == {
+        "status": "helpful",
+        "supported_document_type": "ds2019",
+        "current_focus_document_type": "ds2019",
+        "message": (
+            "这份材料对当前关键证明 ds2019 有帮助。 "
+            "材料门控层当前最缺的关键证明是 ds160。"
+        ),
+    }
+    assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
+
+
+def test_upload_file_can_use_backend_context_text_hint_without_frontend_document_type(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_id = "sess-context-hint"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.declared_family = "j1"
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="j1",
+            scenario_key="backend-context-hint",
+            required_documents=["ds160", "passport_bio", "ds2019", "funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    class RelevantExtractionResult:
+        fields = [object()]
+
+    monkeypatch.setattr(
+        "app.services.file_service.MultimodalExtractionService.extract",
+        lambda self, **kwargs: RelevantExtractionResult(),
+    )
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        data={"context_text": "这是我的 DS-2019 表。"},
+        files={
+            "file": (
+                "upload.pdf",
+                build_pdf_bytes("SEVIS sponsor form"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["document_type"] == "ds2019"
+    assert payload["document_assessment"]["document_type_hint"] == "ds2019"
+
+
 def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus(
     client: TestClient,
     db_session_factory,

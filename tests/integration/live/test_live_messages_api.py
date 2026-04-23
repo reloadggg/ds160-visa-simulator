@@ -44,6 +44,7 @@ def test_live_messages_api_requests_funding_proof(
         *,
         deps,
         dynamic_turn_context,
+        tool_outputs=None,
         user_message,
         boundary_decision,
     ):
@@ -54,6 +55,7 @@ def test_live_messages_api_requests_funding_proof(
             self,
             deps=deps,
             dynamic_turn_context=dynamic_turn_context,
+            tool_outputs=tool_outputs,
             user_message=user_message,
             boundary_decision=boundary_decision,
         )
@@ -119,6 +121,7 @@ def test_live_messages_api_continues_after_funding_document_upload(
         *,
         deps,
         dynamic_turn_context,
+        tool_outputs=None,
         user_message,
         boundary_decision,
     ):
@@ -129,6 +132,7 @@ def test_live_messages_api_continues_after_funding_document_upload(
             self,
             deps=deps,
             dynamic_turn_context=dynamic_turn_context,
+            tool_outputs=tool_outputs,
             user_message=user_message,
             boundary_decision=boundary_decision,
         )

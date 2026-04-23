@@ -3,6 +3,7 @@ from __future__ import annotations
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -43,6 +44,45 @@ _CONTENT_TYPE_ALIASES = {
     "image/jpg": "image/jpeg",
 }
 _GENERIC_BINARY_CONTENT_TYPE = "application/octet-stream"
+_CONTEXT_DOCUMENT_TYPE_HINT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "passport_bio",
+        (
+            "passport bio",
+            "passport",
+            "护照首页",
+            "护照信息页",
+            "护照资料页",
+            "护照",
+            "passport_bio",
+        ),
+    ),
+    ("ds160", ("ds-160", "ds160", "160 表", "160表", "ds160 表", "ds160表")),
+    ("ds2019", ("ds-2019", "ds2019", "2019 表", "2019表", "ds2019 表", "ds2019表")),
+    ("i20", ("i-20", "i20", "i 20")),
+    (
+        "funding_proof",
+        (
+            "funding proof",
+            "bank statement",
+            "financial statement",
+            "sponsor letter",
+            "资金证明",
+            "资助证明",
+            "银行流水",
+            "银行对账单",
+            "存款证明",
+            "奖学金证明",
+            "资助信",
+        ),
+    ),
+    ("admission_letter", ("admission letter", "offer letter", "录取信", "录取通知书")),
+    ("itinerary_or_trip_purpose", ("itinerary", "travel plan", "行程单", "行程计划", "旅行计划")),
+    ("employer_letter", ("employer letter", "employment letter", "在职证明", "雇主信")),
+    ("school_letter", ("school letter", "学校证明", "学校信", "院校证明")),
+    ("i797", ("i-797", "i797")),
+    ("evidence_of_achievement", ("achievement", "award", "publication", "成果证明", "获奖证明", "论文")),
+)
 
 
 class SessionNotFoundError(LookupError):
@@ -133,6 +173,7 @@ class FileService:
         raw_bytes: bytes,
         content_type: str | None = None,
         document_type: str | None = None,
+        context_text: str | None = None,
     ) -> FileUploadResult:
         session_record = self.sessions.get(session_id)
         if session_record is None:
@@ -145,19 +186,23 @@ class FileService:
         session_record = gate_runtime.refresh_record(session_record, save=False)
         pre_upload_support = gate_runtime.build_gate_support(session_record)
         required_document_types = self._required_document_types(session_record)
+        document_type_hint = normalize_document_type(document_type) or self._document_type_hint_from_context_text(
+            context_text,
+            required_document_types=required_document_types,
+        )
         assessment = self._assess_upload(
             filename=filename,
             raw_bytes=raw_bytes,
             source_type=source_type,
-            document_type_hint=document_type,
+            document_type_hint=document_type_hint,
         )
         feedback_message, relevant = self._build_assessment_feedback(
-            document_type=document_type,
+            document_type=document_type_hint,
             assessment=assessment,
         )
         supported_document_type = self._supported_document_type(
             filename=filename,
-            document_type=document_type,
+            document_type=document_type_hint,
             assessment_candidates=assessment.document_type_candidates,
             required_document_types=required_document_types,
         )
@@ -175,13 +220,13 @@ class FileService:
             None,
         )
         resolved_document_type = (
-            normalize_document_type(document_type)
+            document_type_hint
             or supported_document_type
             or top_assessment_document_type
         )
         document_assessment = DocumentAssessment(
             document_type=resolved_document_type,
-            document_type_hint=document_type,
+            document_type_hint=document_type_hint,
             document_type_candidates=[
                 item.document_type for item in assessment.document_type_candidates
             ],
@@ -228,6 +273,9 @@ class FileService:
                 counts_toward_gate=counts_toward_gate,
                 pre_upload_support=pre_upload_support,
                 post_upload_support=post_upload_support,
+                interviewer_focus_document_type=self._interviewer_focus_document_type(
+                    session_record
+                ),
             )
             if main_flow_feedback is not None:
                 document_assessment = document_assessment.model_copy(
@@ -361,6 +409,43 @@ class FileService:
             if item.get("document_type")
         }
 
+    def _document_type_hint_from_context_text(
+        self,
+        context_text: str | None,
+        *,
+        required_document_types: set[str],
+    ) -> str | None:
+        if not isinstance(context_text, str):
+            return None
+        normalized_context = re.sub(r"\s+", " ", context_text.strip().lower())
+        if not normalized_context:
+            return None
+
+        normalized_required_document_types = {
+            normalize_document_type(document_type) or document_type
+            for document_type in required_document_types
+            if isinstance(document_type, str) and document_type.strip()
+        }
+        matched_document_types: list[str] = []
+        for document_type, keywords in _CONTEXT_DOCUMENT_TYPE_HINT_KEYWORDS:
+            normalized_document_type = normalize_document_type(document_type) or document_type
+            if (
+                normalized_required_document_types
+                and normalized_document_type not in normalized_required_document_types
+            ):
+                continue
+            if any(keyword in normalized_context for keyword in keywords):
+                matched_document_types.append(normalized_document_type)
+
+        deduped_matches: list[str] = []
+        for document_type in matched_document_types:
+            if document_type not in deduped_matches:
+                deduped_matches.append(document_type)
+
+        if len(deduped_matches) != 1:
+            return None
+        return deduped_matches[0]
+
     def _supported_document_type(
         self,
         *,
@@ -405,12 +490,26 @@ class FileService:
         counts_toward_gate: bool | None,
         pre_upload_support: dict[str, Any],
         post_upload_support: dict[str, Any],
+        interviewer_focus_document_type: str | None,
     ) -> dict[str, str | None] | None:
-        current_focus_document_type = (
+        gate_focus_document_type = normalize_document_type(
             post_upload_support.get("primary_document")
             or pre_upload_support.get("primary_document")
         )
-        support_message = post_upload_support.get("support_message")
+        current_focus_document_type = (
+            interviewer_focus_document_type or gate_focus_document_type
+        )
+        current_focus_document_type = (
+            normalize_document_type(current_focus_document_type)
+            or current_focus_document_type
+        )
+        support_message = self._main_flow_support_message(
+            interviewer_focus_document_type=interviewer_focus_document_type,
+            post_upload_support=post_upload_support,
+        )
+        normalized_supported_document_type = normalize_document_type(
+            supported_document_type
+        ) or supported_document_type
 
         if (
             current_focus_document_type is None
@@ -430,26 +529,77 @@ class FileService:
                 ),
             }
 
-        if pre_upload_support.get("primary_document") == supported_document_type:
+        if normalized_supported_document_type == current_focus_document_type:
             return {
                 "status": "helpful",
-                "supported_document_type": supported_document_type,
+                "supported_document_type": normalized_supported_document_type,
                 "current_focus_document_type": current_focus_document_type,
                 "message": self._join_feedback_message(
-                    f"这份材料对当前关键证明 {supported_document_type} 有帮助。",
+                    f"这份材料对当前关键证明 {normalized_supported_document_type} 有帮助。",
                     support_message,
                 ),
             }
 
+        if interviewer_focus_document_type:
+            headline = (
+                f"这份材料对 {normalized_supported_document_type} 有帮助，"
+                f"但当前对话主线仍在核验 {current_focus_document_type}。"
+            )
+        else:
+            headline = (
+                f"这份材料对 {normalized_supported_document_type} 有帮助，"
+                "但当前主线没有改变。"
+            )
         return {
             "status": "partial_helpful",
-            "supported_document_type": supported_document_type,
+            "supported_document_type": normalized_supported_document_type,
             "current_focus_document_type": current_focus_document_type,
-            "message": self._join_feedback_message(
-                f"这份材料对 {supported_document_type} 有帮助，但当前主线没有改变。",
-                support_message,
-            ),
+            "message": self._join_feedback_message(headline, support_message),
         }
+
+    def _interviewer_focus_document_type(self, session_record) -> str | None:
+        current_focus = session_record.current_focus_json or {}
+        if (
+            current_focus.get("owner") == "interviewer_runtime_service"
+            and current_focus.get("kind") == "required_document"
+        ):
+            document_type = current_focus.get("document_type")
+            normalized = normalize_document_type(document_type)
+            if normalized is not None:
+                return normalized
+            if isinstance(document_type, str) and document_type.strip():
+                return document_type.strip()
+
+        interviewer_state = session_record.interviewer_state_json or {}
+        requested_documents = interviewer_state.get("requested_documents", [])
+        if isinstance(requested_documents, list):
+            for document_type in requested_documents:
+                normalized = normalize_document_type(document_type)
+                if normalized is not None:
+                    return normalized
+                if isinstance(document_type, str) and document_type.strip():
+                    return document_type.strip()
+        return None
+
+    def _main_flow_support_message(
+        self,
+        *,
+        interviewer_focus_document_type: str | None,
+        post_upload_support: dict[str, Any],
+    ) -> str | None:
+        gate_primary_document = normalize_document_type(
+            post_upload_support.get("primary_document")
+        ) or post_upload_support.get("primary_document")
+        if (
+            interviewer_focus_document_type
+            and gate_primary_document
+            and gate_primary_document != interviewer_focus_document_type
+        ):
+            return f"材料门控层当前最缺的关键证明是 {gate_primary_document}。"
+        support_message = post_upload_support.get("support_message")
+        if isinstance(support_message, str) and support_message.strip():
+            return support_message.strip()
+        return None
 
     def _counts_toward_gate(
         self,

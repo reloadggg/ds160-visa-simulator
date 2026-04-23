@@ -109,7 +109,7 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     )
 
     assert pre_worker_response.status_code == 200
-    assert pre_worker_response.json()["governor_decision"] == "need_more_evidence"
+    assert pre_worker_response.json()["gate_progress"]["overall_status"] == "waiting_for_parse"
 
     with db_session_factory() as db:
         while ParseWorker(db).run_once():

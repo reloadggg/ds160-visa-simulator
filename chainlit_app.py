@@ -45,8 +45,6 @@ _UPLOAD_FEEDBACK_STATUS_LABELS = {
     "partial_helpful": "上传反馈：部分帮助当前主线。",
     "not_helpful": "上传反馈：对当前主线没有直接帮助。",
 }
-_UNSPECIFIED_DOCUMENT_TYPE_LABEL = "其他材料 / 暂不指定类型"
-_DOCUMENT_TYPE_SELECTION_CANCELLED = object()
 
 
 def _client() -> ChainlitBackendClient:
@@ -171,43 +169,15 @@ def _build_session_actions(pending_requested_documents: list[str]) -> list[cl.Ac
     return actions
 
 
-async def _choose_document_type(options: list[str]) -> str | None | object:
-    unique_options = list(dict.fromkeys(options))
-    if not unique_options:
-        return None
-
-    selection = await cl.AskActionMessage(
-        content="请先选择这份材料对应的类型",
-        actions=[
-            cl.Action(
-                name="select_document_type",
-                payload={"document_type": option},
-                label=option,
-            )
-            for option in unique_options
-        ]
-        + [
-            cl.Action(
-                name="select_document_type",
-                payload={"document_type": None},
-                label=_UNSPECIFIED_DOCUMENT_TYPE_LABEL,
-            )
-        ],
-        timeout=180,
-    ).send()
-    if not selection:
-        return _DOCUMENT_TYPE_SELECTION_CANCELLED
-    return selection["payload"]["document_type"]
-
-
 async def _send_report_actions() -> None:
     pending_requested_documents = list(
         cl.user_session.get("pending_requested_documents", [])
     )
     await cl.Message(
         content=(
-            "可继续回答当前问题。若当前最缺材料，可点击“上传材料”或使用输入框附件按钮随时补充 "
-            "PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
+            "继续像真实面签一样直接回答即可。"
+            "如果你手边有能支持当前说法的表格或证明，也可以随时上传；系统会先自行识别。"
+            "支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
         ),
         actions=_build_session_actions(pending_requested_documents),
     ).send()
@@ -230,7 +200,7 @@ async def _prompt_for_required_files(requested_documents: list[str]) -> None:
         files = await cl.AskFileMessage(
             content=(
                 "请上传你认为有帮助的材料。"
-                "可先不指定类型，系统会尝试自行归类。"
+                "系统会先自行识别类型和相关性。"
                 "仅支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
             ),
             accept=_UPLOAD_ACCEPT,
@@ -254,7 +224,7 @@ async def _prompt_for_required_files(requested_documents: list[str]) -> None:
     for document_type in requested_documents:
         files = await cl.AskFileMessage(
             content=(
-                f"请上传材料：{document_type}。"
+                f"如果你手边有与 {document_type} 相关的材料，可以现在上传；系统会先自行识别。"
                 "仅支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
             ),
             accept=_UPLOAD_ACCEPT,
@@ -271,13 +241,13 @@ async def _prompt_for_required_files(requested_documents: list[str]) -> None:
             item.name,
             raw_bytes,
             item.type,
-            document_type=document_type,
+            document_type=None,
         )
         await _handle_upload_response(response)
         uploaded_any = True
 
     if uploaded_any:
-        await cl.Message(content="材料已接收，可继续回答或继续上传。").send()
+        await cl.Message(content="材料已收到，你可以继续回答，我会结合材料继续追问。").send()
 
 
 def _format_upload_feedback(response: dict) -> str | None:
@@ -326,7 +296,7 @@ def _format_upload_feedback(response: dict) -> str | None:
         assessment.get("document_type") or response.get("document_type")
     )
     if candidates and resolved_document_type not in candidates:
-        lines.append("如识别类型不准，可在前端下次上传时手动指定类型纠偏。")
+        lines.append("如识别类型不准，可在同一条消息里直接说明材料类型，后端会结合文本自动纠偏。")
     return "\n".join(lines)
 
 
@@ -360,6 +330,7 @@ async def _upload_message_elements(message: cl.Message) -> int:
 
     uploaded_count = 0
     client = _client()
+    context_text = getattr(message, "content", None)
     for element in elements:
         path = getattr(element, "path", None)
         name = getattr(element, "name", None)
@@ -368,25 +339,12 @@ async def _upload_message_elements(message: cl.Message) -> int:
 
         raw_bytes = Path(path).read_bytes()
         content_type = getattr(element, "mime", None) or "application/octet-stream"
-        pending_requested_documents = list(
-            cl.user_session.get("pending_requested_documents", [])
-        )
-        required_initial_package = list(
-            cl.user_session.get("required_initial_package", [])
-        )
-        upload_options = pending_requested_documents or required_initial_package
-        if upload_options:
-            document_type = await _choose_document_type(upload_options)
-            if document_type is _DOCUMENT_TYPE_SELECTION_CANCELLED:
-                continue
-        else:
-            document_type = None
         response = await client.upload_file(
             session_id,
             name,
             raw_bytes,
             content_type,
-            document_type,
+            context_text=context_text,
         )
         await _handle_upload_response(response)
         uploaded_count += 1
@@ -399,20 +357,7 @@ async def upload_requested_documents(_action) -> None:
     requested_documents = list(cl.user_session.get("pending_requested_documents", []))
     required_initial_package = list(cl.user_session.get("required_initial_package", []))
     upload_options = requested_documents or required_initial_package
-    if not upload_options:
-        await _prompt_for_required_files([])
-        return
-    if requested_documents:
-        await _prompt_for_required_files(requested_documents)
-        return
-
-    document_type = await _choose_document_type(upload_options)
-    if document_type is _DOCUMENT_TYPE_SELECTION_CANCELLED:
-        return
-    if document_type is None:
-        await _prompt_for_required_files([])
-        return
-    await _prompt_for_required_files([document_type])
+    await _prompt_for_required_files(upload_options)
 
 
 @cl.action_callback("show_user_report")
@@ -467,10 +412,10 @@ async def on_chat_start() -> None:
     )
     await cl.Message(
         content=(
-            f"已创建 {declared_family} 会话。\n"
-            f"当前建议优先准备：{', '.join(required['required_initial_package'])}\n"
-            "你可以先开始回答，也可以随时上传材料补充主线。\n"
-            "上传支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
+            f"已进入 {dict(_FAMILY_OPTIONS).get(declared_family, declared_family)} 模拟面谈。\n"
+            "先按真实面签方式直接回答问题即可；如果后面需要具体材料，我会再提示你。\n"
+            "如你手边已有表格或证明，也可以随时上传，系统会先自行识别。"
+            "支持 PDF/PNG/JPG/JPEG，单文件不超过 64MB。"
         )
     ).send()
     await _send_report_actions()
@@ -485,7 +430,9 @@ async def on_message(message: cl.Message) -> None:
 
     uploaded_count = await _upload_message_elements(message)
     if uploaded_count and not message.content.strip():
-        await cl.Message(content="材料已接收，可继续回答或继续上传。").send()
+        await cl.Message(
+            content="材料已收到，你可以继续回答，我会结合材料继续追问。"
+        ).send()
         await _send_report_actions()
         return
     if not uploaded_count and getattr(message, "elements", None) and not message.content.strip():

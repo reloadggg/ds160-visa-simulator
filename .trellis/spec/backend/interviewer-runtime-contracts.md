@@ -78,6 +78,12 @@ CapabilityOrchestrator.orchestrate(
   - runtime 在进入 question agent 前预编排的 capability outputs
 - `user` 只承载当前用户消息
 
+#### 3.1.1 Test-double contract for question agent
+
+- 任何 monkeypatch / spy / test double 只要替换 `QuestionAgentRunner.run(...)`，都必须接受 `tool_outputs` 关键字参数。
+- 如果测试替身漏掉 `tool_outputs`，`InterviewRuntimeService._question_action()` 会在调用 test double 时触发 `TypeError`，然后被 runtime 当成 agent 失败并走 fallback。
+- 这类失败属于测试桩签名漂移，不应被误判成真实业务回归。
+
 #### 3.2 Turn decision output contract
 
 `app/agents/schemas.py::InterviewNextAction`
@@ -194,6 +200,7 @@ CapabilityOrchestrator.orchestrate(
 |----------|-------|-------------------|-----------------|
 | Agent 正常返回 | question agent 成功 | 使用 agent 输出；`fallback_used=false` | `runtime_trace_json` 最后一个 `turn_decision` 节点 |
 | Agent 运行失败 | provider / schema / tool 失败 | 回退 `_fallback_question_action()`；trace 标记 fallback | `prompt_trace` 仍可见模型信息，`fallback_used=true` |
+| 测试桩漏 `tool_outputs` | monkeypatch 的 `QuestionAgentRunner.run` 签名过旧 | 会触发假 fallback；应先修测试替身签名 | live / unit monkeypatches |
 | score 仍提示缺材料 | `governor_decision=continue_interview` 且 fallback 路径有缺材料 | fallback 可恢复为 `need_more_evidence`，但这是兜底，不是主路径 | `tests/unit/test_interview_runtime_service.py` |
 | 拒签结果 | `decision=simulated_refusal` | 对外文案必须走公共拒签 copy，不暴露内部推理 | `assistant_message` 与 `current_focus.reason` |
 | 多消费者对齐 | messages / openai_compat / report | 都消费 `turn_decision + advisory_context + prompt_trace` | integration/live tests |
@@ -252,6 +259,26 @@ assert payload["metadata"]["phase_state"] == "interview"
 assert payload["metadata"]["turn_decision"]
 assert payload["metadata"]["prompt_trace"]
 assert payload["governor_decision"] in {"continue_interview", "need_more_evidence"}
+```
+
+```python
+def tracked_run(self, *, deps, dynamic_turn_context, user_message, boundary_decision):
+    ...
+```
+
+#### Correct
+
+```python
+def tracked_run(
+    self,
+    *,
+    deps,
+    dynamic_turn_context,
+    tool_outputs=None,
+    user_message,
+    boundary_decision,
+):
+    ...
 ```
 
 ## Scenario: Phase 1 minimal agent-kernel seams
@@ -338,6 +365,15 @@ ds160-agent-cli replay-session --session-id <sid>
 ```
 
 ### 3. Contracts
+
+#### 3.0 Extractor normalization contract for undecided funding
+
+- `ExtractorService` 对 `/funding/primary_source` 的 agent 输出必须做后端归一化。
+- 当模型返回的 `value` 只是占位词，例如 `undecided`、`unknown`、`not decided`、`tbd`、`to be determined`，不允许把它当成 `claimed` 真值写入 `profile.funding["primary_source"]`。
+- 这类值必须被收敛成：
+  - `field_states["/funding/primary_source"].state == "unknown"`
+  - `profile.funding` 中不写入 `primary_source`
+  - `field_provenance["/funding/primary_source"].evidence_refs == []`
 
 #### 3.1 TurnRecord payload contract
 

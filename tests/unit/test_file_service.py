@@ -244,3 +244,154 @@ def test_upload_returns_feedback_for_irrelevant_document(
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_upload_prefers_interviewer_focus_for_main_flow_feedback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'file-service-interviewer-focus.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    class StubMultimodal:
+        def extract(self, **kwargs):
+            class Result:
+                fields = [object()]
+
+            return Result()
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-existing",
+                    declared_family="j1",
+                    gate_status_json={
+                        "declared_family": "j1",
+                        "scenario_key": "interviewer-focus-feedback",
+                        "status": "pending_documents",
+                        "required_documents": [
+                            {"document_type": "ds160"},
+                            {"document_type": "ds2019"},
+                        ],
+                    },
+                    current_focus_json={
+                        "owner": "interviewer_runtime_service",
+                        "kind": "required_document",
+                        "document_type": "ds2019",
+                    },
+                    interviewer_state_json={
+                        "requested_documents": ["ds2019"],
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            service = FileService(db)
+            monkeypatch.setattr(service, "multimodal", StubMultimodal())
+            result = service.upload(
+                "sess-existing",
+                "ds2019.pdf",
+                build_pdf_bytes("SEVIS sponsor form"),
+                "application/pdf",
+                "ds2019",
+            )
+
+            assert result.main_flow_feedback == {
+                "status": "helpful",
+                "supported_document_type": "ds2019",
+                "current_focus_document_type": "ds2019",
+                "message": (
+                    "这份材料对当前关键证明 ds2019 有帮助。 "
+                    "材料门控层当前最缺的关键证明是 ds160。"
+                ),
+            }
+            assert result.requested_documents == ["ds160"]
+            assert result.gate_progress == {
+                "overall_status": "waiting_for_parse",
+                "ready_count": 0,
+                "uploaded_count": 1,
+                "missing_count": 1,
+                "documents": [
+                    {
+                        "document_type": "ds160",
+                        "status": "missing",
+                        "is_uploaded": False,
+                        "is_parsed": False,
+                        "meets_minimum_fields": False,
+                    },
+                    {
+                        "document_type": "ds2019",
+                        "status": "uploaded",
+                        "is_uploaded": True,
+                        "is_parsed": False,
+                        "meets_minimum_fields": False,
+                    },
+                ],
+            }
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_upload_uses_backend_context_text_to_infer_document_type_hint(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'file-service-context-hint.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    class StubMultimodal:
+        def extract(self, **kwargs):
+            class Result:
+                fields = [object()]
+
+            return Result()
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-existing",
+                    declared_family="j1",
+                    gate_status_json={
+                        "declared_family": "j1",
+                        "scenario_key": "backend-context-hint",
+                        "status": "pending_documents",
+                        "required_documents": [
+                            {"document_type": "ds160"},
+                            {"document_type": "passport_bio"},
+                            {"document_type": "ds2019"},
+                            {"document_type": "funding_proof"},
+                        ],
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            service = FileService(db)
+            monkeypatch.setattr(service, "multimodal", StubMultimodal())
+            result = service.upload(
+                "sess-existing",
+                "upload.pdf",
+                build_pdf_bytes("SEVIS sponsor form"),
+                "application/pdf",
+                context_text="这是我的 DS-2019 表。",
+            )
+
+            assert result.document_type == "ds2019"
+            assert result.document_assessment is not None
+            assert result.document_assessment.document_type_hint == "ds2019"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
