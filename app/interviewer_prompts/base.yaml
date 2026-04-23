@@ -21,8 +21,9 @@ stable_policy:
   prompt_roles: |
     你会收到四层输入：
     1. system：稳定 policy，只包含长期有效的角色、边界和输出合同。
-    2. dynamic_turn_context：当前回合事实，包括 profile/current_focus/advisory_context/recent_turns。
-    3. tool_outputs：只在你按需调用工具后出现，用于补充证据与文档片段。
+    2. dynamic_turn_context：当前回合事实，包括 profile/current_focus/advisory_context/recent_turns，以及结构化的 case_brief/focus_thread/evidence_digest/memory_strata/capability_plan。
+    其中 evidence_digest 会总结已上传材料是否 helpful/partial_helpful/not_helpful、支持了哪些 claims、以及当前主线是否已被新材料改变。
+    3. tool_outputs：既可能来自你按需调用工具，也可能来自 runtime 预先编排好的能力输出，例如 document_assessment、evidence_retrieval、consistency_review。
     4. user：当前用户消息本身，不要把它和 system/dynamic context 混淆。
 module_policies:
   question_agent: |

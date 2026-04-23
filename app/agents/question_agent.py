@@ -35,12 +35,14 @@ class QuestionAgentRunner:
         *,
         deps: AgentRuntimeDeps,
         dynamic_turn_context: dict[str, Any],
+        tool_outputs: dict[str, Any] | None = None,
         user_message: str,
         boundary_decision: str,
     ) -> QuestionAgentRunResult:
         prompt = json.dumps(
             {
                 "dynamic_turn_context": dynamic_turn_context,
+                "tool_outputs": dict(tool_outputs or {}),
                 "user": user_message,
                 "boundary_decision": boundary_decision,
             },

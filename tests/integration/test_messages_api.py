@@ -379,6 +379,8 @@ def test_message_turn_uses_question_agent_output_for_continue_interview(
             "consistency_check",
             "score_case",
             "governor_decide",
+            "decide_capability",
+            "resolve_capability",
             "turn_decision",
         ]
         assert record.score_history_json[-1]["scoring_stage"] == "interview_turn"
@@ -509,6 +511,8 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
         "consistency_check",
         "score_case",
         "governor_decide",
+        "decide_capability",
+        "resolve_capability",
         "turn_decision",
     ]
     assert assistant_turn.metadata_json["requested_documents"] == []

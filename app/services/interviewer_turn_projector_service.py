@@ -372,7 +372,11 @@ class InterviewerTurnProjectorService:
             requested_documents=requested_documents,
             focus=current_focus,
             trace_refs=self.build_trace_refs(trace_entries),
-            artifacts=self.build_turn_artifacts(requested_documents, current_focus),
+            artifacts=self.build_turn_artifacts(
+                requested_documents,
+                current_focus,
+                trace_entries,
+            ),
             advisory_summary=self.build_turn_advisory_summary(advisory_context),
         ).model_dump(mode="json", exclude_none=True)
 
@@ -392,6 +396,7 @@ class InterviewerTurnProjectorService:
         self,
         requested_documents: list[str],
         current_focus: dict[str, Any],
+        trace_entries: list[RuntimeTraceEntry],
     ) -> list[dict[str, Any]]:
         artifacts: list[dict[str, Any]] = []
         for document_type in requested_documents:
@@ -409,6 +414,27 @@ class InterviewerTurnProjectorService:
                     "risk_code": current_focus["risk_code"],
                 }
             )
+        artifacts.extend(self._capability_artifacts(trace_entries))
+        return artifacts
+
+    def _capability_artifacts(
+        self,
+        trace_entries: list[RuntimeTraceEntry],
+    ) -> list[dict[str, Any]]:
+        artifacts: list[dict[str, Any]] = []
+        for entry in trace_entries:
+            if entry.node_name != "resolve_capability":
+                continue
+            metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+            raw_artifacts = metadata.get("artifacts", [])
+            if not isinstance(raw_artifacts, list):
+                continue
+            for item in raw_artifacts:
+                if not isinstance(item, dict) or not item:
+                    continue
+                artifact = dict(item)
+                if artifact not in artifacts:
+                    artifacts.append(artifact)
         return artifacts
 
     def build_turn_advisory_summary(

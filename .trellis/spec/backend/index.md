@@ -32,6 +32,9 @@
 - `app/services/interview_runtime_service.py`
 - `app/services/interviewer_runtime_service.py`
 - `app/services/interviewer_turn_projector_service.py`
+- `app/services/capability_orchestrator.py`
+- `app/services/ds160_context_engine.py`
+- `app/services/ds160_memory_manager.py`
 - `app/platform/turn_record.py`
 - `app/services/advisory_review_service.py`
 - `app/services/boundary_policy_service.py`

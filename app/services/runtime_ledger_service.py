@@ -210,6 +210,26 @@ class RuntimeLedgerService:
                         payload=trace_payload,
                     )
                 )
+                node_name = str(trace_payload.get("node_name") or "")
+                if node_name in {"decide_capability", "resolve_capability"}:
+                    events.append(
+                        LedgerEvent(
+                            event_id=self._event_id(
+                                turn_id,
+                                "capability",
+                                batch_index,
+                                trace_index,
+                            ),
+                            session_id=record.session_id,
+                            turn_id=turn_id,
+                            turn_index=turn_index,
+                            event_type=LedgerEventType.CAPABILITY,
+                            source="runtime_trace",
+                            name=node_name,
+                            payload=trace_payload,
+                        )
+                    )
+                    continue
                 tool_calls = trace_payload.get("tool_calls", [])
                 if isinstance(tool_calls, list) and tool_calls:
                     events.append(
@@ -227,7 +247,7 @@ class RuntimeLedgerService:
                             source="runtime_trace",
                             name=str(trace_payload.get("node_name") or "capability"),
                             payload={
-                                "node_name": trace_payload.get("node_name"),
+                                "node_name": node_name,
                                 "provider": trace_payload.get("provider"),
                                 "model": trace_payload.get("model"),
                                 "tool_calls": tool_calls,

@@ -25,6 +25,7 @@ QuestionAgentRunner.run(
     *,
     deps: AgentRuntimeDeps,
     dynamic_turn_context: dict[str, Any],
+    tool_outputs: dict[str, Any] | None = None,
     user_message: str,
     boundary_decision: str,
 ) -> QuestionAgentRunResult
@@ -42,6 +43,15 @@ InterviewerRuntimeService.run_turn(
     record: SessionRecord,
     message_text: str,
 ) -> dict
+
+CapabilityOrchestrator.orchestrate(
+    *,
+    session_id: str,
+    governor_decision: str,
+    latest_user_message: str,
+    dynamic_turn_context: dict[str, Any],
+    score: ScoreState,
+) -> CapabilityOrchestrationResult
 ```
 
 ### 3. Contracts
@@ -63,7 +73,9 @@ InterviewerRuntimeService.run_turn(
 
 - `system` 只放稳定 policy，不放当前用户事实
 - `dynamic_turn_context` 放本轮 profile / score / recent turns / focus / gate 进度
-- `tool_outputs` 只承载按需检索结果，不把所有工具内容预塞首屏
+- `tool_outputs` 可以承载两类补充信息：
+  - 模型按需调用工具后的返回结果
+  - runtime 在进入 question agent 前预编排的 capability outputs
 - `user` 只承载当前用户消息
 
 #### 3.2 Turn decision output contract
@@ -729,3 +741,247 @@ RuntimeLedgerService.events_for_turn(
   - 断言 OpenAI-compatible metadata 中 `runtime_view_state` 暴露及其兼容回退行为
 - `tests/integration/test_reports_api.py`
   - 断言 `runtime_ledger / runtime_view_state` 暴露，以及 user/internal report 的兼容行为
+
+## Scenario: Phase 3 structured context engine and memory strata
+
+### 1. Scope / Trigger
+
+- Trigger：修改 `app/services/interview_runtime_service.py`、`app/services/ds160_context_engine.py`、`app/services/ds160_memory_manager.py`、`app/domain/runtime.py`、`app/interviewer_prompts/base.yaml`
+- Trigger：修改 `dynamic_turn_context` 形状、recent turn 压缩策略、case brief / focus thread / evidence digest / memory strata 合同时适用
+
+### 2. Signatures
+
+```python
+DS160MemoryManager.build(
+    *,
+    profile: ApplicantProfile,
+    score: ScoreState,
+    advisory_context: TurnAdvisoryContext,
+    read_model: SessionReadModel | None,
+    declared_family: str | None,
+    phase_state: str,
+    boundary_decision: str,
+    documents: list[Any] | None = None,
+) -> DS160MemoryBundle
+
+DS160ContextEngine.build_dynamic_turn_context(
+    *,
+    session_id: str,
+    declared_family: str | None,
+    phase_state: str,
+    latest_user_message: str,
+    profile: ApplicantProfile,
+    advisory_context: TurnAdvisoryContext,
+    gate_progress: dict[str, Any] | None,
+    recent_turns: list[Any] | None,
+    memory_bundle: DS160MemoryBundle,
+    prompt_roles: PromptRoleContract | None = None,
+) -> TurnContextSnapshot
+```
+
+### 3. Contracts
+
+#### 3.1 Dynamic turn context shape
+
+`dynamic_turn_context` 在保留旧字段的同时，新增以下结构化字段：
+
+```json
+{
+  "case_brief": {
+    "declared_family": "f1",
+    "phase_state": "interview",
+    "boundary_decision": "continue_interview",
+    "last_turn_decision": "need_more_evidence",
+    "profile_version": 3,
+    "travel_purpose": "study",
+    "school_name": "Test University",
+    "funding_source": "parents"
+  },
+  "focus_thread": {
+    "current_focus": {},
+    "last_turn_decision": "need_more_evidence",
+    "public_status": "waiting_key_proof | verify_key_issue | null",
+    "current_key_question": "string | null",
+    "current_key_proof": "string | null",
+    "current_risk_code": "string | null",
+    "requested_documents": [],
+    "allowed_next_actions": []
+  },
+  "evidence_digest": {
+    "missing_evidence": [],
+    "requested_documents": [],
+    "current_focus_document_type": "string | null",
+    "documented_field_paths": [],
+    "evidence_refs": [],
+    "supported_claims": [],
+    "active_main_flow_feedback": {},
+    "uploaded_document_count": 0,
+    "uploaded_documents": []
+  },
+  "memory_strata": {
+    "facts_memory": {},
+    "working_memory": {},
+    "evidence_memory": {},
+    "derived_memory": {},
+    "audit_memory": {}
+  },
+  "history_summary": {
+    "summarized_turn_count": 0,
+    "summarized_user_turn_count": 0,
+    "summarized_assistant_turn_count": 0,
+    "prior_decisions": [],
+    "prior_requested_documents": []
+  },
+  "compression": {
+    "strategy": "recent_turns_tail+history_summary",
+    "recent_turn_window": 6,
+    "retained_turn_count": 0,
+    "summarized_turn_count": 0
+  }
+}
+```
+
+#### 3.2 Rules
+
+- `dynamic_turn_context.current_focus` 仍保留，避免打破现有 prompt/runtime 消费路径
+- `case_brief` 表达稳定案件基线，不应直接塞完整 `profile_snapshot`
+- `focus_thread` 必须优先来自 `runtime_view_state / current_focus` 的上一轮稳定视图，而不是重新猜测
+- `evidence_digest` 至少包含：
+  - 当前缺失材料
+  - 上一轮请求材料
+  - 当前主线材料类型
+  - 已 documented/confirmed 的字段路径
+  - 已知 evidence refs
+  - 当前上传材料聚合出的 `supported_claims`
+  - 与当前主线最相关的一条 `active_main_flow_feedback`
+  - 已上传材料列表与数量，便于主对话感知新证据是否已经进入上下文
+- `memory_strata` 必须显式区分：
+  - `facts_memory`
+  - `working_memory`
+  - `evidence_memory`
+  - `derived_memory`
+  - `audit_memory`
+- `recent_turns` 只保留最近 `6` 条原始 turn
+- 被裁剪掉的更早 turn 不能直接丢失，必须体现在 `history_summary + compression`
+- `boundary_decision` 必须反映当前回合入口的 governor/boundary 决策，不允许退回上一轮旧值
+
+### 4. Validation & Error Matrix
+
+| Scenario | Input | Expected Behavior | Assertion Point |
+|----------|-------|-------------------|-----------------|
+| 有上一轮读模型 | `runtime_view_state` 含 current focus / requested docs | `focus_thread` 与 `current_focus` 对齐上一轮主线 | `tests/unit/test_interview_runtime_service.py` |
+| 有 documented 字段 | `profile.field_states/provenance` 含 documented + evidence refs | `evidence_digest` 带 documented paths + refs | `tests/unit/test_interview_runtime_service.py` |
+| 有已上传材料 | session documents 含 `document_assessment/main_flow_feedback` | `evidence_digest` 聚合 `supported_claims/uploaded_documents/active_main_flow_feedback` | `tests/unit/test_interview_runtime_service.py` |
+| turn 超过 6 条 | `recent_turns` > 6 | 只保留最近 6 条，旧 turn 进入 `history_summary` | `tests/unit/test_interview_runtime_service.py` |
+| 主链集成 | `/messages`、`/chat/completions` 正常跑通 | 新 context 字段不会破坏现有 API 合同 | `tests/integration/test_messages_api.py`, `tests/integration/test_openai_compat.py` |
+
+### 5. Tests Required
+
+- `tests/unit/test_interview_runtime_service.py`
+  - 断言结构化 `case_brief / focus_thread / evidence_digest / memory_strata`
+  - 断言上传材料反馈会进入 `evidence_digest`
+  - 断言 `recent_turns_tail + history_summary` 压缩行为
+- `tests/integration/test_files_api.py`
+  - 断言上传链路仍持续暴露 `document_assessment/main_flow_feedback`
+- `tests/integration/test_messages_api.py`
+  - 断言消息主链不因 Phase 3 context 扩展而回退
+- `tests/integration/test_openai_compat.py`
+  - 断言 OpenAI-compatible 主链保持兼容
+
+## Scenario: Phase 4 selective capability orchestration
+
+### 1. Scope / Trigger
+
+- Trigger：修改 `app/services/capability_orchestrator.py`、`app/services/interview_runtime_service.py`、`app/agents/question_agent.py`、`app/services/interviewer_turn_projector_service.py`、`app/services/runtime_ledger_service.py`
+- Trigger：修改 capability plan、`tool_outputs` 预编排语义、capability trace 节点或 turn artifacts 合同时适用
+
+### 2. Contracts
+
+#### 2.1 Capability plan contract
+
+`dynamic_turn_context.capability_plan` 必须是 runtime 预先给 question agent 的受控能力计划，最小结构：
+
+```json
+[
+  {
+    "capability_name": "document_assessment | evidence_retrieval | consistency_review",
+    "status": "completed | skipped",
+    "governor_decision": "continue_interview",
+    "reason": "string",
+    "summary": "string"
+  }
+]
+```
+
+规则：
+
+- capability plan 只表达 runtime 已经决定是否调用/展开的能力，不是开放式 agent 委派
+- `status=completed` 表示对应输出已经进入 `tool_outputs`
+- `status=skipped` 必须给出可追溯原因，避免主循环再次隐式分支
+
+#### 2.2 Tool outputs contract
+
+`QuestionAgentRunner.run(..., tool_outputs=...)` 中的 `tool_outputs` 至少允许承载：
+
+```json
+{
+  "document_assessment": {},
+  "evidence_retrieval": {},
+  "consistency_review": {}
+}
+```
+
+规则：
+
+- `document_assessment` 以 `evidence_digest` 为只读来源，输出当前主线材料、活跃反馈和相关上传材料
+- `evidence_retrieval` 只允许基于当前 focus / supported claims / latest user message 做小范围检索，默认 `limit <= 3`
+- `consistency_review` 只总结当前 risk / missing evidence / top risk flags，不重新生成第二套评分状态
+- 主循环仍保持单一 interviewer agent；这些输出只是受控能力层的上下文输入
+
+#### 2.3 Trace and replay contract
+
+能力编排必须写入 runtime trace，并使用固定节点名：
+
+```json
+{
+  "node_name": "decide_capability | resolve_capability",
+  "summary": "string",
+  "metadata": {
+    "capability_plan": [],
+    "artifacts": []
+  }
+}
+```
+
+规则：
+
+- `decide_capability` 记录本轮 capability plan
+- `resolve_capability` 记录最终落地的 capability artifacts
+- `RuntimeLedgerService` 必须把这两个节点投影为 `CAPABILITY` 事件，即使没有模型 `tool_calls`
+- `TurnRecord.artifacts` 必须吸收 `resolve_capability.metadata.artifacts`，保证 replay / inspect 可见
+
+### 3. Validation & Error Matrix
+
+| Scenario | Input | Expected Behavior | Assertion Point |
+|----------|-------|-------------------|-----------------|
+| 有上传材料摘要 | `evidence_digest` 含 uploaded documents / feedback | `document_assessment` completed，并进入 `tool_outputs` | `tests/unit/test_capability_orchestrator.py` |
+| 有当前主线锚点 | `current_focus_document_type` 或最新用户消息存在 | `evidence_retrieval` 产生 query 与 hits 摘要 | `tests/unit/test_capability_orchestrator.py` |
+| 有风险或缺口 | `risk_codes / missing_evidence / risk_flags` 非空 | `consistency_review` completed | `tests/unit/test_capability_orchestrator.py` |
+| capability trace 无 tool_calls | 只有 `decide_capability / resolve_capability` | ledger 仍投影出 capability events | `tests/unit/test_runtime_ledger_service.py` |
+| turn record 收口 | trace 含 capability artifacts | `turn_record.artifacts` 同时包含 requested documents 与 capability artifacts | `tests/unit/test_interviewer_turn_projector_service.py` |
+| 主链集成 | `/messages`、`/chat/completions`、`/reports` 正常跑通 | 新 capability 节点不会破坏外部合同 | integration tests |
+
+### 4. Tests Required
+
+- `tests/unit/test_capability_orchestrator.py`
+  - 断言 capability plan / tool_outputs / trace / artifacts
+- `tests/unit/test_interview_runtime_service.py`
+  - 断言 capability trace 会在 `turn_decision` 前落盘
+- `tests/unit/test_interviewer_turn_projector_service.py`
+  - 断言 capability artifacts 进入 turn record
+- `tests/unit/test_runtime_ledger_service.py`
+  - 断言 capability trace 节点可被 replay/read-model 投影
+- `tests/integration/test_messages_api.py`
+  - 断言主链 trace_refs 与 runtime trace 包含 capability 节点
+- `tests/integration/test_interview_runtime_trace.py`
+  - 断言每轮 runtime trace 新增 capability 节点且按 turn 对齐

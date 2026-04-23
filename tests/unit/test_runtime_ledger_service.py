@@ -258,3 +258,61 @@ def test_runtime_ledger_service_marks_extra_batches_as_session_orphans(tmp_path)
         "scorer",
         "boundary",
     ]
+
+
+def test_runtime_ledger_service_creates_capability_event_for_capability_trace_nodes_without_tool_calls(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'runtime-ledger-capability-node.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        service = RuntimeLedgerService(db)
+        session_record = SessionRepository(db).create(
+            declared_family="f1",
+            gate_status_json={"status": "ready_for_interview"},
+        )
+        session_record.runtime_trace_json = [
+            {"node_name": "receive_input", "summary": "input received"},
+            {
+                "node_name": "decide_capability",
+                "summary": "planned=document_assessment,evidence_retrieval",
+                "metadata": {"capability_plan": []},
+            },
+            {
+                "node_name": "resolve_capability",
+                "summary": "resolved=evidence_retrieval",
+                "metadata": {"artifacts": []},
+            },
+            {
+                "node_name": "turn_decision",
+                "turn_decision": "continue_interview",
+                "tool_calls": [],
+            },
+        ]
+        db.add(session_record)
+        db.flush()
+
+        repo = SessionTurnRepository(db)
+        repo.append_user_turn(
+            session_id=session_record.session_id,
+            content="I want to study in the U.S.",
+            source="user_message",
+        )
+        assistant_turn = repo.append_assistant_turn(
+            session_id=session_record.session_id,
+            content="What school will you attend?",
+            source="interviewer_runtime_service",
+            metadata_json={"turn_record": {"decision": "continue_interview"}},
+        )
+
+        ledger = service.build_session_ledger(session_record.session_id)
+        events = service.events_for_turn(ledger, assistant_turn.turn_id)
+
+    assert [event["name"] for event in events if event["event_type"] == "capability"] == [
+        "decide_capability",
+        "resolve_capability",
+    ]

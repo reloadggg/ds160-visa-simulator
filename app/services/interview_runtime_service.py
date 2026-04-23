@@ -17,14 +17,19 @@ from app.domain.runtime import (
     RuntimeTraceEntry,
     ScoreHistoryEntry,
     TurnAdvisoryContext,
-    TurnContextSnapshot,
 )
+from app.repositories.session_repo import SessionRepository
+from app.repositories.document_repo import DocumentRepository
 from app.services.advisory_review_service import AdvisoryReviewService
+from app.services.capability_orchestrator import CapabilityOrchestrator
 from app.services.consistency_service import ConsistencyService
+from app.services.ds160_context_engine import DS160ContextEngine
+from app.services.ds160_memory_manager import DS160MemoryManager
 from app.services.evidence_service import EvidenceService
 from app.services.extractor_service import ExtractorService
 from app.services.retrieval_service import RetrievalService
 from app.services.scoring_service import ScoringService
+from app.services.session_read_model_service import SessionReadModelService
 
 
 @dataclass
@@ -39,10 +44,17 @@ class InterviewRuntimeService:
     def __init__(self, db: Session | Any) -> None:
         self.db = db
         self.model_factory = AgentModelFactory()
+        self.session_repo = SessionRepository(db)
+        self.document_repo = DocumentRepository(db)
+        self.session_read_model = SessionReadModelService(db)
         self.extractor = ExtractorService(db)
         self.consistency = ConsistencyService()
         self.scoring = ScoringService(db)
         self.advisory_review = AdvisoryReviewService()
+        self.memory_manager = DS160MemoryManager()
+        self.context_engine = DS160ContextEngine()
+        self.capability_orchestrator = CapabilityOrchestrator(db)
+        self._last_capability_trace_entries: list[RuntimeTraceEntry] = []
 
     def analyze_turn(
         self,
@@ -159,6 +171,7 @@ class InterviewRuntimeService:
         trace_entries: list[RuntimeTraceEntry] | None = None,
         recent_turns: list[Any] | None = None,
     ) -> InterviewNextAction:
+        self._last_capability_trace_entries = []
         action, runtime_trace = self._question_action(
             session_id,
             profile,
@@ -167,7 +180,9 @@ class InterviewRuntimeService:
             recent_turns=recent_turns,
         )
         if trace_entries is not None:
+            trace_entries.extend(self._last_capability_trace_entries)
             trace_entries.append(runtime_trace)
+        self._last_capability_trace_entries = []
         return action
 
     def _build_score_history_entry(self, score: ScoreState) -> ScoreHistoryEntry:
@@ -240,6 +255,7 @@ class InterviewRuntimeService:
         governor_decision: str,
         recent_turns: list[Any] | None = None,
     ) -> tuple[InterviewNextAction, RuntimeTraceEntry]:
+        self._last_capability_trace_entries = []
         if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
             action = self._fallback_question_action(governor_decision, score)
             return action, self._build_turn_decision_trace(
@@ -261,10 +277,22 @@ class InterviewRuntimeService:
             session_id=session_id,
             profile=profile,
             score=score,
+            governor_decision=governor_decision,
             recent_turns=recent_turns,
             latest_user_message=latest_user_message,
             declared_family=declared_family,
         )
+        capability_result = self.capability_orchestrator.orchestrate(
+            session_id=session_id,
+            governor_decision=governor_decision,
+            latest_user_message=latest_user_message,
+            dynamic_turn_context=dynamic_turn_context,
+            score=score,
+        )
+        dynamic_turn_context["capability_plan"] = list(
+            capability_result.capability_plan
+        )
+        self._last_capability_trace_entries = list(capability_result.trace_entries)
         if model is not None:
             try:
                 run_result = QuestionAgentRunner(
@@ -277,6 +305,7 @@ class InterviewRuntimeService:
                 ).run(
                     deps=self._build_agent_deps(session_id),
                     dynamic_turn_context=dynamic_turn_context,
+                    tool_outputs=capability_result.tool_outputs,
                     user_message=latest_user_message,
                     boundary_decision=governor_decision,
                 )
@@ -498,39 +527,51 @@ class InterviewRuntimeService:
         session_id: str,
         profile: ApplicantProfile,
         score: ScoreState,
+        governor_decision: str,
         recent_turns: list[Any] | None,
         latest_user_message: str,
         declared_family: str | None,
     ) -> dict[str, Any]:
-        snapshot = TurnContextSnapshot(
+        record = self.session_repo.get(session_id)
+        phase_state = getattr(record, "phase_state", None) or "interview"
+        gate_progress = (
+            dict(getattr(record, "gate_status_json", {}) or {})
+            if record is not None
+            else {}
+        )
+        read_model = None
+        documents = []
+        if record is not None:
+            read_model = self.session_read_model.build_from_record(
+                record,
+                turns=recent_turns,
+            )
+            documents = self.document_repo.list_session_documents(session_id)
+        advisory_context = self._build_advisory_context(score)
+        memory_bundle = self.memory_manager.build(
+            profile=profile,
+            score=score,
+            advisory_context=advisory_context,
+            read_model=read_model,
+            declared_family=declared_family,
+            phase_state=phase_state,
+            boundary_decision=governor_decision,
+            documents=documents,
+        )
+        snapshot = self.context_engine.build_dynamic_turn_context(
             session_id=session_id,
             declared_family=declared_family,
-            phase_state="interview",
+            phase_state=phase_state,
             latest_user_message=latest_user_message,
-            recent_turns=self._recent_turn_payload(recent_turns),
-            profile_snapshot=profile.model_dump(mode="json"),
-            current_focus={},
-            advisory_context=self._build_advisory_context(score),
-            gate_progress={},
-            last_turn_decision=None,
+            profile=profile,
+            advisory_context=advisory_context,
+            gate_progress=gate_progress,
+            recent_turns=recent_turns,
+            memory_bundle=memory_bundle,
+            capability_plan=[],
             prompt_roles=PromptRoleContract(),
         )
         return snapshot.model_dump(mode="json")
-
-    def _recent_turn_payload(
-        self,
-        recent_turns: list[Any] | None,
-    ) -> list[dict[str, str]]:
-        if recent_turns is None:
-            return []
-        payload: list[dict[str, str]] = []
-        for turn in recent_turns[-6:]:
-            role = getattr(turn, "role", None)
-            content = getattr(turn, "content", None)
-            if not isinstance(role, str) or not isinstance(content, str):
-                continue
-            payload.append({"role": role, "content": content})
-        return payload
 
     def _build_advisory_context(self, score: ScoreState) -> TurnAdvisoryContext:
         return self.advisory_review.build_context(score)

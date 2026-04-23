@@ -91,6 +91,72 @@ class TurnAdvisoryContext(BaseModel):
     missing_evidence_summary: str | None = None
 
 
+class DS160CaseBrief(BaseModel):
+    declared_family: str | None = None
+    phase_state: str | None = None
+    boundary_decision: str | None = None
+    last_turn_decision: str | None = None
+    profile_version: int | None = None
+    travel_purpose: str | None = None
+    school_name: str | None = None
+    funding_source: str | None = None
+
+
+class DS160FocusThread(BaseModel):
+    current_focus: dict[str, Any] = Field(default_factory=dict)
+    last_turn_decision: str | None = None
+    public_status: str | None = None
+    current_key_question: str | None = None
+    current_key_proof: str | None = None
+    current_risk_code: str | None = None
+    requested_documents: list[str] = Field(default_factory=list)
+    allowed_next_actions: list[str] = Field(default_factory=list)
+
+
+class DS160EvidenceDigest(BaseModel):
+    missing_evidence: list[str] = Field(default_factory=list)
+    requested_documents: list[str] = Field(default_factory=list)
+    current_focus_document_type: str | None = None
+    documented_field_paths: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    supported_claims: list[str] = Field(default_factory=list)
+    active_main_flow_feedback: dict[str, Any] = Field(default_factory=dict)
+    uploaded_document_count: int = 0
+    uploaded_documents: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DS160MemoryStrata(BaseModel):
+    facts_memory: dict[str, Any] = Field(default_factory=dict)
+    working_memory: dict[str, Any] = Field(default_factory=dict)
+    evidence_memory: dict[str, Any] = Field(default_factory=dict)
+    derived_memory: dict[str, Any] = Field(default_factory=dict)
+    audit_memory: dict[str, Any] = Field(default_factory=dict)
+
+
+class TurnHistorySummary(BaseModel):
+    summarized_turn_count: int = 0
+    summarized_user_turn_count: int = 0
+    summarized_assistant_turn_count: int = 0
+    prior_decisions: list[str] = Field(default_factory=list)
+    prior_requested_documents: list[str] = Field(default_factory=list)
+
+
+class ContextCompressionSnapshot(BaseModel):
+    strategy: str = "recent_turns_tail+history_summary"
+    recent_turn_window: int = 6
+    retained_turn_count: int = 0
+    summarized_turn_count: int = 0
+
+
+class DS160MemoryBundle(BaseModel):
+    case_brief: DS160CaseBrief = Field(default_factory=DS160CaseBrief)
+    focus_thread: DS160FocusThread = Field(default_factory=DS160FocusThread)
+    evidence_digest: DS160EvidenceDigest = Field(default_factory=DS160EvidenceDigest)
+    memory_strata: DS160MemoryStrata = Field(default_factory=DS160MemoryStrata)
+    current_focus: dict[str, Any] = Field(default_factory=dict)
+    last_turn_decision: str | None = None
+
+
 class TurnContextSnapshot(BaseModel):
     session_id: str
     declared_family: str | None = None
@@ -103,6 +169,13 @@ class TurnContextSnapshot(BaseModel):
     gate_progress: dict[str, Any] = Field(default_factory=dict)
     last_turn_decision: str | None = None
     prompt_roles: PromptRoleContract = Field(default_factory=PromptRoleContract)
+    case_brief: DS160CaseBrief = Field(default_factory=DS160CaseBrief)
+    focus_thread: DS160FocusThread = Field(default_factory=DS160FocusThread)
+    evidence_digest: DS160EvidenceDigest = Field(default_factory=DS160EvidenceDigest)
+    memory_strata: DS160MemoryStrata = Field(default_factory=DS160MemoryStrata)
+    capability_plan: list[dict[str, Any]] = Field(default_factory=list)
+    history_summary: TurnHistorySummary = Field(default_factory=TurnHistorySummary)
+    compression: ContextCompressionSnapshot = Field(default_factory=ContextCompressionSnapshot)
 
 
 class RiskFlagHistoryEntry(BaseModel):

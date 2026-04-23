@@ -2,7 +2,7 @@ from time import time_ns
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.db.models import DocumentRecord, JobRecord
 
@@ -37,6 +37,24 @@ class DocumentRepository:
     def save_document(self, document: DocumentRecord) -> DocumentRecord:
         self.db.add(document)
         return document
+
+    def list_session_documents(self, session_id: str) -> list[DocumentRecord]:
+        return list(
+            self.db.scalars(
+                select(DocumentRecord)
+                .where(DocumentRecord.session_id == session_id)
+                .options(
+                    load_only(
+                        DocumentRecord.document_id,
+                        DocumentRecord.session_id,
+                        DocumentRecord.filename,
+                        DocumentRecord.status,
+                        DocumentRecord.artifact_json,
+                    )
+                )
+                .order_by(DocumentRecord.filename.asc(), DocumentRecord.document_id.asc())
+            )
+        )
 
     def enqueue_job(
         self,

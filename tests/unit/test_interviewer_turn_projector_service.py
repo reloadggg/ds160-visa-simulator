@@ -195,3 +195,54 @@ def test_project_uses_public_refusal_message_for_response_and_focus_reason() -> 
         "当前记录已确认存在虚假陈述或伪造材料，系统给出模拟拒签结果，"
         "本次会话到此结束。"
     )
+
+
+def test_project_appends_capability_artifacts_from_trace_metadata() -> None:
+    projector = InterviewerTurnProjectorService()
+    score = _build_score(missing_evidence=["funding_proof"])
+    record = _build_record("sess-projector-capability")
+
+    projection = projector.project(
+        record=record,
+        message_text="I can upload it later.",
+        action=InterviewNextAction(
+            assistant_message="Please upload your funding proof.",
+            requested_documents=["funding_proof"],
+            decision_hint="need_more_evidence",
+        ),
+        score=score,
+        governor_decision="need_more_evidence",
+        governor_requested_documents=["funding_proof"],
+        trace_entries=[
+            RuntimeTraceEntry(node_name="decide_capability"),
+            RuntimeTraceEntry(
+                node_name="resolve_capability",
+                metadata={
+                    "artifacts": [
+                        {
+                            "kind": "capability",
+                            "capability_name": "document_assessment",
+                            "status": "completed",
+                            "feedback_status": "helpful",
+                        }
+                    ]
+                },
+            ),
+            RuntimeTraceEntry(node_name="turn_decision"),
+        ],
+        history_turn_count=1,
+        history_turns=[SimpleNamespace(role="user", turn_id="turn-user-capability")],
+    )
+
+    assert projection.turn_record["artifacts"] == [
+        {
+            "kind": "requested_document",
+            "document_type": "funding_proof",
+        },
+        {
+            "kind": "capability",
+            "capability_name": "document_assessment",
+            "status": "completed",
+            "feedback_status": "helpful",
+        },
+    ]

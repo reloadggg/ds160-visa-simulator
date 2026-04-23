@@ -118,25 +118,29 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
         (3, "user"),
         (4, "assistant"),
     ]
-    assert len(record.runtime_trace_json) == 14
+    assert len(record.runtime_trace_json) == 18
     assert len(record.score_history_json) == 2
     assert len(record.governor_history_json) == 2
-    assert [entry["node_name"] for entry in record.runtime_trace_json[:7]] == [
+    assert [entry["node_name"] for entry in record.runtime_trace_json[:9]] == [
         "receive_input",
         "extract_claims",
         "resolve_evidence",
         "consistency_check",
         "score_case",
         "governor_decide",
+        "decide_capability",
+        "resolve_capability",
         "turn_decision",
     ]
-    assert [entry["node_name"] for entry in record.runtime_trace_json[7:]] == [
+    assert [entry["node_name"] for entry in record.runtime_trace_json[9:]] == [
         "receive_input",
         "extract_claims",
         "resolve_evidence",
         "consistency_check",
         "score_case",
         "governor_decide",
+        "decide_capability",
+        "resolve_capability",
         "turn_decision",
     ]
     assert record.score_history_json[0]["scoring_stage"] == "interview_turn"
