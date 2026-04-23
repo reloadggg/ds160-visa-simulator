@@ -287,8 +287,18 @@ export function useSessionWorkbench() {
 
         await refreshReports(sessionId)
       } catch (error) {
-        const message =
-          error instanceof ApiError ? `发送失败：${error.message}` : "发送失败，请重试。"
+        let message = "发送失败，请重试。"
+        if (error instanceof ApiError) {
+          if (error.status === 401) {
+            message = "大模型认证失败，请检查后端 API Key 配置（401）。"
+          } else if (error.status === 429) {
+            message = "大模型请求频率超限或额度耗尽，请稍后重试（429）。"
+          } else if (error.status === 503 || error.status === 502 || error.status === 504) {
+            message = "大模型服务当前不可用，请稍后重试（服务异常）。"
+          } else {
+            message = `发送失败：${error.message}`
+          }
+        }
         setChatError(message)
       } finally {
         setIsSending(false)

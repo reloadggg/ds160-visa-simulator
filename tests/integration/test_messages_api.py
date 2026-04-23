@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
-from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,6 +22,7 @@ from app.domain.contracts import (
 )
 from app.domain.runtime import RuntimeTraceEntry, build_initial_gate_status
 from app.main import app
+from app.services.runtime_errors import ModelRuntimeError
 from app.workers.parse_worker import ParseWorker
 
 
@@ -573,9 +573,12 @@ def test_message_turn_returns_429_when_question_agent_quota_is_exhausted(
     monkeypatch.setattr(
         "app.services.interview_runtime_service.QuestionAgentRunner.run",
         lambda self, **kwargs: (_ for _ in ()).throw(
-            ModelHTTPError(
+            ModelRuntimeError(
+                detail="当前对话模型额度已耗尽，请稍后重试或更换可用配置。",
                 status_code=429,
-                model_name="gpt-5.4",
+                provider="openai_compatible",
+                model="gpt-5.4",
+                upstream_code="API_KEY_QUOTA_EXHAUSTED",
                 body={
                     "code": "API_KEY_QUOTA_EXHAUSTED",
                     "message": "API key 额度已用完",
