@@ -18,6 +18,9 @@ EMPTY_RUNTIME: dict[str, Any] = {
     "prompt_template_id": None,
     "prompt_pack_id": None,
     "prompt_version": None,
+    "model_unavailable_reason": None,
+    "model_unavailable_missing_env_vars": [],
+    "model_unavailable_detail": None,
 }
 SUPPORTED_PROVIDERS = {"openai", "openai_compatible"}
 
@@ -76,8 +79,22 @@ class AgentModelFactory:
 
         api_key = os.getenv("OPENAI_API_KEY")
         base_url = os.getenv("OPENAI_BASE_URL")
+        missing_env_vars = [
+            env_var
+            for env_var, value in (
+                ("OPENAI_API_KEY", api_key),
+                ("OPENAI_BASE_URL", base_url),
+            )
+            if not value
+        ]
 
-        if not api_key or not base_url:
+        if missing_env_vars:
+            runtime["model_unavailable_reason"] = "missing_openai_config"
+            runtime["model_unavailable_missing_env_vars"] = missing_env_vars
+            runtime["model_unavailable_detail"] = (
+                "当前后端未配置可用的对话模型，无法生成面签问答。"
+                f"请检查 {', '.join(missing_env_vars)}。"
+            )
             return None, runtime
 
         provider = OpenAIProvider(base_url=base_url, api_key=api_key)

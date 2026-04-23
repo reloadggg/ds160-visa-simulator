@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -162,6 +163,71 @@ def seed_ready_for_interview_session(
         db.commit()
 
     return session_id
+
+
+def install_stub_build_question_action(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    continue_interview_message: str = "What is the purpose of your travel?",
+    high_risk_message: str = (
+        "This case needs additional review before the interview can continue."
+    ),
+) -> None:
+    def fake_build_question_action(
+        self,
+        session_id,
+        profile,
+        score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ):
+        del self, session_id, profile, trace_entries, recent_turns
+        requested_documents = list(score.missing_evidence[:1])
+        if governor_decision == "need_more_evidence":
+            return SimpleNamespace(
+                assistant_message=(
+                    f"Please upload {requested_documents[0]}."
+                    if requested_documents
+                    else "Please provide the key supporting document for this point."
+                ),
+                requested_documents=requested_documents,
+                decision_hint="need_more_evidence",
+            )
+        if governor_decision == "high_risk_review":
+            return SimpleNamespace(
+                assistant_message=high_risk_message,
+                requested_documents=[],
+                decision_hint="high_risk_review",
+            )
+        if governor_decision == "simulated_refusal":
+            return SimpleNamespace(
+                assistant_message="This simulated case results in refusal.",
+                requested_documents=[],
+                decision_hint="simulated_refusal",
+            )
+        if governor_decision == "route_correction":
+            return SimpleNamespace(
+                assistant_message="Your case may fit a different visa route.",
+                requested_documents=[],
+                decision_hint="route_correction",
+            )
+        if requested_documents:
+            return SimpleNamespace(
+                assistant_message=f"Please upload {requested_documents[0]}.",
+                requested_documents=requested_documents,
+                decision_hint="need_more_evidence",
+            )
+        return SimpleNamespace(
+            assistant_message=continue_interview_message,
+            requested_documents=[],
+            decision_hint="continue_interview",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        fake_build_question_action,
+    )
 
 
 def test_message_turn_allows_interview_runtime_when_gate_not_ready(
@@ -394,33 +460,19 @@ def test_message_turn_uses_question_agent_output_for_continue_interview(
         assert record.interviewer_state_json["next_action"] == "answer_question"
 
 
-def test_message_turn_uses_turn_history_to_advance_second_question(
+def test_message_turn_returns_503_when_question_agent_config_missing_for_interview_question(
     client: TestClient,
     db_session_factory,
-    monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (None, {"model": None}),
-    )
-
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
-    first = client.post(
+    response = client.post(
         f"/v1/sessions/{session_id}/messages",
         json={"role": "user", "content": "I want to study in the U.S."},
     )
-    second = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I will study computer science."},
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["assistant_message"] == "What is the purpose of your travel?"
-    assert second.json()["assistant_message"] == (
-        "Which school admitted you, and why did you choose it?"
-    )
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.json()["detail"]
+    assert "OPENAI_BASE_URL" in response.json()["detail"]
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -430,41 +482,9 @@ def test_message_turn_uses_turn_history_to_advance_second_question(
         ).all()
         record = db.get(SessionRecord, session_id)
 
-    assert [(turn.turn_index, turn.role, turn.content) for turn in turns] == [
-        (1, "user", "I want to study in the U.S."),
-        (2, "assistant", "What is the purpose of your travel?"),
-        (3, "user", "I will study computer science."),
-        (
-            4,
-            "assistant",
-            "Which school admitted you, and why did you choose it?",
-        ),
-    ]
+    assert turns == []
     assert record is not None
-    assert record.interviewer_state_json["history_turn_count"] == 2
-    assert record.profile_json["ds160_view"]["turn_history"] == [
-        {
-            "turn_id": turns[0].turn_id,
-            "turn_index": 1,
-            "role": "user",
-            "content": "I want to study in the U.S.",
-            "source": "user_message",
-        },
-        {
-            "turn_id": turns[1].turn_id,
-            "turn_index": 2,
-            "role": "assistant",
-            "content": "What is the purpose of your travel?",
-            "source": "interviewer_runtime_service",
-        },
-        {
-            "turn_id": turns[2].turn_id,
-            "turn_index": 3,
-            "role": "user",
-            "content": "I will study computer science.",
-            "source": "user_message",
-        },
-    ]
+    assert not record.runtime_trace_json
 
 
 def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
@@ -474,7 +494,19 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
 ) -> None:
     monkeypatch.setattr(
         "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (None, {"model": None}),
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "assistant_message": "What is the purpose of your travel?",
+                    "requested_documents": [],
+                    "decision_hint": "continue_interview",
+                },
+            ),
+            {"model": "gpt-5.4"},
+        )
+        if module_key == "question_agent"
+        else (None, {"model": None}),
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -524,7 +556,7 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
     )
 
 
-def test_message_turn_falls_back_when_question_agent_errors(
+def test_message_turn_returns_429_when_question_agent_quota_is_exhausted(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -540,7 +572,16 @@ def test_message_turn_falls_back_when_question_agent_errors(
     )
     monkeypatch.setattr(
         "app.services.interview_runtime_service.QuestionAgentRunner.run",
-        lambda self, **kwargs: (_ for _ in ()).throw(RuntimeError("runtime failure")),
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            ModelHTTPError(
+                status_code=429,
+                model_name="gpt-5.4",
+                body={
+                    "code": "API_KEY_QUOTA_EXHAUSTED",
+                    "message": "API key 额度已用完",
+                },
+            )
+        ),
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -550,14 +591,23 @@ def test_message_turn_falls_back_when_question_agent_errors(
         json={"role": "user", "content": "I will study computer science."},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "continue_interview"
-    assert payload["assistant_message"] == "What is the purpose of your travel?"
-    assert payload["requested_documents"] == []
+    assert response.status_code == 429
+    assert "额度已耗尽" in response.json()["detail"]
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+        record = db.get(SessionRecord, session_id)
+
+    assert turns == []
+    assert record is not None
+    assert not record.runtime_trace_json
 
 
-def test_message_turn_falls_back_when_question_agent_outputs_multiple_focus_items(
+def test_message_turn_returns_503_when_question_agent_output_is_invalid(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -586,11 +636,8 @@ def test_message_turn_falls_back_when_question_agent_outputs_multiple_focus_item
         json={"role": "user", "content": "I will study computer science."},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "continue_interview"
-    assert payload["assistant_message"] == "What is the purpose of your travel?"
-    assert payload["requested_documents"] == []
+    assert response.status_code == 503
+    assert "模型运行失败" in response.json()["detail"]
 
 
 def test_message_turn_rejects_non_user_role(client: TestClient) -> None:
@@ -1132,6 +1179,7 @@ def test_confirmed_record_conflict_stays_in_high_risk_review(
     db_session_factory,
     monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     profile = ApplicantProfile.minimal(f"profile-{session_id}")
     score = ScoreState.model_validate(
@@ -1590,7 +1638,9 @@ def test_message_turn_persists_owner_state_for_non_continue_decisions(
 def test_negated_fraud_statement_does_not_trigger_refusal(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -1657,7 +1707,9 @@ def test_hard_conflict_signal_closes_session_and_keeps_first_evidence_ref(
 def test_funding_claim_change_keeps_old_statement_and_allows_continue(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1693,7 +1745,9 @@ def test_funding_claim_change_keeps_old_statement_and_allows_continue(
 def test_repeated_conflicting_funding_explanations_raise_high_risk(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1784,7 +1838,9 @@ def test_evasive_answers_accumulate_into_high_risk(
 def test_repeated_conflicting_funding_explanations_still_escalate_after_turn_window_rolls(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1833,7 +1889,9 @@ def test_repeated_conflicting_funding_explanations_still_escalate_after_turn_win
 def test_missing_key_proof_across_turns_escalates_to_high_risk(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,

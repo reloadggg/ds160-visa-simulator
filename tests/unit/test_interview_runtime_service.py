@@ -1,11 +1,14 @@
 from types import SimpleNamespace
 
+from pydantic_ai.exceptions import ModelHTTPError
+
 from app.agents.schemas import InterviewNextAction
 from app.db.models import SessionRecord
 from app.domain.contracts import ApplicantProfile, FieldState, RiskFlag, ScoreState
 from app.domain.runtime import RuntimeTraceEntry
 from app.platform.runtime_ledger import RuntimeViewState, SessionLedger, SessionReadModel
 from app.services.interview_runtime_service import InterviewRuntimeService
+from app.services.runtime_errors import ModelRuntimeError, ModelUnavailableError
 
 
 def test_analyze_turn_returns_helper_analysis_only(monkeypatch) -> None:
@@ -199,6 +202,109 @@ def test_fallback_need_more_evidence_uses_single_document_focus() -> None:
         requested_documents=["funding_proof"],
         decision_hint="need_more_evidence",
     )
+
+
+def test_raise_if_question_model_unavailable_blocks_interview_question_path() -> None:
+    service = InterviewRuntimeService(db=object())
+    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
+
+    try:
+        service._raise_if_question_model_unavailable(
+            runtime={
+                "provider": "openai_compatible",
+                "model": "gpt-5.4",
+                "model_unavailable_reason": "missing_openai_config",
+                "model_unavailable_missing_env_vars": [
+                    "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL",
+                ],
+                "model_unavailable_detail": "当前后端未配置可用的对话模型，无法生成面签问答。请检查 OPENAI_API_KEY, OPENAI_BASE_URL。",
+            },
+            governor_decision="continue_interview",
+            score=score,
+        )
+    except ModelUnavailableError as exc:
+        assert exc.missing_env_vars == ["OPENAI_API_KEY", "OPENAI_BASE_URL"]
+        assert "OPENAI_API_KEY" in exc.detail
+    else:
+        raise AssertionError("continue_interview 在缺少模型配置时应抛出错误")
+
+
+def test_raise_if_question_model_unavailable_blocks_document_request_path() -> None:
+    service = InterviewRuntimeService(db=object())
+    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
+    score.missing_evidence = ["funding_proof"]
+
+    try:
+        service._raise_if_question_model_unavailable(
+            runtime={
+                "provider": "openai_compatible",
+                "model": "gpt-5.4",
+                "model_unavailable_reason": "missing_openai_config",
+                "model_unavailable_missing_env_vars": [
+                    "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL",
+                ],
+                "model_unavailable_detail": "当前后端未配置可用的对话模型，无法生成面签问答。请检查 OPENAI_API_KEY, OPENAI_BASE_URL。",
+            },
+            governor_decision="continue_interview",
+            score=score,
+        )
+    except ModelUnavailableError as exc:
+        assert exc.status_code == 503
+        assert exc.missing_env_vars == ["OPENAI_API_KEY", "OPENAI_BASE_URL"]
+    else:
+        raise AssertionError("缺少模型配置时不应再伪装成补材料成功响应")
+
+
+def test_normalize_question_agent_error_maps_quota_exhausted_to_429() -> None:
+    service = InterviewRuntimeService(db=object())
+
+    error = service._normalize_question_agent_error(
+        ModelHTTPError(
+            status_code=429,
+            model_name="gpt-5.4",
+            body={
+                "code": "API_KEY_QUOTA_EXHAUSTED",
+                "message": "API key 额度已用完",
+            },
+        ),
+        runtime={
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+        },
+    )
+
+    assert isinstance(error, ModelRuntimeError)
+    assert error.status_code == 429
+    assert error.provider == "openai_compatible"
+    assert error.model == "gpt-5.4"
+    assert error.upstream_code == "API_KEY_QUOTA_EXHAUSTED"
+    assert "额度已耗尽" in error.detail
+
+
+def test_normalize_question_agent_error_maps_auth_failure_to_401() -> None:
+    service = InterviewRuntimeService(db=object())
+
+    error = service._normalize_question_agent_error(
+        ModelHTTPError(
+            status_code=401,
+            model_name="gpt-5.4",
+            body={
+                "code": "API_KEY_DISABLED",
+                "message": "API key is disabled",
+            },
+        ),
+        runtime={
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+        },
+    )
+
+    assert isinstance(error, ModelRuntimeError)
+    assert error.status_code == 401
+    assert error.upstream_code == "API_KEY_DISABLED"
+    assert "认证失败" in error.detail
 
 
 def test_build_dynamic_turn_context_includes_phase3_structured_fields(

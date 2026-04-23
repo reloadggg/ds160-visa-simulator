@@ -1,0 +1,7 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/file-upload-contracts.md", "reason": "上传链路的前后端边界契约"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "前后端 API 契约与显示层适配"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "避免重复定义签证与文档映射"}
+{"file": ".trellis/spec/guides/upload-flow-thinking-guide.md", "reason": "上传文档类型判断放在后端"}

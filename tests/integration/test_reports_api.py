@@ -201,6 +201,57 @@ def test_reports_api_returns_interview_copy(
     ]
 
 
+def test_reports_api_uses_gate_primary_focus_when_gate_review_state_outpaces_runtime_view(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        gate_status = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="gate-primary-report",
+            required_documents=["ds160", "funding_proof"],
+        )
+        gate_status["status"] = "waiting_for_parse"
+        gate_status["required_documents"][0]["status"] = "missing"
+        gate_status["required_documents"][1]["status"] = "uploaded"
+        gate_status["required_documents"][1]["is_uploaded"] = True
+        gate_status["required_documents"][1]["is_parsed"] = False
+        gate_status["required_documents"][1]["meets_minimum_fields"] = False
+        record.phase_state = "gate_review"
+        record.current_governor_decision = "need_more_evidence"
+        record.profile_json = {"funding": {"primary_source": "self"}}
+        record.gate_status_json = gate_status
+        record.interviewer_state_json = {
+            "public_status": "waiting_key_proof",
+            "current_key_proof": "funding_proof",
+            "requested_documents": ["funding_proof"],
+            "allowed_next_actions": ["upload_key_proof", "explain_missing_proof"],
+        }
+        record.current_focus_json = {
+            "owner": "interviewer_runtime_service",
+            "kind": "required_document",
+            "document_type": "funding_proof",
+        }
+        db.add(record)
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/reports/user")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interview_status"] == "waiting_key_proof"
+    assert payload["current_key_proof"] == "ds160"
+    assert payload["missing_evidence"] == ["ds160"]
+    assert payload["advisory_context"]["missing_evidence"] == ["ds160"]
+    assert payload["advisory_context"]["missing_evidence_summary"] == "ds160"
+    assert payload["summary"] == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
+
+
 def test_user_report_can_derive_runtime_view_state_from_ledger_when_state_is_empty(
     client: TestClient,
     db_session_factory,

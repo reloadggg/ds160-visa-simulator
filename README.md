@@ -53,6 +53,67 @@ Available endpoints include:
 - `GET /v1/sessions/{session_id}/reports/internal`
 - `POST /v1/chat/completions`
 
+### Run API + Web Frontend
+
+新的 v0 前端位于 `web/`，默认作为推荐联调入口。
+
+最省事的方式：
+
+```bash
+make dev
+```
+
+常用辅助命令：
+
+```bash
+make status
+make logs
+make stop
+```
+
+`make dev` 会自动：
+
+- 启动 FastAPI：`http://127.0.0.1:8000`
+- 启动 Next.js：`http://127.0.0.1:3000`
+- 首次缺少 `web/.env.local` 时自动从 `web/.env.example` 复制
+- 首次缺少依赖时自动初始化 `.venv` 或 `web/node_modules`
+- 把日志写到 `.dev/logs/`
+
+如果 `3000` 或 `8000` 已被占用，可以这样改端口：
+
+```bash
+API_PORT=8001 WEB_PORT=3001 make dev
+```
+
+如需手动分别启动，也可以继续用下面的命令。
+
+先启动 FastAPI：
+
+```bash
+uv run uvicorn app.main:app --reload
+```
+
+然后启动前端：
+
+```bash
+cd web
+cp .env.example .env.local
+pnpm install
+pnpm dev
+```
+
+默认本地联调配置：
+
+- `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
+- `NEXT_PUBLIC_MOCK=false`
+
+如需只看前端演示，可以把 `NEXT_PUBLIC_MOCK` 改成 `true`。
+
+提示：
+
+- 上传文件后想自动解析，请确保根目录 `.env` 里有 `PARSE_WORKER_INLINE=1`
+- 修改根目录 `.env` 后，需要重启后端进程
+
 ### Run API + Chainlit UI
 
 `Chainlit` is mounted into the same FastAPI process under `/ui`.
@@ -65,7 +126,9 @@ Then open:
 
 - `http://127.0.0.1:8000/ui`
 
-The UI is intentionally thin:
+Chainlit 现在作为备用入口保留，便于回退和对照验证。它不会与 `web/` 共享前端会话状态。
+
+The Chainlit UI is intentionally thin:
 
 - It creates sessions through the existing API
 - It forwards user messages to the existing message API

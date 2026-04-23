@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services.runtime_errors import ModelRuntimeError
 from app.services.message_service import (
     MessageService,
     SessionClosedError,
@@ -31,3 +32,5 @@ def post_message(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SessionClosedError as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except ModelRuntimeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

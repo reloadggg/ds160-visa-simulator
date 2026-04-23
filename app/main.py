@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
@@ -10,6 +11,7 @@ from app.api.routers.messages import router as messages_router
 from app.api.routers.openai_compat import router as openai_compat_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
+from app.core.settings import settings
 from app.db.base import Base
 from app.db import evidence_models as _evidence_models
 from app.db.models import SessionTurnRecord
@@ -179,6 +181,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DS-160 Visa Simulator", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allow_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 Base.metadata.create_all(bind=engine)
 bootstrap_sessions_table(engine)
 bootstrap_documents_table(engine)

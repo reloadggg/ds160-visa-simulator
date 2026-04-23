@@ -1,0 +1,10 @@
+flowchart TD
+    A["旧系统问题<br/>伪连续会话<br/>材料门控过强<br/>打分主导判断"] --> B["主线重定向<br/>本次会话记忆 + 材料证据 + 面签官主判断"]
+    B --> C["Task 1-3<br/>会话记忆底座<br/>gate 退回支持层<br/>OpenAI 入口连续语义"]
+    C --> D["Task 4-5<br/>interviewer owner 成为唯一主判断层<br/>状态模型产品化"]
+    D --> E["Task 6-11<br/>材料理解补强<br/>证据引用与冲突核实<br/>上传反馈不带偏主线"]
+    E --> F["Task 12<br/>prompt 从硬编码迁到 YAML<br/>支持 family override"]
+    F --> G["Task 13<br/>scoring 退回后台辅助层<br/>不再控制 current_focus<br/>不再单独点燃高风险或拒签"]
+    G --> H["Task 14<br/>完整非 live 回归<br/>文档与实现收口"]
+    H --> I["最终结果<br/>Task 1-14 完成<br/>Task 13 双审通过<br/>226 passed / 8 deselected"]
+    H --> J["剩余事项<br/>live LLM 测试待凭据环境补跑<br/>边界层继续防 score_summary 回漏"]

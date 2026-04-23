@@ -6,6 +6,7 @@ import fitz
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
+from types import SimpleNamespace
 
 from app.db.base import Base
 from app.db.models import SessionRecord
@@ -23,6 +24,33 @@ def build_pdf_bytes(*pages: str) -> bytes:
         return pdf.tobytes()
     finally:
         pdf.close()
+
+
+def install_stub_build_question_action(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    continue_interview_message: str = "What is the purpose of your travel?",
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: (
+            SimpleNamespace(
+                assistant_message=continue_interview_message,
+                requested_documents=[],
+                decision_hint="continue_interview",
+            )
+            if governor_decision == "continue_interview" and not score.missing_evidence
+            else SimpleNamespace(
+                assistant_message=(
+                    f"Please upload {score.missing_evidence[0]}."
+                    if score.missing_evidence
+                    else "Please provide the key supporting document for this point."
+                ),
+                requested_documents=list(score.missing_evidence[:1]),
+                decision_hint="need_more_evidence",
+            )
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +99,9 @@ def client(
 def test_golden_path_f1_parent_sponsored_progresses_after_helpful_upload(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
 
     assert session_resp.status_code == 201
@@ -224,7 +254,9 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
 def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     first_completion = client.post(
         "/v1/chat/completions",
         json={

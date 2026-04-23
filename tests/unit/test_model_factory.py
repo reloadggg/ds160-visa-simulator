@@ -26,6 +26,12 @@ def test_model_factory_returns_none_without_openai_config(
     assert runtime["model"] == "gpt-5.4"
     assert runtime["reasoning_effort"] == "xhigh"
     assert runtime["prompt_template_id"] == "scoring-agent-v1"
+    assert runtime["model_unavailable_reason"] == "missing_openai_config"
+    assert runtime["model_unavailable_missing_env_vars"] == [
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    ]
+    assert "OPENAI_API_KEY" in runtime["model_unavailable_detail"]
     # pydantic 2.12 不是漂移；当前 foundation 依赖 pydantic-ai-slim 1.77 的安装约束。
     assert runtime["prompt_version"] == "v1"
 
@@ -46,6 +52,9 @@ def test_model_factory_returns_empty_runtime_for_missing_policy(
         "prompt_template_id": None,
         "prompt_pack_id": None,
         "prompt_version": None,
+        "model_unavailable_reason": None,
+        "model_unavailable_missing_env_vars": [],
+        "model_unavailable_detail": None,
     }
 
 
@@ -95,6 +104,7 @@ def test_model_factory_reads_env_overrides_from_runtime_registry(
     assert model is None
     assert runtime["model"] == "gpt-5.4"
     assert runtime["reasoning_effort"] == "xhigh"
+    assert runtime["model_unavailable_reason"] == "missing_openai_config"
 
 
 def test_model_factory_returns_none_for_unsupported_provider(

@@ -145,6 +145,47 @@ def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -
     assert payload["prompt_trace"]["model"] == "gpt-5.4"
 
 
+def test_user_report_uses_gate_primary_focus_during_gate_review_even_if_runtime_view_is_stale() -> None:
+    service = ReportService()
+    gate_status = build_initial_gate_status(
+        declared_family="f1",
+        scenario_key="gate-primary-focus",
+        required_documents=["ds160", "funding_proof"],
+    )
+    gate_status["status"] = "pending_documents"
+
+    payload = service.user_report(
+        session_id="sess-gate-focus",
+        visa_family="f1",
+        governor_decision="need_more_evidence",
+        profile_json={"funding": {"primary_source": "self"}},
+        phase_state="gate_review",
+        gate_status=gate_status,
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-stale",
+            "decision": "need_more_evidence",
+            "governor_decision": "continue_interview",
+            "public_status": "waiting_key_proof",
+            "current_key_question": None,
+            "current_key_proof": "funding_proof",
+            "requested_documents": ["funding_proof"],
+            "allowed_next_actions": ["upload_key_proof", "explain_missing_proof"],
+        },
+        interviewer_state_json={
+            "current_key_proof": "funding_proof",
+            "requested_documents": ["funding_proof"],
+        },
+    )
+
+    assert payload["interview_status"] == "waiting_key_proof"
+    assert payload["current_key_question"] is None
+    assert payload["current_key_proof"] == "ds160"
+    assert payload["missing_evidence"] == ["ds160"]
+    assert payload["advisory_context"]["missing_evidence"] == ["ds160"]
+    assert payload["advisory_context"]["missing_evidence_summary"] == "ds160"
+    assert payload["recommended_improvements"] == ["补齐必需材料后再继续。"]
+
+
 def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:
     service = ReportService()
 

@@ -9,6 +9,7 @@ from app.db.base import Base
 from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.main import app
+from app.services.runtime_errors import ModelRuntimeError, ModelUnavailableError
 
 
 @pytest.fixture()
@@ -79,7 +80,24 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
 def test_chat_completions_uses_same_runtime_gate_initialization(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        lambda self, session_id, message_text: {
+            "assistant_message": "handled",
+            "governor_decision": "continue_interview",
+            "score_summary": {
+                "category_fit": 60,
+                "document_readiness": 50,
+                "narrative_consistency": 55,
+                "confidence": 58,
+            },
+            "requested_documents": [],
+            "turn_decision": {},
+            "prompt_trace": {},
+        },
+    )
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -211,6 +229,62 @@ def test_chat_completions_returns_404_for_unknown_metadata_session_id(
     with db_session_factory() as db:
         session_count = db.scalar(select(func.count()).select_from(SessionRecord))
         assert session_count == 0
+
+
+def test_chat_completions_returns_503_when_message_runtime_lacks_model_config(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        lambda self, session_id, message_text: (_ for _ in ()).throw(
+            ModelUnavailableError(
+                detail="当前后端未配置可用的对话模型，无法生成面签问答。请检查 OPENAI_API_KEY, OPENAI_BASE_URL。"
+            )
+        ),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "Resume the interview."}],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.json()["detail"]
+
+
+def test_chat_completions_preserves_model_runtime_status_code(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        lambda self, session_id, message_text: (_ for _ in ()).throw(
+            ModelRuntimeError(
+                detail="当前对话模型认证失败，API Key 可能已失效或被禁用。",
+                status_code=401,
+                provider="openai_compatible",
+                model="gpt-5.4",
+                upstream_code="API_KEY_DISABLED",
+            )
+        ),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "Resume the interview."}],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 401
+    assert "认证失败" in response.json()["detail"]
 
 
 def test_chat_completions_rejects_empty_messages(client: TestClient) -> None:

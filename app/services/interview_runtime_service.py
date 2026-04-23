@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic_ai.exceptions import ModelHTTPError
 from sqlalchemy.orm import Session
 
 from app.agents.model_factory import AgentModelFactory
@@ -28,6 +29,11 @@ from app.services.ds160_memory_manager import DS160MemoryManager
 from app.services.evidence_service import EvidenceService
 from app.services.extractor_service import ExtractorService
 from app.services.retrieval_service import RetrievalService
+from app.services.runtime_errors import (
+    ModelRuntimeError,
+    ModelUnavailableError,
+    ProviderAPIError,
+)
 from app.services.scoring_service import ScoringService
 from app.services.session_read_model_service import SessionReadModelService
 
@@ -272,6 +278,11 @@ class InterviewRuntimeService:
         declared_family = profile.visa_intent.get("declared_family")
         model, runtime = self._build_question_agent_runtime(declared_family)
         fallback_messages = runtime.get("fallback_messages", {})
+        self._raise_if_question_model_unavailable(
+            runtime=runtime,
+            governor_decision=governor_decision,
+            score=score,
+        )
         latest_user_message = self._latest_user_message(recent_turns)
         dynamic_turn_context = self._build_dynamic_turn_context(
             session_id=session_id,
@@ -324,23 +335,11 @@ class InterviewRuntimeService:
                     model=run_result.model or runtime.get("model"),
                     boundary_decision=governor_decision,
                 )
-            except Exception:
-                action = self._fallback_question_action(
-                    governor_decision,
-                    score,
-                    recent_turns=recent_turns,
-                    fallback_messages=fallback_messages,
-                )
-                return action, self._build_turn_decision_trace(
+            except Exception as exc:
+                raise self._normalize_question_agent_error(
+                    exc,
                     runtime=runtime,
-                    action=action,
-                    fallback_used=True,
-                    tool_calls=[],
-                    retry_count=0,
-                    provider=runtime.get("provider"),
-                    model=runtime.get("model"),
-                    boundary_decision=governor_decision,
-                )
+                ) from exc
         action = self._fallback_question_action(
             governor_decision,
             score,
@@ -372,6 +371,93 @@ class InterviewRuntimeService:
             if "declared_family" not in str(exc):
                 raise
             return self.model_factory.build("question_agent", "interview_turn")
+
+    def _raise_if_question_model_unavailable(
+        self,
+        *,
+        runtime: dict[str, Any],
+        governor_decision: str,
+        score: ScoreState,
+    ) -> None:
+        del governor_decision, score
+        if runtime.get("model_unavailable_reason") != "missing_openai_config":
+            return
+        raise ModelUnavailableError(
+            detail=runtime.get("model_unavailable_detail")
+            or "当前后端未配置可用的对话模型，无法生成面签问答。",
+            provider=runtime.get("provider"),
+            model=runtime.get("model"),
+            missing_env_vars=list(
+                runtime.get("model_unavailable_missing_env_vars") or []
+            ),
+        )
+
+    def _normalize_question_agent_error(
+        self,
+        exc: Exception,
+        *,
+        runtime: dict[str, Any],
+    ) -> ModelRuntimeError:
+        if isinstance(exc, ModelRuntimeError):
+            return exc
+
+        provider = self._runtime_text(runtime.get("provider"))
+        model = self._runtime_text(runtime.get("model"))
+
+        if isinstance(exc, ModelHTTPError):
+            status_code = exc.status_code
+            upstream_code = self._model_error_code(exc.body)
+            return ProviderAPIError(
+                detail=self._model_http_error_detail(
+                    status_code,
+                    upstream_code=upstream_code,
+                ),
+                status_code=status_code,
+                provider=provider,
+                model=model or exc.model_name,
+            )
+
+        return ModelRuntimeError(
+            detail="当前对话模型运行失败，请稍后重试。",
+            status_code=503,
+            provider=provider,
+            model=model,
+        )
+
+    def _model_http_error_detail(
+        self,
+        status_code: int,
+        *,
+        upstream_code: str | None,
+    ) -> str:
+        normalized_code = (upstream_code or "").upper()
+        if status_code == 401:
+            return "当前对话模型认证失败，API Key 可能已失效或被禁用。"
+        if status_code == 429:
+            if normalized_code in {
+                "API_KEY_QUOTA_EXHAUSTED",
+                "INSUFFICIENT_QUOTA",
+                "QUOTA_EXCEEDED",
+            }:
+                return "当前对话模型额度已耗尽，请稍后重试或更换可用配置。"
+            return "当前对话模型请求过于频繁，请稍后重试。"
+        if status_code == 503:
+            return "当前对话模型暂时不可用，请稍后重试。"
+        if 500 <= status_code < 600:
+            return "当前对话模型服务暂时异常，请稍后重试。"
+        return "当前对话模型运行失败，请稍后重试。"
+
+    def _model_error_code(self, body: Any) -> str | None:
+        if not isinstance(body, dict):
+            return None
+        code = body.get("code")
+        return self._runtime_text(code)
+
+    def _runtime_text(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
 
     def _build_agent_deps(self, session_id: str) -> AgentRuntimeDeps:
         return AgentRuntimeDeps(

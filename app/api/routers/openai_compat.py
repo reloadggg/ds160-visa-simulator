@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_service import GateService
 from app.services.message_service import MessageService, SessionNotFoundError
+from app.services.runtime_errors import ModelRuntimeError
 from app.services.runtime_view_contract_service import RuntimeViewContractService
 from app.services.session_read_model_service import SessionReadModelService
 
@@ -60,6 +61,8 @@ def chat_completions(
         result = MessageService(db).handle_user_turn(session_record.session_id, last_user_message)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ModelRuntimeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     session_record = session_repo.get(session_record.session_id) or session_record
     read_model = SessionReadModelService(db).build_from_record(session_record)

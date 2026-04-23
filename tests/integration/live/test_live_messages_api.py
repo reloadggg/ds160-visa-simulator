@@ -10,7 +10,11 @@ def assert_live_post_parse_progress(
     governor_decision: str,
     requested_documents: list[str],
 ) -> None:
-    assert governor_decision in {"continue_interview", "need_more_evidence"}
+    assert governor_decision in {
+        "continue_interview",
+        "need_more_evidence",
+        "high_risk_review",
+    }
     normalized_documents = [
         document_type.lower().replace("-", "_") for document_type in requested_documents
     ]

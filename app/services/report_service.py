@@ -31,19 +31,36 @@ class ReportService:
                 or current_focus_json
                 or {}
             )
-        missing_evidence = self._resolve_missing_evidence(
+        gate_status = gate_status or {}
+        baseline_missing_evidence = self._resolve_missing_evidence(
             profile_json=profile_json,
             interviewer_state_json=effective_interviewer_state,
             current_focus_json=current_focus_json,
         )
-        gate_status = gate_status or {}
         gate_overall_status = gate_status.get("status")
         interview_status = self._resolve_public_status(
             governor_decision=governor_decision,
             phase_state=phase_state,
             gate_status=gate_status,
-            missing_evidence=missing_evidence,
+            missing_evidence=baseline_missing_evidence,
             interviewer_state_json=effective_interviewer_state,
+        )
+        if (
+            phase_state == "gate_review"
+            and interview_status == InterviewStateStatus.WAITING_KEY_PROOF.value
+        ):
+            (
+                effective_interviewer_state,
+                current_focus_json,
+            ) = self._apply_gate_review_primary_focus(
+                interviewer_state_json=effective_interviewer_state,
+                current_focus_json=current_focus_json,
+                gate_status=gate_status,
+            )
+        missing_evidence = self._resolve_missing_evidence(
+            profile_json=profile_json,
+            interviewer_state_json=effective_interviewer_state,
+            current_focus_json=current_focus_json,
         )
         risk_level = self._resolve_risk_level(
             interview_status=interview_status,
@@ -61,6 +78,14 @@ class ReportService:
         prompt_trace = dict(
             effective_interviewer_state.get("prompt_trace", {}) or {}
         )
+        if (
+            phase_state == "gate_review"
+            and interview_status == InterviewStateStatus.WAITING_KEY_PROOF.value
+        ):
+            advisory_context["missing_evidence"] = list(missing_evidence)
+            advisory_context["risk_level"] = risk_level
+            if missing_evidence:
+                advisory_context["missing_evidence_summary"] = ", ".join(missing_evidence)
         turn_decision = {
             "decision": effective_interviewer_state.get("decision", governor_decision),
             "current_key_question": current_key_question,
@@ -283,6 +308,55 @@ class ReportService:
             if not evidence_refs:
                 missing_evidence.append("funding_proof")
         return missing_evidence
+
+    def _apply_gate_review_primary_focus(
+        self,
+        *,
+        interviewer_state_json: dict[str, Any],
+        current_focus_json: dict[str, Any],
+        gate_status: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        primary_document = self._gate_primary_document(gate_status)
+        if not primary_document:
+            return interviewer_state_json, current_focus_json
+
+        payload = dict(interviewer_state_json or {})
+        payload["current_key_question"] = None
+        payload["current_key_proof"] = primary_document
+        payload["requested_documents"] = [primary_document]
+        if not payload.get("allowed_next_actions"):
+            payload["allowed_next_actions"] = [
+                "upload_key_proof",
+                "explain_missing_proof",
+            ]
+
+        next_focus = {
+            "owner": "gate_runtime_service",
+            "kind": "required_document",
+            "document_type": primary_document,
+        }
+        return payload, next_focus
+
+    def _gate_primary_document(self, gate_status: dict[str, Any]) -> str | None:
+        required_documents = gate_status.get("required_documents", [])
+        if not isinstance(required_documents, list):
+            return None
+
+        for item in required_documents:
+            if not isinstance(item, dict):
+                continue
+            document_type = item.get("document_type")
+            if isinstance(document_type, str) and item.get("status", "missing") == "missing":
+                return document_type
+
+        for item in required_documents:
+            if not isinstance(item, dict):
+                continue
+            document_type = item.get("document_type")
+            if isinstance(document_type, str) and not item.get("meets_minimum_fields", False):
+                return document_type
+
+        return None
 
     def _waiting_key_proof_summary(self, current_key_proof: str | None) -> str:
         if current_key_proof:
