@@ -1,0 +1,88 @@
+<svg width="1160" height="620" viewBox="0 0 1160 620" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">DS-160 AI 面签模拟器架构图</title>
+  <desc id="desc">展示前端工作台、FastAPI、Agent runtime、材料管线、数据库和模型服务之间的关系。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1160" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FAF8"/>
+      <stop offset="0.52" stop-color="#EEF6F3"/>
+      <stop offset="1" stop-color="#F5F0E7"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="115" y1="78" x2="1032" y2="553" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F766E"/>
+      <stop offset="0.55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#B45309"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#1F2937" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto">
+      <path d="M1 1L9 5L1 9" stroke="#44546A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect width="1160" height="620" rx="34" fill="url(#bg)"/>
+  <path d="M72 112C229 38 384 61 524 132C676 209 810 169 953 105C1032 70 1090 83 1117 101" stroke="url(#accent)" stroke-width="7" stroke-linecap="round" opacity="0.18"/>
+  <path d="M35 511C188 424 321 435 463 493C614 555 778 556 933 475C1025 427 1086 437 1122 460" stroke="url(#accent)" stroke-width="7" stroke-linecap="round" opacity="0.15"/>
+
+  <text x="70" y="72" fill="#102033" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="30" font-weight="760">DS-160 AI 面签模拟器</text>
+  <text x="70" y="106" fill="#58677A" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">从用户回答和材料证据出发，驱动面签追问、风险判断与报告生成</text>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="165" width="220" height="130" rx="18" fill="#FFFFFF" stroke="#D8E2DC"/>
+    <text x="96" y="203" fill="#0F766E" font-family="Inter, ui-sans-serif, system-ui" font-size="16" font-weight="760">Next.js Workbench</text>
+    <text x="96" y="232" fill="#243244" font-family="Inter, ui-sans-serif, system-ui" font-size="14">会话 / 材料 / 报告</text>
+    <text x="96" y="258" fill="#64748B" font-family="Inter, ui-sans-serif, system-ui" font-size="13">面签式交互入口</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="365" y="145" width="260" height="170" rx="18" fill="#FFFFFF" stroke="#D8E2DC"/>
+    <text x="393" y="184" fill="#2563EB" font-family="Inter, ui-sans-serif, system-ui" font-size="16" font-weight="760">FastAPI API Layer</text>
+    <text x="393" y="214" fill="#243244" font-family="Inter, ui-sans-serif, system-ui" font-size="14">Session / Message / File / Report</text>
+    <text x="393" y="240" fill="#64748B" font-family="Inter, ui-sans-serif, system-ui" font-size="13">鉴权、路由、请求合同</text>
+    <rect x="393" y="262" width="204" height="30" rx="15" fill="#EFF6FF"/>
+    <text x="414" y="282" fill="#1D4ED8" font-family="Inter, ui-sans-serif, system-ui" font-size="12" font-weight="650">OpenAI-compatible API</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="700" y="120" width="390" height="235" rx="22" fill="#FFFFFF" stroke="#D8E2DC"/>
+    <text x="732" y="160" fill="#B45309" font-family="Inter, ui-sans-serif, system-ui" font-size="17" font-weight="760">Agent Runtime</text>
+    <text x="732" y="190" fill="#243244" font-family="Inter, ui-sans-serif, system-ui" font-size="14">Interviewer Runtime + Governor</text>
+    <text x="732" y="216" fill="#64748B" font-family="Inter, ui-sans-serif, system-ui" font-size="13">控制追问、补证、高风险复核与模拟拒签</text>
+
+    <rect x="732" y="244" width="142" height="54" rx="14" fill="#ECFDF5" stroke="#B7E4D8"/>
+    <text x="754" y="276" fill="#047857" font-family="Inter, ui-sans-serif, system-ui" font-size="13" font-weight="700">Policy Packs</text>
+
+    <rect x="896" y="244" width="150" height="54" rx="14" fill="#FFF7ED" stroke="#FED7AA"/>
+    <text x="915" y="276" fill="#B45309" font-family="Inter, ui-sans-serif, system-ui" font-size="13" font-weight="700">Runtime Policies</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="108" y="390" width="262" height="118" rx="18" fill="#FFFFFF" stroke="#D8E2DC"/>
+    <text x="136" y="429" fill="#0F766E" font-family="Inter, ui-sans-serif, system-ui" font-size="16" font-weight="760">Document Pipeline</text>
+    <text x="136" y="459" fill="#243244" font-family="Inter, ui-sans-serif, system-ui" font-size="14">材料识别、抽取、主线反馈</text>
+    <text x="136" y="484" fill="#64748B" font-family="Inter, ui-sans-serif, system-ui" font-size="13">PDF / 图片 / 证据状态</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="450" y="405" width="250" height="118" rx="18" fill="#FFFFFF" stroke="#D8E2DC"/>
+    <text x="478" y="444" fill="#2563EB" font-family="Inter, ui-sans-serif, system-ui" font-size="16" font-weight="760">SQLite / Repositories</text>
+    <text x="478" y="474" fill="#243244" font-family="Inter, ui-sans-serif, system-ui" font-size="14">会话、材料、turn record</text>
+    <text x="478" y="499" fill="#64748B" font-family="Inter, ui-sans-serif, system-ui" font-size="13">trace / score / governor history</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="780" y="410" width="250" height="118" rx="18" fill="#FFFFFF" stroke="#D8E2DC"/>
+    <text x="808" y="449" fill="#7C3AED" font-family="Inter, ui-sans-serif, system-ui" font-size="16" font-weight="760">LLM Provider</text>
+    <text x="808" y="479" fill="#243244" font-family="Inter, ui-sans-serif, system-ui" font-size="14">OpenAI-compatible Endpoint</text>
+    <text x="808" y="504" fill="#64748B" font-family="Inter, ui-sans-serif, system-ui" font-size="13">模型、reasoning effort、供应商切换</text>
+  </g>
+
+  <path d="M290 230H356" stroke="#44546A" stroke-width="2.4" marker-end="url(#arrow)"/>
+  <path d="M625 230H690" stroke="#44546A" stroke-width="2.4" marker-end="url(#arrow)"/>
+  <path d="M795 355C715 383 662 399 627 412" stroke="#44546A" stroke-width="2.4" marker-end="url(#arrow)"/>
+  <path d="M488 315C407 350 335 374 272 392" stroke="#44546A" stroke-width="2.4" marker-end="url(#arrow)"/>
+  <path d="M370 452H441" stroke="#44546A" stroke-width="2.4" marker-end="url(#arrow)"/>
+  <path d="M905 355V401" stroke="#44546A" stroke-width="2.4" marker-end="url(#arrow)"/>
+
+  <text x="70" y="573" fill="#6B7280" font-family="Inter, ui-sans-serif, system-ui" font-size="13">Runtime trace keeps every turn explainable: user answer → policy context → evidence review → governor decision → next question/report.</text>
+</svg>

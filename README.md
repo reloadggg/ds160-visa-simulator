@@ -1,238 +1,169 @@
-# DS-160 签证面签模拟器
+# DS-160 AI 面签模拟器
 
-这是一个面向 DS-160 / 美国非移民签证场景的智能问答与材料分析项目，当前形态为：
+> 面向美国非移民签证场景的 AI 面签工作台：用多轮追问、材料核验和风险报告，帮助申请人更早发现 DS-160 叙事中的漏洞、缺证和不一致。
 
-- 后端：`FastAPI`
-- 前端：`Next.js`
-- 数据存储：`SQLite`（默认）
-- 模型接入：OpenAI Compatible 接口
-- 运行模式：本地开发、前后端联调、Docker 一体化部署
+![Architecture](docs/assets/architecture.svg)
 
-项目目标不是做通用聊天应用，而是围绕签证问答、材料补充、会话记录、报告生成和面签风险提示，提供一个可迭代的 Agent 化工作流。
+## ✨ 项目定位
 
-## 项目能力
+DS-160 AI 面签模拟器不是一个普通聊天机器人。它更像一个“签证面谈推演工作台”：用户选择签证类型后，系统会围绕 DS-160 信息、赴美目的、资金来源、学习/工作计划、回国约束和材料证据展开追问，并在每一轮对话后动态更新风险判断。
 
-当前仓库主要覆盖以下能力：
+项目当前重点服务于内部测试和原型验证，适合用于：
 
-- 创建面签模拟会话
-- 在会话中进行多轮问答
-- 上传材料文件并触发抽取/解析
-- 生成用户报告和内部分析报告
-- 提供 OpenAI-compatible 对话入口
-- 提供最小可用的后端进入鉴权，适合服务器测试阶段隔离访问
-- 支持 Web 前端与备用 Chainlit UI
+- 🎙️ 模拟真实签证官式追问，而不是泛泛聊天
+- 📄 上传 I-20、offer、资金证明、在读证明等材料并做结构化理解
+- 🧭 识别当前回答中的缺证、冲突、不完整解释和高风险信号
+- 📊 生成面向用户的准备建议和面向内部调试的运行报告
+- 🧪 验证 Agent runtime、材料理解、Governor 护栏和前端工作台体验
 
-## 目录结构
+## 🧠 核心体验
 
-仓库主要目录如下：
+用户看到的是一个签证准备工作台：
+
+- 左侧是会话、历史、材料和设置入口
+- 中间是面签式问答流
+- 右侧是实时分析面板，展示风险、缺失材料和下一步建议
+- 上传材料后，系统会判断材料是否支持当前主线，而不是要求用户先手动分类
+- 会话结束或阶段性复盘时，可以生成用户报告和内部分析报告
+
+后端看到的是一条可追踪的 Agent 运行链路：
+
+- 每轮输入都会进入会话编排层
+- runtime 会结合历史、材料、签证规则和当前风险生成下一步动作
+- Governor 决定继续追问、要求补证、进入高风险复核或模拟拒签
+- trace、score、document review 和 turn record 会沉淀到数据库，方便复盘
+
+## 🏗️ 系统架构
+
+项目采用“前端工作台 + FastAPI 单体后端 + Agent runtime + OpenAI-compatible 模型网关”的架构。
 
 ```text
-app/                    FastAPI 后端主代码
-  api/routers/          路由层
-  services/             核心业务编排、抽取、打分、报告服务
-  domain/               领域模型与跨层合同
-  db/                   SQLAlchemy 模型与数据库初始化
-  repositories/         数据访问层
-  agents/               不同职责的 Agent 组件
-  runtime_policies/     运行时模型配置
-  policy_packs/         签证规则包
-web/                    Next.js 前端
-tests/                  单元 / 集成 / E2E / live 测试
-fixtures/               测试夹具与样例数据
-docker/                 Docker 启动脚本
-docs/                   项目补充文档
-.trellis/               项目开发规范、任务流与工作流辅助文件
+Next.js Workbench
+        │
+        ▼
+FastAPI API Layer
+        │
+        ▼
+Message / File / Report Services
+        │
+        ▼
+Interviewer Runtime + Governor + Capability Orchestrator
+        │
+        ├── Policy Packs / Runtime Policies
+        ├── Document Pipeline / Evidence Repository
+        ├── Runtime Ledger / Turn Records
+        └── OpenAI-compatible LLM Provider
 ```
 
-## 技术栈
+### 架构分层
 
-后端依赖见 `pyproject.toml`，核心包括：
+| 层级 | 作用 |
+| --- | --- |
+| `web/` | Next.js 前端工作台，负责会话、材料、报告、历史和鉴权体验 |
+| `app/api/routers/` | FastAPI 路由层，对外暴露 session、message、file、report、auth 等接口 |
+| `app/services/` | 业务编排层，承载面谈 runtime、材料处理、报告生成和状态同步 |
+| `app/agents/` | Agent 运行单元，负责问题生成、材料复核、裁决和结构化输出 |
+| `app/domain/` | 领域模型与跨层合同，例如运行状态、证据模型和决策结构 |
+| `app/repositories/` | 数据访问层，封装会话、材料和 turn record 的持久化 |
+| `app/runtime_policies/` | 模型供应商、模型名称、reasoning effort 等运行时配置 |
+| `app/policy_packs/` | 不同签证类型的规则包，例如 F-1、J-1、B-1/B-2 等 |
 
-- Python 3.12+
-- FastAPI
-- SQLAlchemy
-- Pydantic v2
-- Chainlit
-- `pydantic-ai-slim[openai]`
+## 🔁 一轮面谈如何运行
 
-前端位于 `web/`，核心包括：
+1. 用户在前端发送回答或上传材料。
+2. FastAPI 接收请求，并由 `MessageService` 或 `FileService` 接管。
+3. `GateRuntimeService` 判断签证类型、必需材料和材料准备状态。
+4. `InterviewerRuntimeService` 结合历史、材料、风险分数和签证规则分析当前回合。
+5. `CapabilityOrchestrator` 按需触发材料评估、证据检索、一致性复核等能力。
+6. Governor 给出继续追问、要求补证、高风险复核或模拟拒签等决策。
+7. 系统返回下一句面谈问题，并同步更新 runtime view、trace、score 和报告上下文。
 
-- Next.js 16
-- React 19
-- TypeScript
-- Tailwind CSS
-- Radix UI
+## 🧩 关键设计
 
-## 环境要求
+### 🎯 LLM-first 面谈 Runtime
 
-建议本地准备以下环境：
+系统把模型放在面谈主循环中，但不会让模型直接裸奔。模型输出会被结构化 schema、runtime projector、Governor 和报告合同约束，确保前端、报告和测试能消费稳定字段。
 
-- Python 3.12+
-- `uv`
-- Node.js 22+
-- `pnpm`
-- Docker / Docker Compose（如需容器部署）
+### 🛂 Governor 护栏
 
-## 快速开始
+Governor 负责把“模型想问什么”和“签证场景应该怎么推进”分开。它会根据风险、缺证、材料状态和阶段状态决定是否继续追问、等待证明、进入高风险复核或模拟拒签。
 
-### 1. 安装后端依赖
+### 📄 材料理解与证据主线
+
+材料上传不是简单存文件。系统会提取材料内容、判断材料类型、评估材料是否支持当前回答，并把材料反馈合并进后续追问和报告。
+
+### 🧾 可复盘运行记录
+
+每一轮都会沉淀 turn record、runtime trace、score history 和 governor history。这样做的目的不是只看最终回复，而是能解释“系统为什么这样追问”。
+
+### 🔌 OpenAI-compatible 模型接入
+
+项目通过 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 接入兼容 OpenAI 协议的模型服务，便于在不同模型供应商之间切换。
+
+## 🛠️ 技术栈
+
+| 模块 | 技术 |
+| --- | --- |
+| 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS、Radix UI |
+| 后端 | Python 3.12、FastAPI、Pydantic v2、SQLAlchemy |
+| Agent | `pydantic-ai-slim[openai]`、结构化 schema、runtime policies |
+| 存储 | SQLite 默认落地，可通过 `DATABASE_URL` 替换 |
+| 部署 | Docker、Docker Compose、一体化前后端镜像 |
+| 测试 | pytest、integration tests、可选 live LLM tests |
+
+## 🚀 快速启动
+
+### 1. 准备后端环境
 
 ```bash
 uv sync --dev
-```
-
-### 2. 配置后端环境变量
-
-从模板复制：
-
-```bash
 cp .env.example .env
 ```
 
-运行时配置以 `.env` 为主，`app/runtime_policies/default.yaml` 只作为兜底默认值。
+至少配置：
 
-常用配置项：
-
-- `OPENAI_BASE_URL`
-- `OPENAI_API_KEY`
-- `MULTIMODAL_EXTRACTION_ENABLED`
-- `DATABASE_URL`
-- `CORS_ALLOW_ORIGINS`
-- `APP_AUTH_PASSWORD`
-- `APP_AUTH_TOKEN_TTL_SECONDS`
-- `RUNTIME_DEFAULT_PROVIDER`
-- `RUNTIME_DEFAULT_MODEL`
-- `RUNTIME_<MODULE>_<STAGE>_PROVIDER`
-- `RUNTIME_<MODULE>_<STAGE>_REASONING_EFFORT`
-
-示例：
-
-```bash
-RUNTIME_DEFAULT_MODEL=gpt-5.4
-RUNTIME_QUESTION_AGENT_INTERVIEW_TURN_REASONING_EFFORT=high
-RUNTIME_SCORING_AGENT_INTERVIEW_TURN_REASONING_EFFORT=xhigh
+```env
+OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+OPENAI_API_KEY=your-api-key
 ```
 
-### 3. 仅启动后端 API
+常用可选项：
 
-```bash
-uv run uvicorn app.main:app --reload
+```env
+APP_AUTH_PASSWORD=
+APP_AUTH_TOKEN_TTL_SECONDS=86400
+MULTIMODAL_EXTRACTION_ENABLED=true
+DATABASE_URL=sqlite:///./app.sqlite3
+CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-默认地址：
+### 2. 启动前后端
 
-- API：`http://127.0.0.1:8000`
-- 健康检查：`http://127.0.0.1:8000/healthz`
-
-常用接口包括：
-
-- `POST /v1/auth/login`
-- `POST /v1/sessions`
-- `GET /v1/sessions/{session_id}/required-package`
-- `POST /v1/sessions/{session_id}/messages`
-- `POST /v1/sessions/{session_id}/files`
-- `GET /v1/sessions/{session_id}/reports/user`
-- `GET /v1/sessions/{session_id}/reports/internal`
-- `POST /v1/chat/completions`
-
-## 前后端联调
-
-新的 v0 前端位于 `web/`，推荐作为默认交互入口。
-
-### 一键启动
+推荐使用一键开发命令：
 
 ```bash
 make dev
 ```
 
-辅助命令：
+默认地址：
 
-```bash
-make status
-make logs
-make stop
-```
+- 前端工作台：`http://127.0.0.1:3000`
+- 后端 API：`http://127.0.0.1:8000`
+- 健康检查：`http://127.0.0.1:8000/healthz`
 
-`make dev` 会自动：
-
-- 启动 FastAPI：`http://127.0.0.1:8000`
-- 启动 Next.js：`http://127.0.0.1:3000`
-- 首次缺少 `web/.env.local` 时自动从 `web/.env.example` 复制
-- 首次缺少依赖时自动初始化 `.venv` 或 `web/node_modules`
-- 把日志写入 `.dev/logs/`
-
-如果端口冲突，可以自定义：
+如果端口冲突：
 
 ```bash
 API_PORT=8001 WEB_PORT=3001 make dev
 ```
 
-### 手动启动
+## 🐳 Docker 部署
 
-先启动后端：
-
-```bash
-uv run uvicorn app.main:app --reload
-```
-
-再启动前端：
-
-```bash
-cd web
-cp .env.example .env.local
-pnpm install
-pnpm dev
-```
-
-默认前端联调配置：
-
-- `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
-- `NEXT_PUBLIC_MOCK=false`
-
-如果只需要前端静态演示，可将 `NEXT_PUBLIC_MOCK` 改为 `true`。
-
-提示：
-
-- 上传文件后若希望自动解析，请确认根目录 `.env` 中设置了 `PARSE_WORKER_INLINE=1`
-- 只要根目录 `.env` 中配置了 `OPENAI_BASE_URL` 与 `OPENAI_API_KEY`，图片/PDF 材料会默认走多模态识别
-- 只有显式设置 `MULTIMODAL_EXTRACTION_ENABLED=false` 才会关闭多模态材料抽取
-- 修改根目录 `.env` 后，需要重启后端进程
-
-## 简单进入鉴权
-
-为了在“部署到服务器测试，但前端还没有完整用户系统”的阶段避免接口裸露，项目提供了最小可用的进入鉴权。
-
-相关环境变量：
-
-- `APP_AUTH_PASSWORD`
-- `APP_AUTH_TOKEN_TTL_SECONDS`
-
-行为约定：
-
-- 当 `APP_AUTH_PASSWORD` 为空时，关闭进入鉴权，不影响本地开发
-- 当 `APP_AUTH_PASSWORD` 有值时，前端或调用方需要先调用 `POST /v1/auth/login`
-- 登录成功后获取 Bearer token
-- 后续访问受保护业务接口时，需要带上 `Authorization: Bearer <token>`
-- 健康检查等必要公开接口保持可访问
-
-这个方案是“服务器测试隔离”用途，不是完整用户系统，不包含：
-
-- 注册登录体系
-- 用户表
-- 权限分级
-- 多租户隔离
-
-## Docker 部署
-
-项目提供一体化镜像：容器内部同时运行 FastAPI 后端和 Next.js 前端，默认只暴露前端端口 `3000`，前端通过 `/api` 反向代理访问容器内后端。
-
-### 构建镜像
+项目提供一体化 Docker 镜像，容器内同时运行 FastAPI 和 Next.js，浏览器只需要访问前端端口。
 
 ```bash
 docker build -t ds160-agent2:latest .
 ```
-
-### 运行示例
 
 ```bash
 docker run -d --name ds160-agent2 \
@@ -241,19 +172,10 @@ docker run -d --name ds160-agent2 \
   -e APP_AUTH_PASSWORD='change-me' \
   -e OPENAI_BASE_URL='https://your-openai-compatible-endpoint/v1' \
   -e OPENAI_API_KEY='your-api-key' \
-  -e CORS_ALLOW_ORIGINS='http://localhost:3000' \
   ds160-agent2:latest
 ```
 
-常用命令：
-
-```bash
-docker logs -f ds160-agent2
-docker stop ds160-agent2
-docker rm ds160-agent2
-```
-
-### 使用 Compose
+也可以使用 Compose：
 
 ```bash
 APP_AUTH_PASSWORD='change-me' \
@@ -262,62 +184,43 @@ OPENAI_API_KEY='your-api-key' \
 docker compose up -d --build
 ```
 
-Docker 相关约定：
+## 🔐 访问保护
 
-- `APP_AUTH_PASSWORD` 为空时关闭进入鉴权；服务器测试环境建议设置强密码
-- SQLite 默认写入 `/data/app.sqlite3`，建议通过 volume 持久化 `/data`
-- 镜像内前端构建时使用 `NEXT_PUBLIC_API_BASE_URL=/api`
-- 浏览器通常只需访问 `http://服务器:3000`
-- 若部署到正式域名，可将 `CORS_ALLOW_ORIGINS` 设置为对应前端域名
+服务器测试阶段可以通过一个简单共享密码保护主要业务接口。
 
-## Chainlit 备用入口
+- `APP_AUTH_PASSWORD` 为空时关闭鉴权，方便本地开发
+- 设置 `APP_AUTH_PASSWORD` 后，前端会先调用 `POST /v1/auth/login`
+- 登录成功后使用 `Authorization: Bearer <token>` 访问受保护接口
 
-项目保留了一个备用 Chainlit UI，挂载在同一个 FastAPI 进程下的 `/ui`。
+这只是测试阶段的进入保护，不是完整用户系统。当前不包含用户注册、权限分级、多租户隔离或数据库用户表。
 
-启动后端：
+## 📡 主要 API
 
-```bash
-uv run uvicorn app.main:app --reload
-```
+| 接口 | 作用 |
+| --- | --- |
+| `POST /v1/auth/login` | 简单进入鉴权 |
+| `POST /v1/sessions` | 创建签证模拟会话 |
+| `POST /v1/sessions/{session_id}/messages` | 提交一轮面谈回答 |
+| `POST /v1/sessions/{session_id}/files` | 上传材料 |
+| `GET /v1/sessions/{session_id}/reports/user` | 获取用户报告 |
+| `GET /v1/sessions/{session_id}/reports/internal` | 获取内部调试报告 |
+| `POST /v1/chat/completions` | OpenAI-compatible 对话入口 |
 
-打开：
+## 🧪 测试
 
-- `http://127.0.0.1:8000/ui`
-
-说明：
-
-- Chainlit 主要作为备用入口与回退验证通道
-- 它不会与 `web/` 共享前端会话状态
-- 它本身尽量保持轻量，只复用现有 API
-
-## 测试与验证
-
-### 默认测试
+默认测试：
 
 ```bash
 uv run pytest -q
 ```
 
-### 跳过真实模型测试
+跳过真实模型测试：
 
 ```bash
 uv run pytest -q -m "not live_llm"
 ```
 
-### 典型回归验证
-
-```bash
-.venv/bin/python -m pytest -q \
-  tests/integration/test_sessions_api.py \
-  tests/integration/test_openai_compat.py \
-  tests/integration/test_messages_api.py \
-  tests/integration/test_interview_runtime_trace.py \
-  tests/integration/test_reports_api.py
-```
-
-### Live LLM 测试
-
-真实模型联调测试是可选项，需要显式提供模型配置：
+真实模型联调测试需要显式提供模型配置：
 
 ```bash
 RUN_LIVE_LLM_TESTS=1 \
@@ -326,20 +229,11 @@ OPENAI_API_KEY=... \
 uv run pytest tests/integration/live -q -m live_llm
 ```
 
-## 发布到 GitHub 前的建议
+## 📦 当前状态
 
-建议在推送前确认以下几点：
+项目仍处于快速迭代阶段，当前更适合作为私有仓库中的产品原型和技术验证项目。后续适合继续补充：
 
-- `.env`、数据库文件、构建产物未被提交
-- `web/.next`、`web/node_modules`、`.venv` 等本地产物已忽略
-- 如果只想公开业务代码，不想公开本地 AI 开发辅助资产，需要额外检查 `.claude/`、`.gemini/`、`.trellis/` 等目录是否符合你的预期
-- 首次发布建议先创建 `private` 仓库，确认内容后再决定是否公开
-
-## 说明
-
-当前仓库仍处于快速迭代阶段，README 以“帮助团队内部部署、联调和测试”为主要目标编写。后续如果要对外公开，建议再拆分出：
-
-- 产品介绍版 README
-- 架构设计文档
-- API 使用文档
-- 部署手册
+- 更完整的签证类型策略包
+- 更稳定的材料结构化抽取评估集
+- 更细的用户账户和数据隔离
+- 更正式的部署与监控文档
