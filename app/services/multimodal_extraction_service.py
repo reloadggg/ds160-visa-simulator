@@ -41,6 +41,11 @@ SUPPORTED_MULTIMODAL_DOCUMENT_TYPES = {
 SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES = {
     **SUPPORTED_MULTIMODAL_DOCUMENT_TYPES,
     "funding_proof": ["/funding/primary_source"],
+    "relationship_proof_between_applicant_and_sponsors": [
+        "/identity/full_name",
+        "/funding/sponsor_relationship",
+        "/family/parent_names",
+    ],
 }
 
 
@@ -90,6 +95,9 @@ class MultimodalExtractionService:
         base_url: str | None = None,
         api_key: str | None = None,
     ) -> None:
+        configured_base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "").rstrip("/")
+        configured_api_key = api_key or os.getenv("OPENAI_API_KEY")
+        explicit_enabled = os.getenv("MULTIMODAL_EXTRACTION_ENABLED")
         self.invoke_model = invoke_model or self._invoke_http
         self.model_name = (
             model_name
@@ -97,12 +105,14 @@ class MultimodalExtractionService:
             or os.getenv("RUNTIME_DEFAULT_MODEL")
             or "gpt-5.4"
         )
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "").rstrip("/")
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.enabled = (
-            invoke_model is not None
-            or os.getenv("MULTIMODAL_EXTRACTION_ENABLED", "").lower() in {"1", "true", "yes"}
-        )
+        self.base_url = configured_base_url
+        self.api_key = configured_api_key
+        if invoke_model is not None:
+            self.enabled = True
+        elif explicit_enabled is not None and explicit_enabled.strip():
+            self.enabled = explicit_enabled.strip().lower() in {"1", "true", "yes"}
+        else:
+            self.enabled = bool(configured_base_url and configured_api_key)
 
     def extract(
         self,
@@ -298,6 +308,8 @@ class MultimodalExtractionService:
                         "输出 JSON，字段包括 document_type_candidates、relevance、supported_claims、confidence。"
                         "document_type_candidates 中每项包含 document_type 和 confidence。"
                         "relevance 只能是 high、medium、low、unknown。"
+                        "中国户口本、出生证明、亲属关系公证等能证明申请人与父母/资助人关系的材料，"
+                        "应归类为 relationship_proof_between_applicant_and_sponsors，而不是 funding_proof。"
                     ),
                 },
                 {

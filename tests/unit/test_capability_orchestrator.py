@@ -74,16 +74,20 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
 
     assert [item["capability_name"] for item in result.capability_plan] == [
         "document_assessment",
+        "document_review",
         "evidence_retrieval",
         "consistency_review",
     ]
     assert all(item["status"] == "completed" for item in result.capability_plan)
     assert set(result.tool_outputs) == {
         "document_assessment",
+        "document_review",
         "evidence_retrieval",
         "consistency_review",
     }
     assert result.tool_outputs["document_assessment"]["uploaded_document_count"] == 1
+    assert result.tool_outputs["document_review"]["review_status"] == "reviewed"
+    assert result.tool_outputs["document_review"]["primary_document"] == "funding_proof"
     assert result.tool_outputs["evidence_retrieval"]["hit_count"] == 1
     assert result.tool_outputs["consistency_review"]["risk_codes"] == [
         "supporting_evidence_missing"
@@ -103,6 +107,15 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
         },
         {
             "kind": "capability",
+            "capability_name": "document_review",
+            "status": "completed",
+            "review_status": "reviewed",
+            "primary_document": "funding_proof",
+            "remaining_required_count": 0,
+            "conflict_count": 0,
+        },
+        {
+            "kind": "capability",
             "capability_name": "evidence_retrieval",
             "status": "completed",
             "query": "funding proof",
@@ -116,3 +129,73 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
             "missing_evidence": ["funding_proof"],
         },
     ]
+
+
+def test_document_review_context_extracts_fields_for_candidate_document_types() -> None:
+    class StubDocumentRepo:
+        def list_session_documents(self, session_id):
+            class Document:
+                document_id = "doc-1"
+                filename = "hukou.jpg"
+                status = "parsed"
+                raw_text = "Applicant LI MINGHAO Father LI WEIGUO Mother ZHANG HUI"
+                artifact_json = {
+                    "metadata": {
+                        "document_assessment": {
+                            "document_type": "funding_proof",
+                            "document_type_candidates": [
+                                "funding_proof",
+                                "relationship_proof_between_applicant_and_sponsors",
+                            ],
+                            "supported_claims": ["/family/parent_names"],
+                        }
+                    }
+                }
+
+            return [Document()]
+
+    class StubEvidence:
+        def extract_document_fields(self, document_id, document_type):
+            return {f"/{document_type}/field": "value"}
+
+    orchestrator = CapabilityOrchestrator(db=object())
+    orchestrator.document_repo = StubDocumentRepo()
+    orchestrator.evidence = StubEvidence()
+
+    review_context = orchestrator._build_document_review_context(
+        session_id="sess-1",
+        dynamic_turn_context={"profile_snapshot": {}, "current_focus": {}},
+        evidence_digest={"missing_evidence": []},
+        focus_thread={},
+        advisory_context={},
+        gate_progress={},
+    )
+
+    document = review_context["documents"][0]
+    assert document["extracted_fields_by_document_type"] == {
+        "funding_proof": {"/funding_proof/field": "value"},
+        "relationship_proof_between_applicant_and_sponsors": {
+            "/relationship_proof_between_applicant_and_sponsors/field": "value"
+        },
+    }
+    assert document["extracted_fields"] == {"/funding_proof/field": "value"}
+
+
+def test_remaining_required_documents_prefers_active_focus_not_in_gate() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    remaining = orchestrator._remaining_required_documents(
+        gate_progress={
+            "required_documents": [
+                {"document_type": "funding_proof", "status": "uploaded"},
+            ]
+        },
+        evidence_digest={
+            "current_focus_document_type": "relationship_proof_between_applicant_and_sponsors",
+            "remaining_required_documents": [
+                "relationship_proof_between_applicant_and_sponsors"
+            ],
+        },
+    )
+
+    assert remaining == ["relationship_proof_between_applicant_and_sponsors"]

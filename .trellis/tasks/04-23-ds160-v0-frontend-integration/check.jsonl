@@ -1,4 +1,0 @@
-{"file": ".gemini/commands/trellis/finish-work.toml", "reason": "Finish work checklist"}
-{"file": ".gemini/commands/trellis/check.toml", "reason": "Code quality check spec"}
-{"file": ".trellis/spec/backend/file-upload-contracts.md", "reason": "检查上传契约未被前端逻辑污染"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "检查 API 字段与 UI 适配的一致性"}

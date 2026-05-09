@@ -6,12 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from app.api.routers.auth import router as auth_router
 from app.api.routers.files import router as files_router
 from app.api.routers.messages import router as messages_router
 from app.api.routers.openai_compat import router as openai_compat_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
 from app.core.settings import settings
+from app.core.simple_auth import simple_auth_middleware
 from app.db.base import Base
 from app.db import evidence_models as _evidence_models
 from app.db.models import SessionTurnRecord
@@ -188,11 +190,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(simple_auth_middleware)
 Base.metadata.create_all(bind=engine)
 bootstrap_sessions_table(engine)
 bootstrap_documents_table(engine)
 bootstrap_session_turns_table(engine)
 app.include_router(sessions_router)
+app.include_router(auth_router)
 app.include_router(files_router)
 app.include_router(messages_router)
 app.include_router(reports_router)

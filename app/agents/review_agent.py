@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from pydantic_ai import Agent
+
+from app.agents.schemas import AgentRuntimeDeps, InterviewReviewReport
+from app.agents.tools import register_evidence_tools
+
+
+class InterviewReviewAgentRunner:
+    def __init__(self, model: Any, instructions: str) -> None:
+        self.agent = Agent(
+            model,
+            deps_type=AgentRuntimeDeps,
+            output_type=InterviewReviewReport,
+            instructions=instructions,
+        )
+        register_evidence_tools(self.agent)
+
+    def run(
+        self,
+        *,
+        deps: AgentRuntimeDeps,
+        review_context: dict[str, Any],
+    ) -> InterviewReviewReport:
+        prompt = json.dumps(
+            {"review_context": review_context},
+            ensure_ascii=False,
+        )
+        return self.agent.run_sync(prompt, deps=deps).output

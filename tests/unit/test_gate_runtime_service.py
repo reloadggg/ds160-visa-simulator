@@ -189,6 +189,67 @@ def test_refresh_session_ignores_uploaded_document_marked_outside_gate_flow(
         engine.dispose()
 
 
+def test_refresh_session_matches_all_uploaded_document_candidates(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-multi-candidate.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="multi-doc-image",
+                        required_documents=["passport_bio", "i20", "admission_letter"],
+                    ),
+                )
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="all-documents.jpg",
+                    status="parsed",
+                    artifact_json={
+                        "status": "parsed",
+                        "filename": "all-documents.jpg",
+                        "document_type": "passport_bio",
+                        "document_assessment": {
+                            "document_type": "passport_bio",
+                            "document_type_candidates": [
+                                "passport_bio",
+                                "i20",
+                                "admission_letter",
+                            ],
+                            "relevance": "high",
+                            "counts_toward_gate": True,
+                        },
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            record = GateRuntimeService(db).refresh_session("sess-1")
+
+            assert record.phase_state == "interview"
+            assert record.gate_status_json["status"] == "ready_for_interview"
+            assert [
+                item["document_type"]
+                for item in record.gate_status_json["required_documents"]
+                if item["status"] == "ready"
+            ] == ["passport_bio", "i20", "admission_letter"]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_build_gate_support_reports_primary_missing_document_without_blocking(
     tmp_path,
 ) -> None:
@@ -230,8 +291,16 @@ def test_build_gate_support_reports_primary_missing_document_without_blocking(
 
             assert support == {
                 "requested_documents": ["ds160"],
+                "remaining_required_documents": [
+                    "ds160",
+                    "passport_bio",
+                    "funding_proof",
+                ],
                 "primary_document": "ds160",
-                "support_message": "当前最缺的关键证明是 ds160。",
+                "support_message": (
+                    "当前最缺的关键证明是 ds160。 "
+                    "当前仍待补的材料还有：passport_bio, funding_proof。"
+                ),
                 "gate_progress": {
                     "overall_status": "waiting_for_parse",
                     "ready_count": 0,

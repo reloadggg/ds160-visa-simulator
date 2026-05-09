@@ -110,8 +110,8 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
     assert record is not None
     assert first.json()["assistant_message"]
     assert second.json()["assistant_message"]
-    assert first.json()["governor_decision"] == "continue_interview"
-    assert second.json()["governor_decision"] == "continue_interview"
+    assert first.json()["governor_decision"] == first.json()["turn_decision"]["decision"]
+    assert second.json()["governor_decision"] == second.json()["turn_decision"]["decision"]
     assert [(turn.turn_index, turn.role) for turn in turns] == [
         (1, "user"),
         (2, "assistant"),

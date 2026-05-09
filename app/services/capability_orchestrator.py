@@ -3,8 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agents.document_review_agent import DocumentReviewAgentRunner
+from app.agents.model_factory import AgentModelFactory
+from app.agents.schemas import AgentRuntimeDeps, DocumentReviewResult
+from app.domain.evidence import DocumentAssessment
 from app.domain.contracts import ScoreState
 from app.domain.runtime import RuntimeTraceEntry
+from app.repositories.document_repo import DocumentRepository
+from app.services.evidence_service import EvidenceService
 from app.services.retrieval_service import RetrievalService
 
 
@@ -19,6 +25,10 @@ class CapabilityOrchestrationResult:
 class CapabilityOrchestrator:
     def __init__(self, db: Any | None = None) -> None:
         self.db = db
+        self.model_factory = AgentModelFactory()
+        has_sqlalchemy_session = hasattr(db, "scalars")
+        self.document_repo = DocumentRepository(db) if has_sqlalchemy_session else None
+        self.evidence = EvidenceService(db) if has_sqlalchemy_session else None
 
     def orchestrate(
         self,
@@ -32,6 +42,7 @@ class CapabilityOrchestrator:
         evidence_digest = self._payload(dynamic_turn_context.get("evidence_digest"))
         focus_thread = self._payload(dynamic_turn_context.get("focus_thread"))
         advisory_context = self._payload(dynamic_turn_context.get("advisory_context"))
+        gate_progress = self._payload(dynamic_turn_context.get("gate_progress"))
 
         capability_plan: list[dict[str, Any]] = []
         tool_outputs: dict[str, Any] = {}
@@ -58,6 +69,36 @@ class CapabilityOrchestrator:
         )
         if document_assessment:
             tool_outputs["document_assessment"] = document_assessment
+
+        document_review = self._document_review_output(
+            session_id=session_id,
+            governor_decision=governor_decision,
+            latest_user_message=latest_user_message,
+            dynamic_turn_context=dynamic_turn_context,
+            evidence_digest=evidence_digest,
+            focus_thread=focus_thread,
+            advisory_context=advisory_context,
+            gate_progress=gate_progress,
+        )
+        capability_plan.append(
+            self._plan_entry(
+                capability_name="document_review",
+                governor_decision=governor_decision,
+                completed=document_review is not None,
+                reason=(
+                    "基于当前材料、门控进度和既有风险生成材料核验结论"
+                    if document_review is not None
+                    else "当前回合没有足够的材料核验上下文"
+                ),
+                summary=(
+                    f"status={document_review['review_status']}"
+                    if document_review is not None
+                    else "no_document_review"
+                ),
+            )
+        )
+        if document_review is not None:
+            tool_outputs["document_review"] = document_review
 
         evidence_retrieval = self._evidence_retrieval_output(
             session_id=session_id,
@@ -152,11 +193,19 @@ class CapabilityOrchestrator:
         uploaded_document_count = self._int_or_zero(
             evidence_digest.get("uploaded_document_count")
         )
+        remaining_required_documents = self._string_list(
+            evidence_digest.get("remaining_required_documents")
+        )
+        verified_documents = self._string_list(
+            evidence_digest.get("verified_documents")
+        )
         if (
             not current_focus_document_type
             and not uploaded_documents
             and not active_feedback
             and not supported_claims
+            and not remaining_required_documents
+            and not verified_documents
         ):
             return None
 
@@ -181,7 +230,66 @@ class CapabilityOrchestrator:
             "supported_claims": supported_claims[:5],
             "active_main_flow_feedback": active_feedback,
             "relevant_uploaded_documents": relevant_uploaded_documents[:3],
+            "remaining_required_documents": remaining_required_documents,
+            "verified_documents": verified_documents,
         }
+
+    def _document_review_output(
+        self,
+        *,
+        session_id: str,
+        governor_decision: str,
+        latest_user_message: str,
+        dynamic_turn_context: dict[str, Any],
+        evidence_digest: dict[str, Any],
+        focus_thread: dict[str, Any],
+        advisory_context: dict[str, Any],
+        gate_progress: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        fallback = self._fallback_document_review(
+            evidence_digest=evidence_digest,
+            focus_thread=focus_thread,
+            advisory_context=advisory_context,
+            gate_progress=gate_progress,
+        )
+        review_context = self._build_document_review_context(
+            session_id=session_id,
+            dynamic_turn_context=dynamic_turn_context,
+            evidence_digest=evidence_digest,
+            focus_thread=focus_thread,
+            advisory_context=advisory_context,
+            gate_progress=gate_progress,
+        )
+        if not review_context and fallback is None:
+            return None
+        if self.db is None or self.document_repo is None or self.evidence is None:
+            return fallback
+
+        declared_family = self._string_or_none(dynamic_turn_context.get("declared_family"))
+        model, runtime = self._build_review_agent_runtime(declared_family)
+        if model is None:
+            return fallback
+
+        try:
+            result = DocumentReviewAgentRunner(
+                model=model,
+                instructions=runtime.get("instructions")
+                or self.model_factory.build_instructions(
+                    "document_review_agent",
+                    declared_family=declared_family,
+                ),
+            ).run(
+                deps=self._build_agent_deps(session_id),
+                dynamic_turn_context=dynamic_turn_context,
+                review_context=review_context,
+                user_message=latest_user_message,
+                boundary_decision=governor_decision,
+            )
+        except Exception:
+            return fallback
+
+        payload = result.model_dump(mode="json")
+        return self._merge_document_review_payload(payload, fallback)
 
     def _evidence_retrieval_output(
         self,
@@ -295,6 +403,24 @@ class CapabilityOrchestrator:
                     ).get("status"),
                 }
             )
+        document_review = self._payload(tool_outputs.get("document_review"))
+        if document_review:
+            artifacts.append(
+                {
+                    "kind": "capability",
+                    "capability_name": "document_review",
+                    "status": "completed",
+                    "review_status": document_review.get("review_status"),
+                    "primary_document": document_review.get("primary_document"),
+                    "remaining_required_count": len(
+                        document_review.get("remaining_required_documents", []) or []
+                    ),
+                    "conflict_count": len(
+                        document_review.get("cross_document_conflicts", []) or []
+                    )
+                    + len(document_review.get("claim_conflicts", []) or []),
+                }
+            )
         evidence_retrieval = self._payload(tool_outputs.get("evidence_retrieval"))
         if evidence_retrieval:
             artifacts.append(
@@ -378,6 +504,306 @@ class CapabilityOrchestrator:
             return None
         normalized = value.strip()
         return normalized or None
+
+    def _build_review_agent_runtime(
+        self,
+        declared_family: str | None,
+    ) -> tuple[Any | None, dict[str, Any]]:
+        try:
+            return self.model_factory.build(
+                "document_review_agent",
+                "interview_turn",
+                declared_family=declared_family,
+            )
+        except TypeError as exc:
+            if "declared_family" not in str(exc):
+                raise
+            return self.model_factory.build("document_review_agent", "interview_turn")
+
+    def _build_agent_deps(self, session_id: str) -> AgentRuntimeDeps:
+        return AgentRuntimeDeps(
+            session_id=session_id,
+            retrieval=RetrievalService(self.db),
+            evidence=EvidenceService(self.db),
+        )
+
+    def _build_document_review_context(
+        self,
+        *,
+        session_id: str,
+        dynamic_turn_context: dict[str, Any],
+        evidence_digest: dict[str, Any],
+        focus_thread: dict[str, Any],
+        advisory_context: dict[str, Any],
+        gate_progress: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.document_repo is None or self.evidence is None:
+            return {}
+
+        documents = []
+        for document in self.document_repo.list_session_documents(session_id):
+            assessment = DocumentAssessment.from_artifact(document.artifact_json)
+            document_type = self._string_or_none(assessment.document_type)
+            candidate_document_types = self._document_type_candidates(assessment)
+            extracted_fields_by_document_type = {
+                candidate: self.evidence.extract_document_fields(
+                    document.document_id,
+                    candidate,
+                )
+                for candidate in candidate_document_types
+            }
+            extracted_fields = (
+                extracted_fields_by_document_type.get(document_type, {})
+                if document_type is not None
+                else {}
+            )
+            main_flow_feedback = (
+                {}
+                if assessment.main_flow_feedback is None
+                else assessment.main_flow_feedback.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+            )
+            raw_text = getattr(document, "raw_text", "") or ""
+            documents.append(
+                {
+                    "document_id": document.document_id,
+                    "filename": document.filename,
+                    "status": document.status,
+                    "document_type": document_type,
+                    "document_type_candidates": list(
+                        assessment.document_type_candidates
+                    ),
+                    "relevance": assessment.relevance,
+                    "extracted_fields_by_document_type": extracted_fields_by_document_type,
+                    "supported_claims": list(assessment.supported_claims),
+                    "counts_toward_gate": assessment.counts_toward_gate,
+                    "main_flow_feedback": main_flow_feedback,
+                    "extracted_fields": extracted_fields,
+                    "raw_text_excerpt": raw_text[:1200],
+                }
+            )
+
+        profile_snapshot = self._payload(dynamic_turn_context.get("profile_snapshot"))
+        current_focus = self._payload(dynamic_turn_context.get("current_focus"))
+        if (
+            not documents
+            and not gate_progress.get("required_documents")
+            and not evidence_digest.get("missing_evidence")
+            and not advisory_context.get("risk_codes")
+        ):
+            return {}
+        return {
+            "current_focus": current_focus,
+            "focus_thread": focus_thread,
+            "gate_progress": gate_progress,
+            "evidence_digest": evidence_digest,
+            "advisory_context": advisory_context,
+            "profile_claims": self._profile_claims(profile_snapshot),
+            "documents": documents,
+        }
+
+
+    def _document_type_candidates(self, assessment: DocumentAssessment) -> list[str]:
+        return self._string_list(
+            [
+                *([assessment.document_type] if assessment.document_type else []),
+                *assessment.document_type_candidates,
+            ]
+        )
+
+    def _profile_claims(self, profile_snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "identity": self._payload(profile_snapshot.get("identity")),
+            "education": self._payload(profile_snapshot.get("education")),
+            "funding": self._payload(profile_snapshot.get("funding")),
+            "visa_intent": self._payload(profile_snapshot.get("visa_intent")),
+            "travel": self._payload(profile_snapshot.get("travel")),
+            "field_states": self._payload(profile_snapshot.get("field_states")),
+            "document_evidence_snapshot": self._payload(
+                self._payload(profile_snapshot.get("ds160_view")).get(
+                    "document_evidence_snapshot"
+                )
+            ),
+        }
+
+    def _fallback_document_review(
+        self,
+        *,
+        evidence_digest: dict[str, Any],
+        focus_thread: dict[str, Any],
+        advisory_context: dict[str, Any],
+        gate_progress: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        remaining_required_documents = self._remaining_required_documents(
+            gate_progress,
+            evidence_digest,
+        )
+        verified_documents = self._verified_documents(
+            gate_progress,
+            evidence_digest,
+        )
+        current_focus_document = self._string_or_none(
+            focus_thread.get("current_key_proof")
+        ) or self._string_or_none(evidence_digest.get("current_focus_document_type"))
+        risk_codes = self._string_list(advisory_context.get("risk_codes"))
+        risk_level = self._string_or_none(advisory_context.get("risk_level"))
+        awaiting_parse = self._awaiting_parse_documents(gate_progress)
+        unresolved_points = list(remaining_required_documents)
+        for document_type in awaiting_parse:
+            message = f"{document_type} 已上传但仍在解析"
+            if message not in unresolved_points:
+                unresolved_points.append(message)
+
+        cross_document_conflicts: list[dict[str, Any]] = []
+        if "record_conflict" in risk_codes:
+            cross_document_conflicts.append(
+                {
+                    "conflict_type": "document_vs_document",
+                    "severity": "high" if risk_level == "high" else "medium",
+                    "summary": "当前材料之间存在待核实的记录冲突，需要先完成交叉核验。",
+                    "field_paths": [],
+                    "document_ids": [],
+                    "evidence_refs": [],
+                }
+            )
+
+        claim_conflicts: list[dict[str, Any]] = []
+        if "evasive_answer" in risk_codes:
+            claim_conflicts.append(
+                {
+                    "conflict_type": "claim_vs_document",
+                    "severity": "medium",
+                    "summary": "当前口头说明仍未正面回应材料核验点。",
+                    "field_paths": [],
+                    "document_ids": [],
+                    "evidence_refs": [],
+                }
+            )
+
+        if not remaining_required_documents and not verified_documents and not risk_codes:
+            return None
+
+        review_status = "reviewed"
+        recommended_next_step = "continue_interview"
+        if cross_document_conflicts or (risk_level == "high" and risk_codes):
+            review_status = "high_risk"
+            recommended_next_step = "high_risk_review"
+        elif awaiting_parse:
+            review_status = "awaiting_parse"
+            recommended_next_step = "request_documents"
+        elif remaining_required_documents:
+            review_status = "awaiting_documents"
+            recommended_next_step = "request_documents"
+        elif claim_conflicts:
+            review_status = "needs_clarification"
+            recommended_next_step = "clarify_conflict"
+
+        if review_status == "high_risk":
+            reviewer_summary = "材料核验已识别高风险冲突，当前应先围绕冲突点复核，不宜继续普通追问。"
+        elif review_status == "awaiting_parse":
+            reviewer_summary = "已有材料进入解析队列，但关键核验仍未完成，不能把上传评估直接当作已验证事实。"
+        elif review_status == "awaiting_documents":
+            reviewer_summary = "当前仍有关键材料缺失，应一次性告知完整待补清单，并标出当前最优先材料。"
+        elif review_status == "needs_clarification":
+            reviewer_summary = "材料与口头说明之间仍有未解开的核验点，需要先做定向澄清。"
+        else:
+            reviewer_summary = "当前关键材料已形成基础核验结论，可继续围绕主线问答。"
+
+        return DocumentReviewResult(
+            review_status=review_status,
+            primary_document=current_focus_document
+            or (remaining_required_documents[0] if remaining_required_documents else None),
+            remaining_required_documents=remaining_required_documents,
+            verified_documents=verified_documents,
+            cross_document_conflicts=cross_document_conflicts,
+            claim_conflicts=claim_conflicts,
+            unresolved_verification_points=unresolved_points,
+            suspicious_documents=[],
+            reviewer_summary=reviewer_summary,
+            recommended_next_step=recommended_next_step,
+        ).model_dump(mode="json")
+
+    def _merge_document_review_payload(
+        self,
+        payload: dict[str, Any],
+        fallback: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not fallback:
+            return payload
+
+        merged = dict(payload)
+        for key in (
+            "remaining_required_documents",
+            "verified_documents",
+            "cross_document_conflicts",
+            "claim_conflicts",
+            "unresolved_verification_points",
+            "suspicious_documents",
+        ):
+            if merged.get(key):
+                continue
+            merged[key] = fallback.get(key, [])
+        if not merged.get("primary_document"):
+            merged["primary_document"] = fallback.get("primary_document")
+        if not merged.get("review_status"):
+            merged["review_status"] = fallback.get("review_status")
+        if not merged.get("reviewer_summary"):
+            merged["reviewer_summary"] = fallback.get("reviewer_summary")
+        if not merged.get("recommended_next_step"):
+            merged["recommended_next_step"] = fallback.get("recommended_next_step")
+        return DocumentReviewResult.model_validate(merged).model_dump(mode="json")
+
+    def _remaining_required_documents(
+        self,
+        gate_progress: dict[str, Any],
+        evidence_digest: dict[str, Any],
+    ) -> list[str]:
+        digest_remaining = self._string_list(
+            evidence_digest.get("remaining_required_documents")
+        )
+        current_focus_document_type = self._string_or_none(
+            evidence_digest.get("current_focus_document_type")
+        )
+        if current_focus_document_type and current_focus_document_type in digest_remaining:
+            return digest_remaining
+
+        documents = self._list_payload(gate_progress.get("required_documents"))
+        remaining = [
+            self._string_or_none(item.get("document_type"))
+            for item in documents
+            if item.get("status") != "ready"
+        ]
+        normalized = self._string_list(remaining)
+        if normalized:
+            return normalized
+        return digest_remaining or self._string_list(evidence_digest.get("missing_evidence"))
+
+    def _verified_documents(
+        self,
+        gate_progress: dict[str, Any],
+        evidence_digest: dict[str, Any],
+    ) -> list[str]:
+        documents = self._list_payload(gate_progress.get("required_documents"))
+        verified = [
+            self._string_or_none(item.get("document_type"))
+            for item in documents
+            if item.get("status") == "ready"
+        ]
+        normalized = self._string_list(verified)
+        if normalized:
+            return normalized
+        return self._string_list(evidence_digest.get("verified_documents"))
+
+    def _awaiting_parse_documents(self, gate_progress: dict[str, Any]) -> list[str]:
+        return self._string_list(
+            [
+                item.get("document_type")
+                for item in self._list_payload(gate_progress.get("required_documents"))
+                if item.get("status") == "uploaded"
+            ]
+        )
 
     def _int_or_zero(self, value: Any) -> int:
         if isinstance(value, int) and value >= 0:

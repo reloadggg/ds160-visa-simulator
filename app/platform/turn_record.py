@@ -14,10 +14,12 @@ class TurnRecord(BaseModel):
     decision: str
     assistant_message: str
     requested_documents: list[str] = Field(default_factory=list)
+    remaining_required_documents: list[str] = Field(default_factory=list)
     focus: dict[str, Any] = Field(default_factory=dict)
     trace_refs: list[str] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     advisory_summary: dict[str, Any] = Field(default_factory=dict)
+    document_review: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def create(
@@ -29,10 +31,12 @@ class TurnRecord(BaseModel):
         decision: str,
         assistant_message: str,
         requested_documents: list[str],
+        remaining_required_documents: list[str] | None = None,
         focus: dict[str, Any] | None,
         trace_refs: list[str],
         artifacts: list[dict[str, Any]] | None = None,
         advisory_summary: dict[str, Any] | None = None,
+        document_review: dict[str, Any] | None = None,
     ) -> "TurnRecord":
         return cls(
             turn_id=user_turn_id or f"{session_id}:pending-turn",
@@ -42,10 +46,12 @@ class TurnRecord(BaseModel):
             decision=decision,
             assistant_message=assistant_message,
             requested_documents=list(requested_documents),
+            remaining_required_documents=list(remaining_required_documents or []),
             focus=dict(focus or {}),
             trace_refs=list(trace_refs),
             artifacts=list(artifacts or []),
             advisory_summary=dict(advisory_summary or {}),
+            document_review=dict(document_review or {}),
         )
 
     def with_assistant_turn(self, assistant_turn_id: str) -> "TurnRecord":

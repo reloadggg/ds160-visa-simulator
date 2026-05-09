@@ -46,6 +46,7 @@ class InterviewerTurnProjectorService:
         trace_entries: list[RuntimeTraceEntry],
         history_turn_count: int,
         history_turns: list[Any],
+        capability_tool_outputs: dict[str, Any] | None = None,
     ) -> InterviewerTurnProjection:
         requested_documents = self.select_requested_documents(
             record=record,
@@ -53,12 +54,24 @@ class InterviewerTurnProjectorService:
             action=action,
             governor_requested_documents=governor_requested_documents,
         )
+        document_review = self._payload(
+            self._payload(capability_tool_outputs).get("document_review")
+        )
+        remaining_required_documents = self.select_remaining_required_documents(
+            record=record,
+            score=score,
+            requested_documents=requested_documents,
+            governor_requested_documents=governor_requested_documents,
+            document_review=document_review,
+        )
         advisory_context = self.advisory_review.build_context(score)
         prompt_trace = self.extract_prompt_trace(trace_entries)
         response = self.action_to_response(
             action=action,
             score=score,
             requested_documents=requested_documents,
+            remaining_required_documents=remaining_required_documents,
+            document_review=document_review,
             advisory_context=advisory_context,
             prompt_trace=prompt_trace,
         )
@@ -79,6 +92,8 @@ class InterviewerTurnProjectorService:
             decision_hint=response["decision_hint"],
             current_focus=current_focus,
             score=score,
+            remaining_required_documents=remaining_required_documents,
+            document_review=document_review,
             history_turn_count=history_turn_count,
             advisory_context=advisory_context,
             prompt_trace=prompt_trace,
@@ -89,8 +104,10 @@ class InterviewerTurnProjectorService:
             action=action,
             assistant_message=response["assistant_message"],
             requested_documents=requested_documents,
+            remaining_required_documents=remaining_required_documents,
             current_focus=current_focus,
             advisory_context=advisory_context,
+            document_review=document_review,
             trace_entries=trace_entries,
             history_turns=history_turns,
         )
@@ -178,13 +195,17 @@ class InterviewerTurnProjectorService:
         decision_hint: str,
         current_focus: dict[str, str | None],
         score: ScoreState,
+        remaining_required_documents: list[str],
+        document_review: dict[str, Any],
         history_turn_count: int,
         advisory_context: TurnAdvisoryContext,
         prompt_trace: PromptTrace,
     ) -> dict[str, Any]:
         risk_codes = self.advisory_review.extract_risk_codes(score)
         current_key_question = current_focus.get("question")
-        current_key_proof = self.current_key_proof(current_focus)
+        current_key_proof = self.current_key_proof(current_focus) or self._string_or_none(
+            document_review.get("primary_document")
+        )
         current_risk_code = current_focus.get("risk_code") or (risk_codes[0] if risk_codes else None)
         state_status = self.derive_interview_state_status(
             turn_decision=decision,
@@ -209,8 +230,10 @@ class InterviewerTurnProjectorService:
             risk_level=self.advisory_review.derive_risk_level(score),
             allowed_next_actions=allowed_next_actions,
             requested_documents=self.requested_documents(current_focus),
+            remaining_required_documents=list(remaining_required_documents),
             risk_codes=risk_codes,
             history_turn_count=history_turn_count,
+            document_review=dict(document_review),
         )
         payload = snapshot.model_dump(mode="json")
         payload["advisory_context"] = advisory_context.model_dump(mode="json")
@@ -295,6 +318,8 @@ class InterviewerTurnProjectorService:
         action: InterviewNextAction,
         score: ScoreState,
         requested_documents: list[str],
+        remaining_required_documents: list[str],
+        document_review: dict[str, Any],
         advisory_context: TurnAdvisoryContext,
         prompt_trace: PromptTrace,
     ) -> dict[str, Any]:
@@ -306,8 +331,10 @@ class InterviewerTurnProjectorService:
             "governor_decision": action.decision,
             "score_summary": {},
             "requested_documents": list(requested_documents),
+            "remaining_required_documents": list(remaining_required_documents),
             "decision_hint": action.decision_hint or action.decision,
             "turn_decision": action.model_dump(mode="json"),
+            "document_review": dict(document_review),
             "advisory_context": advisory_context.model_dump(mode="json"),
             "prompt_trace": prompt_trace.model_dump(mode="json", exclude_none=True),
         }
@@ -344,11 +371,54 @@ class InterviewerTurnProjectorService:
         return []
 
     def normalize_requested_documents(self, document_types: list[str]) -> list[str]:
-        return [
-            document_type.strip()
-            for document_type in document_types
-            if document_type.strip()
+        normalized: list[str] = []
+        for document_type in document_types:
+            candidate = document_type.strip()
+            if candidate and candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
+
+    def select_remaining_required_documents(
+        self,
+        *,
+        record: SessionRecord,
+        score: ScoreState,
+        requested_documents: list[str],
+        governor_requested_documents: list[str],
+        document_review: dict[str, Any],
+    ) -> list[str]:
+        reviewer_documents = self.normalize_requested_documents(
+            list(document_review.get("remaining_required_documents", []) or [])
+        )
+        if reviewer_documents:
+            return reviewer_documents
+
+        current_focus = record.current_focus_json or {}
+        focus_document = current_focus.get("document_type")
+        focus_documents = (
+            [focus_document.strip()]
+            if isinstance(focus_document, str) and focus_document.strip()
+            else []
+        )
+
+        active_documents = self.normalize_requested_documents(
+            list(requested_documents)
+            + list(governor_requested_documents)
+            + focus_documents
+            + list(score.missing_evidence)
+        )
+        if active_documents:
+            return active_documents
+
+        gate_documents = [
+            item.get("document_type")
+            for item in (record.gate_status_json or {}).get("required_documents", [])
+            if isinstance(item, dict) and item.get("status") != "ready"
         ]
+        normalized_gate_documents = self.normalize_requested_documents(gate_documents)
+        if normalized_gate_documents:
+            return normalized_gate_documents
+        return []
 
     def build_turn_record(
         self,
@@ -358,8 +428,10 @@ class InterviewerTurnProjectorService:
         action: InterviewNextAction,
         assistant_message: str,
         requested_documents: list[str],
+        remaining_required_documents: list[str],
         current_focus: dict[str, Any],
         advisory_context: TurnAdvisoryContext,
+        document_review: dict[str, Any],
         trace_entries: list[RuntimeTraceEntry],
         history_turns: list[Any],
     ) -> dict[str, Any]:
@@ -370,6 +442,7 @@ class InterviewerTurnProjectorService:
             decision=action.decision,
             assistant_message=assistant_message,
             requested_documents=requested_documents,
+            remaining_required_documents=remaining_required_documents,
             focus=current_focus,
             trace_refs=self.build_trace_refs(trace_entries),
             artifacts=self.build_turn_artifacts(
@@ -378,6 +451,7 @@ class InterviewerTurnProjectorService:
                 trace_entries,
             ),
             advisory_summary=self.build_turn_advisory_summary(advisory_context),
+            document_review=document_review,
         ).model_dump(mode="json", exclude_none=True)
 
     def build_trace_refs(
@@ -488,3 +562,14 @@ class InterviewerTurnProjectorService:
             if isinstance(turn_id, str) and turn_id:
                 return turn_id
         return None
+
+    def _payload(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        return {}
+
+    def _string_or_none(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None

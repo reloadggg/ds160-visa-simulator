@@ -5,11 +5,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   turbopack: {
     root: __dirname,
   },
   images: {
     unoptimized: true,
+  },
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: `http://${process.env.API_HOST || "127.0.0.1"}:${process.env.API_PORT || "8000"}/:path*`,
+      },
+    ]
   },
 }
 

@@ -12,8 +12,8 @@ const notoSansSC = Noto_Sans_SC({
 });
 
 export const metadata: Metadata = {
-  title: 'DS-160 面签模拟器',
-  description: 'DS-160 签证面试模拟工作台',
+  title: '面签模拟器',
+  description: '签证面试模拟工作台',
   generator: 'v0.app',
   icons: {
     icon: [

@@ -131,7 +131,17 @@ class MessageService:
             runtime_view_state,
             response,
         )
+        response["remaining_required_documents"] = (
+            RuntimeViewContractService.remaining_required_documents(
+                runtime_view_state,
+                response,
+            )
+        )
         response["turn_decision"] = RuntimeViewContractService.turn_decision(
+            runtime_view_state,
+            response,
+        )
+        response["document_review"] = RuntimeViewContractService.document_review(
             runtime_view_state,
             response,
         )
@@ -152,8 +162,12 @@ class MessageService:
                 "phase_state": read_model.phase_state,
                 "governor_decision": response.get("governor_decision"),
                 "requested_documents": list(response.get("requested_documents", []) or []),
+                "remaining_required_documents": list(
+                    response.get("remaining_required_documents", []) or []
+                ),
                 "turn_decision": (response.get("turn_decision", {}) or {}).get("decision"),
                 "current_focus_kind": current_focus.get("kind"),
+                "document_review": dict(response.get("document_review", {}) or {}),
                 "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
             }
         )

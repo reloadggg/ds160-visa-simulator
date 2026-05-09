@@ -92,7 +92,17 @@ def chat_completions(
                 runtime_view_state,
                 result,
             ),
+            "remaining_required_documents": (
+                RuntimeViewContractService.remaining_required_documents(
+                    runtime_view_state,
+                    result,
+                )
+            ),
             "turn_decision": RuntimeViewContractService.turn_decision(
+                runtime_view_state,
+                result,
+            ),
+            "document_review": RuntimeViewContractService.document_review(
                 runtime_view_state,
                 result,
             ),

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.contracts import ApplicantProfile, InterviewRiskLevel, ScoreState
+from app.domain.document_types import normalize_document_type
 from app.domain.evidence import DocumentAssessment
 from app.domain.runtime import (
     DS160CaseBrief,
@@ -27,6 +28,7 @@ class DS160MemoryManager:
         phase_state: str,
         boundary_decision: str,
         documents: list[Any] | None = None,
+        gate_progress: dict[str, Any] | None = None,
     ) -> DS160MemoryBundle:
         runtime_view_state = read_model.runtime_view_state if read_model is not None else None
         current_focus = dict(
@@ -45,6 +47,15 @@ class DS160MemoryManager:
         current_focus_document_type = self._string_or_none(
             current_focus.get("document_type")
         )
+        ready_documents = self._ready_gate_documents(gate_progress or {})
+        if normalize_document_type(current_focus_document_type) in ready_documents:
+            current_focus = {}
+            current_focus_document_type = None
+        requested_documents = [
+            document_type
+            for document_type in requested_documents
+            if normalize_document_type(document_type) not in ready_documents
+        ]
         if not requested_documents and current_focus_document_type:
             requested_documents = [current_focus_document_type]
 
@@ -103,6 +114,17 @@ class DS160MemoryManager:
             last_turn_decision=last_turn_decision,
         )
 
+
+    def _ready_gate_documents(self, gate_progress: dict[str, Any]) -> set[str]:
+        ready_documents: set[str] = set()
+        for item in gate_progress.get("required_documents", []):
+            if not isinstance(item, dict) or item.get("status") != "ready":
+                continue
+            document_type = normalize_document_type(item.get("document_type"))
+            if document_type is not None:
+                ready_documents.add(document_type)
+        return ready_documents
+
     def _build_evidence_digest(
         self,
         *,
@@ -129,6 +151,10 @@ class DS160MemoryManager:
                 requested_documents=requested_documents,
             )
         )
+        remaining_required_documents, verified_documents = self._gate_document_progress(
+            documents=documents or [],
+            requested_documents=requested_documents,
+        )
         return DS160EvidenceDigest(
             missing_evidence=self._dedupe(score.missing_evidence),
             requested_documents=self._dedupe(requested_documents),
@@ -139,6 +165,8 @@ class DS160MemoryManager:
             active_main_flow_feedback=active_main_flow_feedback,
             uploaded_document_count=len(uploaded_documents),
             uploaded_documents=uploaded_documents,
+            remaining_required_documents=remaining_required_documents,
+            verified_documents=verified_documents,
         )
 
     def _build_memory_strata(
@@ -258,6 +286,44 @@ class DS160MemoryManager:
             }
 
         return uploaded_documents, supported_claims, active_main_flow_feedback
+
+    def _gate_document_progress(
+        self,
+        *,
+        documents: list[Any],
+        requested_documents: list[str],
+    ) -> tuple[list[str], list[str]]:
+        requested_set = set(self._dedupe(requested_documents))
+        verified_documents: list[str] = []
+
+        for document in documents:
+            assessment = DocumentAssessment.from_artifact(
+                getattr(document, "artifact_json", None)
+            )
+            document_types = self._document_type_candidates(assessment)
+            for document_type in document_types:
+                if (
+                    getattr(document, "status", None) == "parsed"
+                    and document_type in requested_set
+                    and document_type not in verified_documents
+                ):
+                    verified_documents.append(document_type)
+
+        remaining_required_documents = [
+            document_type
+            for document_type in self._dedupe(requested_documents)
+            if document_type not in verified_documents
+        ]
+        return remaining_required_documents, verified_documents
+
+
+    def _document_type_candidates(self, assessment: DocumentAssessment) -> list[str]:
+        return self._dedupe(
+            [
+                *([assessment.document_type] if assessment.document_type else []),
+                *assessment.document_type_candidates,
+            ]
+        )
 
     def _feedback_rank(
         self,

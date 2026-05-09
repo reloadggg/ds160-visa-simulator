@@ -9,18 +9,54 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { cn } from "@/lib/utils"
-import type { UserReport, InternalReport } from "@/lib/api/types"
-import { User, FileText, Zap, AlertCircle } from "lucide-react"
+import type { UserReport, InternalReport, InterviewReviewResponse } from "@/lib/api/types"
+import { User, FileText, Zap, AlertCircle, ClipboardCheck } from "lucide-react"
 
 interface ReportModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   userReport: UserReport | null
   internalReport: InternalReport | null
+  interviewReview?: InterviewReviewResponse | null
   isLoading: boolean
+  isGeneratingReview?: boolean
   error?: string | null
+  onGenerateReview?: () => void
+  onExportReviewImage?: () => void
+}
+
+function ReviewListCard({
+  title,
+  items,
+  emptyText = "暂无。",
+}: {
+  title: string
+  items: string[]
+  emptyText?: string
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {items.length > 0 ? (
+          <ul className="space-y-2">
+            {items.map((item, index) => (
+              <li key={index} className="text-sm leading-relaxed text-foreground">
+                {item}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">{emptyText}</p>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 const riskLevelConfig = {
@@ -35,29 +71,67 @@ export function ReportModal({
   onOpenChange,
   userReport,
   internalReport,
+  interviewReview,
   isLoading,
+  isGeneratingReview = false,
   error,
+  onGenerateReview,
+  onExportReviewImage,
 }: ReportModalProps) {
   const riskConfig = userReport ? riskLevelConfig[userReport.risk_level] : null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh]">
+      <DialogContent className="flex max-h-[80vh] max-w-3xl flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle>面签报告</DialogTitle>
+          <div className="flex items-center justify-between gap-3">
+            <DialogTitle>面签报告</DialogTitle>
+            <div className="flex shrink-0 items-center gap-2">
+              {onExportReviewImage && interviewReview ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onExportReviewImage}
+                  disabled={isLoading || isGeneratingReview}
+                  className="gap-2"
+                >
+                  <FileText className="h-4 w-4" />
+                  导出复盘图
+                </Button>
+              ) : null}
+              {onGenerateReview ? (
+                <Button
+                  size="sm"
+                  onClick={onGenerateReview}
+                  disabled={isLoading || isGeneratingReview}
+                  className="gap-2"
+                >
+                  {isGeneratingReview ? (
+                    <Spinner className="h-4 w-4" />
+                  ) : (
+                    <ClipboardCheck className="h-4 w-4" />
+                  )}
+                  {interviewReview ? "重新生成复盘" : "生成复盘"}
+                </Button>
+              ) : null}
+            </div>
+          </div>
         </DialogHeader>
 
-        <Tabs defaultValue="user" className="w-full">
+        <Tabs defaultValue="user" className="flex min-h-0 w-full flex-1 flex-col">
           <TabsList className="w-full">
             <TabsTrigger value="user" className="flex-1">
               用户报告
+            </TabsTrigger>
+            <TabsTrigger value="review" className="flex-1">
+              复盘
             </TabsTrigger>
             <TabsTrigger value="internal" className="flex-1">
               调试数据
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="user" className="mt-4">
+          <TabsContent value="user" className="mt-4 min-h-0 flex-1">
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="w-8 h-8" />
@@ -207,7 +281,54 @@ export function ReportModal({
             ) : null}
           </TabsContent>
 
-          <TabsContent value="internal" className="mt-4">
+          <TabsContent value="review" className="mt-4 min-h-0 flex-1">
+            {isGeneratingReview ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+                <Spinner className="h-8 w-8" />
+                <p className="text-sm text-muted-foreground">正在结合面签记录和调试数据生成复盘...</p>
+              </div>
+            ) : interviewReview ? (
+              <ScrollArea className="h-[400px] pr-4">
+                <div className="space-y-4">
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <ClipboardCheck className="h-4 w-4 text-primary" />
+                        {interviewReview.report.outcome}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <p className="text-sm leading-relaxed text-foreground">
+                        {interviewReview.report.executive_summary}
+                      </p>
+                      <div className="rounded-xl border border-border bg-muted/40 px-3 py-2">
+                        <div className="mb-1 text-xs text-muted-foreground">结果原因</div>
+                        <p className="text-sm leading-relaxed">{interviewReview.report.outcome_reason}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <ReviewListCard title="做得好的地方" items={interviewReview.report.strengths} />
+                  <ReviewListCard title="拒签/风险原因" items={interviewReview.report.refusal_or_risk_reasons} emptyText="暂无明确拒签或高风险原因。" />
+                  <ReviewListCard title="缺失或薄弱证据" items={interviewReview.report.missing_or_weak_evidence} />
+                  <ReviewListCard title="回答表现问题" items={interviewReview.report.conversation_issues} />
+                  <ReviewListCard title="材料复盘" items={interviewReview.report.document_findings} />
+                  <ReviewListCard title="下一步补强计划" items={interviewReview.report.improvement_plan} />
+                  <ReviewListCard title="下一轮练习重点" items={interviewReview.report.next_practice_focus} />
+                </div>
+              </ScrollArea>
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+                <ClipboardCheck className="h-12 w-12 text-muted-foreground" />
+                <div>
+                  <p className="font-medium text-foreground">还没有生成复盘</p>
+                  <p className="mt-1 text-sm text-muted-foreground">点击右上角“生成复盘”，系统会结合调试数据和材料 OCR 生成总结。</p>
+                </div>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="internal" className="mt-4 min-h-0 flex-1">
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="w-8 h-8" />
@@ -218,8 +339,8 @@ export function ReportModal({
                 <p className="text-destructive">{error}</p>
               </div>
             ) : internalReport ? (
-              <ScrollArea className="h-[400px]">
-                <pre className="text-xs bg-muted p-4 rounded-lg overflow-auto">
+              <ScrollArea className="h-[400px] rounded-lg border border-border bg-muted/40">
+                <pre className="max-w-full whitespace-pre-wrap break-words p-4 font-mono text-xs leading-5 text-muted-foreground">
                   {JSON.stringify(internalReport, null, 2)}
                 </pre>
               </ScrollArea>

@@ -1,5 +1,6 @@
 export type VisaFamily = "F-1" | "J-1" | "B-1/B-2" | "H-1B"
 export type VisaFamilyCode = "f1" | "j1" | "b1_b2" | "h1b"
+export type AttachmentKind = "image" | "pdf" | "file"
 
 export type RiskLevel = "none" | "low" | "medium" | "high"
 export type DocumentRelevance = "high" | "medium" | "low" | "unknown" | (string & {})
@@ -14,11 +15,25 @@ export type AllowedActionCode =
   | "review_refusal_result"
   | (string & {})
 
+export interface ChatAttachment {
+  id: string
+  name: string
+  mime_type: string
+  kind: AttachmentKind
+  size?: number
+  preview_url?: string | null
+  upload_status?: "pending" | "uploaded" | "error"
+  document_id?: string | null
+  session_id?: string | null
+}
+
 export interface ChatMessage {
   id: string
   role: "officer" | "user" | "system"
   content: string
   timestamp: string
+  status?: "sending" | "sent" | "error"
+  attachments?: ChatAttachment[]
 }
 
 export interface MissingEvidence {
@@ -78,9 +93,12 @@ export interface MessageResponse {
   governor_decision?: string | null
   requested_documents: string[]
   requested_document_labels: string[]
+  remaining_required_documents: string[]
+  remaining_required_document_labels: string[]
   gate_progress?: GateProgress | null
   score_summary?: Record<string, number>
   turn_decision?: Record<string, unknown>
+  document_review?: Record<string, unknown>
   turn_record?: Record<string, unknown>
   prompt_trace?: Record<string, unknown>
   runtime_view_state?: Record<string, unknown>
@@ -156,6 +174,8 @@ export interface FileUploadResponse {
   main_flow_feedback?: FileFeedback | null
   requested_documents: string[]
   requested_document_labels: string[]
+  remaining_required_documents: string[]
+  remaining_required_document_labels: string[]
   gate_progress?: GateProgress | null
   [key: string]: unknown
 }
@@ -174,6 +194,107 @@ export interface InternalReport {
   turn_decision?: Record<string, unknown>
   advisory_context?: Record<string, unknown>
   [key: string]: unknown
+}
+
+export interface SessionExportPayload {
+  schema_version: string
+  session: Record<string, unknown>
+  reports: {
+    user: UserReport
+    internal: InternalReport
+  }
+  profile_snapshot?: Record<string, unknown>
+  documents: Array<{
+    document_id: string
+    filename: string
+    status: string
+    extracted_text: string
+    artifact: Record<string, unknown>
+  }>
+  [key: string]: unknown
+}
+
+export interface InterviewReviewReport {
+  outcome: string
+  outcome_reason: string
+  executive_summary: string
+  strengths: string[]
+  refusal_or_risk_reasons: string[]
+  missing_or_weak_evidence: string[]
+  conversation_issues: string[]
+  document_findings: string[]
+  improvement_plan: string[]
+  next_practice_focus: string[]
+}
+
+export interface InterviewReviewResponse {
+  schema_version: string
+  source: "llm" | "fallback" | string
+  runtime?: Record<string, unknown>
+  report: InterviewReviewReport
+  basis?: Record<string, unknown>
+}
+
+export interface DebugFillResponse {
+  session_id: string
+  filled_document_type: string
+  document_id: string
+  filename: string
+  phase_state?: string
+  gate_status?: BackendSessionGateStatus | null
+}
+
+export interface UploadedMaterial {
+  id: string
+  session_id?: string | null
+  name: string
+  mime_type: string
+  kind: AttachmentKind
+  size?: number
+  preview_url?: string | null
+  uploaded_at: string
+  status_label: string
+  document_id?: string
+  document_status?: string
+  document_type?: string | null
+  document_type_label?: string | null
+  relevance?: DocumentRelevance | null
+  feedback_message?: string | null
+  requested_document_labels?: string[]
+  current_focus_document_label?: string | null
+  counts_toward_gate?: boolean | null
+}
+
+export interface SessionHistoryEntry {
+  id: string
+  session_id: string
+  visa_type: VisaFamily
+  status: "active" | "completed" | "abandoned"
+  title: string
+  summary: string
+  last_message?: string | null
+  message_count: number
+  created_at: string
+  updated_at: string
+  required_package: RequiredPackage | null
+  report: UserReport | null
+  materials: UploadedMaterial[]
+  messages: ChatMessage[]
+}
+
+export interface ComposerCommand {
+  type: "focus" | "upload"
+  token: number
+}
+
+export interface AuthResponse {
+  access_token: string
+  token_type: string
+  expires_in: number
+}
+
+export interface LoginPayload {
+  password: string
 }
 
 export interface BackendSession {
@@ -206,9 +327,11 @@ export interface BackendMessageResponse {
   assistant_message: string
   governor_decision?: string | null
   requested_documents?: string[]
+  remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null
   score_summary?: Record<string, number>
   turn_decision?: Record<string, unknown>
+  document_review?: Record<string, unknown>
   turn_record?: Record<string, unknown>
   prompt_trace?: Record<string, unknown>
   runtime_view_state?: Record<string, unknown>
@@ -278,10 +401,11 @@ export interface BackendFileUploadResponse {
   relevant?: boolean | null
   main_flow_feedback?: BackendFileFeedback | null
   requested_documents?: string[]
+  remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null
 }
 
-export interface BackendInternalReport extends InternalReport {}
+export type BackendInternalReport = InternalReport
 
 export const VISA_FAMILIES: { value: VisaFamily; label: string; description: string }[] = [
   { value: "F-1", label: "F-1 学生签证", description: "赴美留学" },

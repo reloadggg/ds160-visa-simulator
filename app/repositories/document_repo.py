@@ -56,6 +56,25 @@ class DocumentRepository:
             )
         )
 
+    def list_session_document_exports(self, session_id: str) -> list[DocumentRecord]:
+        return list(
+            self.db.scalars(
+                select(DocumentRecord)
+                .where(DocumentRecord.session_id == session_id)
+                .options(
+                    load_only(
+                        DocumentRecord.document_id,
+                        DocumentRecord.session_id,
+                        DocumentRecord.filename,
+                        DocumentRecord.status,
+                        DocumentRecord.artifact_json,
+                        DocumentRecord.raw_text,
+                    )
+                )
+                .order_by(DocumentRecord.filename.asc(), DocumentRecord.document_id.asc())
+            )
+        )
+
     def enqueue_job(
         self,
         session_id: str,

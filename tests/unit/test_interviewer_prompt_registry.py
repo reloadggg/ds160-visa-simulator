@@ -89,3 +89,16 @@ def test_prompt_registry_applies_family_override(tmp_path: Path) -> None:
     assert "BASE CASE SLOT" in instructions
     assert "F1 QUESTION" in instructions
     assert "BASE QUESTION" not in instructions
+
+
+def test_f1_prompt_instructs_refusal_when_required_funding_proof_unavailable() -> None:
+    instructions = InterviewerPromptRegistry().build_instructions(
+        "adjudication_agent",
+        declared_family="f1",
+    )
+
+    assert "document_review" in instructions
+    assert "high_risk" in instructions
+    assert "只进入复核" in instructions
+    assert "simulated_refusal" in instructions
+    assert "I-20 第一年度费用无法由已提供资金覆盖" in instructions

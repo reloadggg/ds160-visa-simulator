@@ -14,6 +14,7 @@ import type {
   DocumentAssessment,
   FileFeedback,
   FileUploadResponse,
+  InterviewReviewResponse,
   GateProgress,
   MessageResponse,
   MissingEvidence,
@@ -59,11 +60,32 @@ const DOCUMENT_LABELS: Record<string, string> = {
 }
 
 const INTERVIEW_STATUS_LABELS: Record<string, string> = {
-  continue_interview: "继续问答",
-  verify_key_issue: "核验关键问题",
-  waiting_key_proof: "等待关键证明",
-  high_risk_review: "高风险复核",
-  simulated_refusal: "模拟拒签",
+  continue_interview: "继续面签问答",
+  need_more_evidence: "建议补充证明材料",
+  route_correction: "签证类型/目的需纠正",
+  verify_key_issue: "关键事实待核实",
+  waiting_key_proof: "待补齐关键证据",
+  high_risk_review: "高风险复核建议",
+  simulated_refusal: "模拟结果：建议拒签",
+  status_pending: "状态待确认",
+}
+
+const BACKEND_TEXT_LABELS: Record<string, string> = {
+  continue_interview: "继续面签问答",
+  need_more_evidence: "建议补充证明材料",
+  route_correction: "签证类型/目的需纠正",
+  verify_key_issue: "关键事实待核实",
+  waiting_key_proof: "待补齐关键证据",
+  high_risk_review: "高风险复核建议",
+  simulated_refusal: "模拟结果：建议拒签",
+  high_risk: "高风险",
+  medium_risk: "中等风险",
+  low_risk: "低风险",
+  review_status: "审核状态",
+  document_review: "材料审核",
+  prompt_trace: "提示词追踪",
+  runtime_trace: "运行轨迹",
+  turn_decision: "本轮判断",
 }
 
 const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {
@@ -188,8 +210,15 @@ export function humanizeBackendText(text?: string | null): string {
   for (const [code, label] of Object.entries(VISA_FAMILY_LABEL_BY_CODE)) {
     next = next.replaceAll(code, label)
   }
+  for (const [code, label] of Object.entries(BACKEND_TEXT_LABELS)) {
+    next = next.replaceAll(code, label)
+  }
 
-  return next.replaceAll("formal interview", "正式问答").replaceAll("interview", "面签问答")
+  return next
+    .replaceAll("formal interview", "正式问答")
+    .replaceAll("interview", "面签问答")
+    .replaceAll("refusal", "拒签")
+    .replaceAll("review", "复核")
 }
 
 function normalizeRiskLevel(value?: string | null): RiskLevel {
@@ -212,7 +241,7 @@ function mapRequiredDocumentStatus(
   }
 }
 
-function mapSessionGateStatus(status?: BackendSessionGateStatus | null): SessionGateStatus | null {
+export function mapSessionGateStatus(status?: BackendSessionGateStatus | null): SessionGateStatus | null {
   if (!status) {
     return null
   }
@@ -353,14 +382,18 @@ export function mapRequiredPackage(payload: BackendRequiredPackage): RequiredPac
 
 export function mapMessageResponse(payload: BackendMessageResponse): MessageResponse {
   const requestedDocuments = payload.requested_documents ?? []
+  const remainingRequiredDocuments = payload.remaining_required_documents ?? []
   return {
     assistant_message: humanizeBackendText(payload.assistant_message),
     governor_decision: payload.governor_decision ?? null,
     requested_documents: requestedDocuments,
     requested_document_labels: requestedDocuments.map(toDocumentLabel),
+    remaining_required_documents: remainingRequiredDocuments,
+    remaining_required_document_labels: remainingRequiredDocuments.map(toDocumentLabel),
     gate_progress: mapGateProgress(payload.gate_progress),
     score_summary: payload.score_summary,
     turn_decision: payload.turn_decision,
+    document_review: payload.document_review,
     turn_record: payload.turn_record,
     prompt_trace: payload.prompt_trace,
     runtime_view_state: payload.runtime_view_state,
@@ -408,10 +441,30 @@ export function mapUserReport(payload: BackendUserReport): UserReport {
   }
 }
 
+export function mapInterviewReviewResponse(payload: InterviewReviewResponse): InterviewReviewResponse {
+  return {
+    ...payload,
+    report: {
+      ...payload.report,
+      outcome: humanizeBackendText(payload.report.outcome),
+      outcome_reason: humanizeBackendText(payload.report.outcome_reason),
+      executive_summary: humanizeBackendText(payload.report.executive_summary),
+      strengths: payload.report.strengths.map(humanizeBackendText).filter(Boolean),
+      refusal_or_risk_reasons: payload.report.refusal_or_risk_reasons.map(humanizeBackendText).filter(Boolean),
+      missing_or_weak_evidence: payload.report.missing_or_weak_evidence.map(humanizeBackendText).filter(Boolean),
+      conversation_issues: payload.report.conversation_issues.map(humanizeBackendText).filter(Boolean),
+      document_findings: payload.report.document_findings.map(humanizeBackendText).filter(Boolean),
+      improvement_plan: payload.report.improvement_plan.map(humanizeBackendText).filter(Boolean),
+      next_practice_focus: payload.report.next_practice_focus.map(humanizeBackendText).filter(Boolean),
+    },
+  }
+}
+
 export function mapFileUploadResponse(
   payload: BackendFileUploadResponse,
 ): FileUploadResponse {
   const requestedDocuments = payload.requested_documents ?? []
+  const remainingRequiredDocuments = payload.remaining_required_documents ?? []
   const mainFlowFeedback = mapFileFeedback(payload.main_flow_feedback)
   const documentAssessment = mapDocumentAssessment(payload.document_assessment)
   const documentTypeCandidates = normalizeStringList(payload.document_type_candidates)
@@ -441,6 +494,8 @@ export function mapFileUploadResponse(
     main_flow_feedback: mainFlowFeedback,
     requested_documents: requestedDocuments,
     requested_document_labels: requestedDocuments.map(toDocumentLabel),
+    remaining_required_documents: remainingRequiredDocuments,
+    remaining_required_document_labels: remainingRequiredDocuments.map(toDocumentLabel),
     gate_progress: mapGateProgress(payload.gate_progress),
   }
 }

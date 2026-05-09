@@ -4,6 +4,7 @@ from io import BytesIO
 
 import fitz
 from PIL import Image
+import pytest
 
 from app.domain.evidence import DocumentSourceType
 from app.services.multimodal_extraction_service import MultimodalExtractionService
@@ -133,3 +134,27 @@ def test_extract_returns_none_for_unsupported_document_type() -> None:
     )
 
     assert result is None
+
+
+def test_service_auto_enables_when_model_credentials_are_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("MULTIMODAL_EXTRACTION_ENABLED", raising=False)
+
+    service = MultimodalExtractionService()
+
+    assert service.enabled is True
+
+
+def test_service_allows_explicit_disable_even_when_model_credentials_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("MULTIMODAL_EXTRACTION_ENABLED", "false")
+
+    service = MultimodalExtractionService()
+
+    assert service.enabled is False

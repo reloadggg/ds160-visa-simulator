@@ -5,17 +5,31 @@ import { cn } from "@/lib/utils"
 
 import { AnalysisPanel } from "@/components/ds160/analysis-panel"
 import { ChatPanel } from "@/components/ds160/chat-panel"
+import { HistoryPanel } from "@/components/ds160/history-panel"
+import { MaterialsPanel } from "@/components/ds160/materials-panel"
 import { ReportModal } from "@/components/ds160/report-modal"
-import { Sidebar } from "@/components/ds160/sidebar"
+import { SettingsPanel } from "@/components/ds160/settings-panel"
+import { Sidebar, navItems } from "@/components/ds160/sidebar"
 import { TopBar } from "@/components/ds160/top-bar"
 import { VisaSelector } from "@/components/ds160/visa-selector"
+import { AuthGuard } from "@/components/ds160/auth-guard"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
+import type { SessionHistoryEntry } from "@/lib/api/types"
 
 export default function DS160Workbench() {
+  return (
+    <AuthGuard>
+      <Workbench />
+    </AuthGuard>
+  )
+}
+
+function Workbench() {
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [activeTab, setActiveTab] = useState("simulation")
 
   const {
+    apiBaseUrl,
     mockMode,
     sessionId,
     visaType,
@@ -28,103 +42,208 @@ export default function DS160Workbench() {
     isLoadingReport,
     reportError,
     internalReport,
+    interviewReview,
+    isGeneratingReview,
     isLoadingInternalReport,
     modalError,
     isReportModalOpen,
-    setIsReportModalOpen,
+    handleReportModalOpenChange,
+    handleGenerateInterviewReview,
     isPaused,
     sessionTimeLabel,
     initError,
+    uploadedMaterials,
+    sessionHistory,
+    composerCommand,
+    settingsFeedback,
+    handleComposerCommandHandled,
     handleVisaSelect,
     handleSendMessage,
-    handleUploadFile,
-    handleRequestHint,
-    handleContinueAnswer,
     handleViewDetails,
     handleActionClick,
     handlePause,
     handleEndSession,
     handleReset,
+    handleCopySessionId,
+    handleExportSession,
+    handleExportConversationImage,
+    handleExportReviewImage,
+    handleDebugFillCurrentGap,
+    handleClearHistory,
+    handleRestoreSession,
   } = useSessionWorkbench()
 
-  if (!sessionId) {
-    return (
-      <VisaSelector
-        onSelect={handleVisaSelect}
-        isLoading={isInitializing}
-        error={initError}
-        mockMode={mockMode}
-      />
-    )
+  const onRestoreSession = (entry: SessionHistoryEntry) => {
+    handleRestoreSession(entry)
+    setActiveNavItem("workbench")
   }
 
-  return (
-    <div className="h-screen flex bg-background overflow-hidden relative">
-      <div className="absolute top-4 left-4 flex items-center gap-2 z-50">
-        <div className="w-3 h-3 rounded-full bg-[#FF5F57] border border-[#E0443E]" />
-        <div className="w-3 h-3 rounded-full bg-[#FEBC2E] border border-[#DEA123]" />
-        <div className="w-3 h-3 rounded-full bg-[#28C840] border border-[#1AAB29]" />
-      </div>
-
-      {mockMode && (
-        <div className="absolute top-4 left-24 z-50 rounded-full border border-amber-300 bg-amber-50/95 px-3 py-1 text-xs font-medium text-amber-800 shadow-sm backdrop-blur">
-          开发模式：当前使用 Mock 数据
-        </div>
-      )}
-
-      <Sidebar activeItem={activeNavItem} onItemClick={setActiveNavItem} />
-
-      <div className="flex-1 flex flex-col min-w-0">
+  const renderHeader = () => {
+    if (sessionId) {
+      return (
         <TopBar
           visaType={visaType || "F-1"}
           sessionTime={sessionTimeLabel}
           isPaused={isPaused}
           activeTab={activeTab}
+          mockMode={mockMode}
           onTabChange={setActiveTab}
           onPause={handlePause}
           onEndSession={handleEndSession}
           onReset={handleReset}
+          onDebugFillCurrentGap={handleDebugFillCurrentGap}
+          onExportConversationImage={handleExportConversationImage}
         />
+      )
+    }
 
-        <div className="flex-1 flex min-h-0">
-          <main
-            className={cn(
-              "flex flex-1 min-h-0 min-w-0 flex-col",
-              activeTab === "coach" ? "p-3" : "p-4",
-            )}
-          >
-            <ChatPanel
-              messages={messages}
-              onSendMessage={handleSendMessage}
-              onUploadFile={handleUploadFile}
-              onRequestHint={handleRequestHint}
-              onContinueAnswer={handleContinueAnswer}
-              isSending={isSending}
-              isUploading={isUploading}
-              error={chatError}
-            />
-          </main>
-
-          <AnalysisPanel
-            report={userReport}
-            isLoading={isLoadingReport}
-            error={reportError}
-            mode={activeTab === "coach" ? "coach" : "simulation"}
-            onViewDetails={handleViewDetails}
-            onViewAllMaterials={handleViewDetails}
-            onActionClick={handleActionClick}
-          />
+    return (
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-border bg-card px-4 md:px-6">
+        <div className="min-w-0">
+          <h2 className="truncate text-base font-semibold text-foreground md:text-lg">DS-160 面签工作台</h2>
+          <p className="hidden truncate text-sm text-muted-foreground sm:block">
+            先选择签证类型开始新会话，也可以查看本地历史记录和材料归档。
+          </p>
         </div>
+        {mockMode ? (
+          <div className="rounded-full border border-amber-300 bg-amber-50/95 px-3 py-1 text-[10px] font-medium text-amber-800 shadow-sm backdrop-blur md:text-xs">
+            {sessionId ? "MOCK" : "开发模式：Mock 数据"}
+          </div>
+        ) : null}
+      </header>
+    )
+  }
+
+  const renderWorkbench = () => {
+    if (!sessionId) {
+      return (
+        <VisaSelector
+          embedded
+          onSelect={handleVisaSelect}
+          isLoading={isInitializing}
+          error={initError}
+          mockMode={mockMode}
+        />
+      )
+    }
+
+    return (
+      <div className="flex h-full min-h-0 min-w-0">
+        <main
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 flex-col",
+            activeTab === "coach" ? "p-2 md:p-3" : "p-2 md:p-4",
+          )}
+        >
+          <ChatPanel
+            messages={messages}
+            onSendMessage={handleSendMessage}
+            isSending={isSending}
+            isUploading={isUploading}
+            error={chatError}
+            composerCommand={composerCommand}
+            onComposerCommandHandled={handleComposerCommandHandled}
+          />
+        </main>
+
+        <AnalysisPanel
+          className="hidden xl:flex"
+          report={userReport}
+          isLoading={isLoadingReport}
+          error={reportError}
+          mode={activeTab === "coach" ? "coach" : "simulation"}
+          onViewDetails={handleViewDetails}
+          onViewAllMaterials={() => setActiveNavItem("materials")}
+          onActionClick={handleActionClick}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="relative flex h-[100dvh] overflow-hidden bg-background">
+        <div className="absolute left-4 top-4 z-50 hidden items-center gap-2 lg:flex">
+          <div className="h-3 w-3 rounded-full border border-[#E0443E] bg-[#FF5F57]" />
+          <div className="h-3 w-3 rounded-full border border-[#DEA123] bg-[#FEBC2E]" />
+          <div className="h-3 w-3 rounded-full border border-[#1AAB29] bg-[#28C840]" />
+        </div>
+
+        <Sidebar activeItem={activeNavItem} onItemClick={setActiveNavItem} />
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          {renderHeader()}
+          <div className="min-h-0 flex-1 overflow-y-auto pb-[calc(4.75rem+env(safe-area-inset-bottom))] lg:pb-0">
+            <div className={cn("h-full", activeNavItem === "workbench" ? "block" : "hidden")}>
+              {renderWorkbench()}
+            </div>
+            <div className={cn("h-full", activeNavItem === "history" ? "block" : "hidden")}>
+              <HistoryPanel entries={sessionHistory} onRestore={onRestoreSession} />
+            </div>
+            <div className={cn("h-full", activeNavItem === "materials" ? "block" : "hidden")}>
+              <MaterialsPanel
+                currentMaterials={uploadedMaterials}
+                historyEntries={sessionHistory}
+                currentSessionId={sessionId}
+              />
+            </div>
+            <div className={cn("h-full", activeNavItem === "settings" ? "block" : "hidden")}>
+              <SettingsPanel
+                mockMode={mockMode}
+                apiBaseUrl={apiBaseUrl}
+                sessionId={sessionId}
+                historyCount={sessionHistory.length}
+                feedback={settingsFeedback}
+                onCopySessionId={handleCopySessionId}
+                onExportSession={handleExportSession}
+                onExportConversationImage={handleExportConversationImage}
+                onDebugFillCurrentGap={handleDebugFillCurrentGap}
+                onResetCurrentSession={handleReset}
+                onClearHistory={handleClearHistory}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Bottom Navigation */}
+        <nav className="fixed bottom-0 left-0 right-0 z-50 flex h-[calc(4rem+env(safe-area-inset-bottom))] items-center border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">
+          <ul className="flex w-full justify-around px-2">
+            {navItems.map((item) => {
+              const Icon = item.icon
+              const isActive = activeNavItem === item.id
+              return (
+                <li key={item.id} className="flex-1">
+                  <button
+                    onClick={() => setActiveNavItem(item.id)}
+                    className={cn(
+                      "flex w-full flex-col items-center justify-center gap-1 py-2 transition-colors",
+                      isActive
+                        ? "text-primary"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span className="text-[10px] font-medium">{item.label}</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </nav>
       </div>
 
       <ReportModal
         open={isReportModalOpen}
-        onOpenChange={setIsReportModalOpen}
+        onOpenChange={handleReportModalOpenChange}
         userReport={userReport}
         internalReport={internalReport}
+        interviewReview={interviewReview}
         isLoading={isLoadingInternalReport}
+        isGeneratingReview={isGeneratingReview}
         error={modalError}
+        onGenerateReview={handleGenerateInterviewReview}
+        onExportReviewImage={handleExportReviewImage}
       />
-    </div>
+    </>
   )
 }

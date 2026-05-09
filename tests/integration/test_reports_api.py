@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import SessionRecord
+from app.db.models import DocumentRecord, SessionRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.repositories.session_turn_repo import SessionTurnRepository
@@ -53,6 +53,64 @@ def test_user_report_returns_summary_shape(client: TestClient) -> None:
     assert response.status_code == 200
     assert "outcome_label" in response.json()
     assert "interview_status" in response.json()
+
+
+def test_session_export_returns_json_without_document_bytes(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.profile_json = {"funding": {"primary_source": "parents"}}
+        db.add(
+            DocumentRecord(
+                document_id="doc-export-1",
+                session_id=session_id,
+                filename="bank-statement.png",
+                status="parsed",
+                raw_bytes=b"binary-image-content",
+                raw_text="OCR extracted sponsor bank balance text",
+                artifact_json={
+                    "source_type": "image",
+                    "document_type": "funding_proof",
+                    "document_assessment": {
+                        "document_type": "funding_proof",
+                        "supported_claims": ["parents sponsor tuition"],
+                    },
+                },
+            )
+        )
+        db.add(record)
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/reports/export")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "ds160.session_export.v1"
+    assert payload["session"]["session_id"] == session_id
+    assert payload["documents"] == [
+        {
+            "document_id": "doc-export-1",
+            "filename": "bank-statement.png",
+            "status": "parsed",
+            "extracted_text": "OCR extracted sponsor bank balance text",
+            "artifact": {
+                "source_type": "image",
+                "document_type": "funding_proof",
+                "document_assessment": {
+                    "document_type": "funding_proof",
+                    "supported_claims": ["parents sponsor tuition"],
+                },
+            },
+        }
+    ]
+    assert "raw_bytes" not in str(payload)
+    assert "binary-image-content" not in str(payload)
 
 
 def test_reports_api_returns_gate_review_copy_and_internal_histories(
@@ -386,3 +444,47 @@ def test_reports_api_distinguishes_high_risk_review_from_simulated_refusal(
     assert high_risk_response.json()["outcome_label"] == "高风险待复核"
     assert refusal_response.json()["interview_status"] == "simulated_refusal"
     assert refusal_response.json()["outcome_label"] == "模拟拒签结果"
+
+
+def test_generate_interview_review_returns_fallback_report_without_model_config(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.phase_state = "interview"
+        record.current_governor_decision = "simulated_refusal"
+        record.interviewer_state_json = {
+            "public_status": "simulated_refusal",
+            "current_key_question": "Who will pay for your first year?",
+            "risk_points": ["第一年资金证明不足"],
+            "recommended_improvements": ["补齐覆盖 I-20 第一年度费用的资金证明。"],
+        }
+        db.add(
+            DocumentRecord(
+                document_id="doc-review-1",
+                session_id=session_id,
+                filename="i20.png",
+                status="parsed",
+                raw_text="I-20 estimated expenses: 56000 USD",
+                artifact_json={"document_type": "i20"},
+            )
+        )
+        db.add(record)
+        db.commit()
+
+    response = client.post(f"/v1/sessions/{session_id}/reports/review")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "ds160.interview_review.v1"
+    assert payload["source"] == "fallback"
+    assert payload["report"]["outcome"] == "模拟拒签复盘"
+    assert payload["basis"]["document_count"] == 1

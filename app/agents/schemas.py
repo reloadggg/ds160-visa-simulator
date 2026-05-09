@@ -24,6 +24,27 @@ DecisionHint = Literal[
     "high_risk_review",
     "simulated_refusal",
 ]
+DocumentReviewStatus = Literal[
+    "not_applicable",
+    "awaiting_documents",
+    "awaiting_parse",
+    "reviewed",
+    "needs_clarification",
+    "high_risk",
+]
+DocumentReviewNextStep = Literal[
+    "continue_interview",
+    "request_documents",
+    "clarify_conflict",
+    "high_risk_review",
+    "simulated_refusal",
+]
+DocumentConflictType = Literal[
+    "document_vs_document",
+    "claim_vs_document",
+    "document_quality",
+    "missing_verification",
+]
 FocusKind = Literal[
     "interview_question",
     "required_document",
@@ -245,6 +266,120 @@ class InterviewNextAction(BaseModel):
             if any(alias and alias in normalized for alias in aliases):
                 return True
         return False
+
+
+class DocumentReviewConflict(BaseModel):
+    conflict_type: DocumentConflictType
+    severity: RiskSeverity
+    summary: str
+    document_ids: list[str] = Field(default_factory=list)
+    field_paths: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("summary must not be empty")
+        return normalized
+
+    @field_validator("document_ids", "field_paths", "evidence_refs")
+    @classmethod
+    def dedupe_string_lists(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            candidate = item.strip()
+            if candidate and candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
+
+
+class DocumentReviewResult(BaseModel):
+    review_status: DocumentReviewStatus = "not_applicable"
+    primary_document: str | None = None
+    remaining_required_documents: list[str] = Field(default_factory=list)
+    verified_documents: list[str] = Field(default_factory=list)
+    cross_document_conflicts: list[DocumentReviewConflict] = Field(default_factory=list)
+    claim_conflicts: list[DocumentReviewConflict] = Field(default_factory=list)
+    unresolved_verification_points: list[str] = Field(default_factory=list)
+    suspicious_documents: list[str] = Field(default_factory=list)
+    reviewer_summary: str
+    recommended_next_step: DocumentReviewNextStep = "continue_interview"
+
+    @field_validator("reviewer_summary")
+    @classmethod
+    def validate_reviewer_summary(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("reviewer_summary must not be empty")
+        return normalized
+
+    @field_validator(
+        "remaining_required_documents",
+        "verified_documents",
+        "unresolved_verification_points",
+        "suspicious_documents",
+    )
+    @classmethod
+    def dedupe_plain_string_lists(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            candidate = item.strip()
+            if candidate and candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
+
+    @model_validator(mode="after")
+    def align_primary_document(self) -> "DocumentReviewResult":
+        if self.primary_document is not None:
+            self.primary_document = self.primary_document.strip() or None
+        if self.primary_document is None and self.remaining_required_documents:
+            self.primary_document = self.remaining_required_documents[0]
+        return self
+
+
+class InterviewReviewReport(BaseModel):
+    outcome: str
+    outcome_reason: str
+    executive_summary: str
+    strengths: list[str] = Field(default_factory=list)
+    refusal_or_risk_reasons: list[str] = Field(default_factory=list)
+    missing_or_weak_evidence: list[str] = Field(default_factory=list)
+    conversation_issues: list[str] = Field(default_factory=list)
+    document_findings: list[str] = Field(default_factory=list)
+    improvement_plan: list[str] = Field(default_factory=list)
+    next_practice_focus: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "outcome",
+        "outcome_reason",
+        "executive_summary",
+    )
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("review report text fields must not be empty")
+        return normalized
+
+    @field_validator(
+        "strengths",
+        "refusal_or_risk_reasons",
+        "missing_or_weak_evidence",
+        "conversation_issues",
+        "document_findings",
+        "improvement_plan",
+        "next_practice_focus",
+    )
+    @classmethod
+    def normalize_review_lists(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            candidate = item.strip()
+            if candidate and candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
 
 
 class AgentRuntimeDeps(BaseModel):

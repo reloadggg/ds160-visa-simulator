@@ -1,7 +1,7 @@
 import pytest
 
 from app.agents.model_factory import AgentModelFactory
-from app.agents.question_agent import QuestionAgentRunner
+from app.agents.adjudication_agent import AdjudicationAgentRunner
 from app.workers.parse_worker import ParseWorker
 
 
@@ -30,7 +30,7 @@ def test_live_messages_api_requests_funding_proof(
     build_calls: list[tuple[str, str, str | None]] = []
     run_calls: list[str] = []
     original_build = AgentModelFactory.build
-    original_run = QuestionAgentRunner.run
+    original_run = AdjudicationAgentRunner.run
 
     def tracked_build(self, module_key, stage_key, declared_family=None):
         model, runtime = original_build(
@@ -39,7 +39,7 @@ def test_live_messages_api_requests_funding_proof(
             stage_key,
             declared_family=declared_family,
         )
-        if module_key == "question_agent":
+        if module_key == "adjudication_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
@@ -65,7 +65,7 @@ def test_live_messages_api_requests_funding_proof(
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
-    monkeypatch.setattr(QuestionAgentRunner, "run", tracked_run)
+    monkeypatch.setattr(AdjudicationAgentRunner, "run", tracked_run)
     session_resp = live_api_client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -88,9 +88,9 @@ def test_live_messages_api_requests_funding_proof(
     )
     assert build_calls == [
         (
-            "question_agent",
+            "adjudication_agent",
             "interview_turn",
-            live_expected_runtime_model("question_agent", "interview_turn"),
+            live_expected_runtime_model("adjudication_agent", "interview_turn"),
         )
     ]
     assert run_calls == [session_id]
@@ -107,7 +107,7 @@ def test_live_messages_api_continues_after_funding_document_upload(
     build_calls: list[tuple[str, str, str | None]] = []
     run_calls: list[str] = []
     original_build = AgentModelFactory.build
-    original_run = QuestionAgentRunner.run
+    original_run = AdjudicationAgentRunner.run
 
     def tracked_build(self, module_key, stage_key, declared_family=None):
         model, runtime = original_build(
@@ -116,7 +116,7 @@ def test_live_messages_api_continues_after_funding_document_upload(
             stage_key,
             declared_family=declared_family,
         )
-        if module_key == "question_agent":
+        if module_key == "adjudication_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
@@ -142,7 +142,7 @@ def test_live_messages_api_continues_after_funding_document_upload(
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
-    monkeypatch.setattr(QuestionAgentRunner, "run", tracked_run)
+    monkeypatch.setattr(AdjudicationAgentRunner, "run", tracked_run)
     session_resp = live_api_client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -192,8 +192,8 @@ def test_live_messages_api_continues_after_funding_document_upload(
     )
     assert build_calls
     assert build_calls[-1] == (
-        "question_agent",
+        "adjudication_agent",
         "interview_turn",
-        live_expected_runtime_model("question_agent", "interview_turn"),
+        live_expected_runtime_model("adjudication_agent", "interview_turn"),
     )
     assert run_calls[-1] == session_id

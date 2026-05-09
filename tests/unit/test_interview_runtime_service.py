@@ -167,43 +167,6 @@ def test_build_question_action_appends_capability_trace_before_turn_decision(
         "turn_decision",
     ]
 
-
-def test_fallback_continue_interview_recovers_to_document_request_when_evidence_is_missing() -> None:
-    service = InterviewRuntimeService(db=object())
-    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
-    score.missing_evidence = ["funding_proof"]
-
-    action = service._fallback_question_action(
-        "continue_interview",
-        score,
-        recent_turns=None,
-    )
-
-    assert action == InterviewNextAction(
-        assistant_message="Please provide the key supporting document for this point.",
-        requested_documents=["funding_proof"],
-        decision_hint="need_more_evidence",
-    )
-
-
-def test_fallback_need_more_evidence_uses_single_document_focus() -> None:
-    service = InterviewRuntimeService(db=object())
-    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
-    score.missing_evidence = ["funding_proof"]
-
-    action = service._fallback_question_action(
-        "need_more_evidence",
-        score,
-        recent_turns=None,
-    )
-
-    assert action == InterviewNextAction(
-        assistant_message="Please provide the key supporting document for this point.",
-        requested_documents=["funding_proof"],
-        decision_hint="need_more_evidence",
-    )
-
-
 def test_raise_if_question_model_unavailable_blocks_interview_question_path() -> None:
     service = InterviewRuntimeService(db=object())
     score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
@@ -257,10 +220,10 @@ def test_raise_if_question_model_unavailable_blocks_document_request_path() -> N
         raise AssertionError("缺少模型配置时不应再伪装成补材料成功响应")
 
 
-def test_normalize_question_agent_error_maps_quota_exhausted_to_429() -> None:
+def test_normalize_turn_decision_error_maps_quota_exhausted_to_429() -> None:
     service = InterviewRuntimeService(db=object())
 
-    error = service._normalize_question_agent_error(
+    error = service._normalize_turn_decision_error(
         ModelHTTPError(
             status_code=429,
             model_name="gpt-5.4",
@@ -283,10 +246,10 @@ def test_normalize_question_agent_error_maps_quota_exhausted_to_429() -> None:
     assert "额度已耗尽" in error.detail
 
 
-def test_normalize_question_agent_error_maps_auth_failure_to_401() -> None:
+def test_normalize_turn_decision_error_maps_auth_failure_to_401() -> None:
     service = InterviewRuntimeService(db=object())
 
-    error = service._normalize_question_agent_error(
+    error = service._normalize_turn_decision_error(
         ModelHTTPError(
             status_code=401,
             model_name="gpt-5.4",
@@ -419,6 +382,8 @@ def test_build_dynamic_turn_context_includes_phase3_structured_fields(
         "active_main_flow_feedback": {},
         "uploaded_document_count": 0,
         "uploaded_documents": [],
+        "remaining_required_documents": ["funding_proof"],
+        "verified_documents": [],
     }
     assert payload["memory_strata"]["facts_memory"]["funding_source"] == "parents"
     assert payload["memory_strata"]["derived_memory"]["risk_codes"] == [
@@ -630,6 +595,8 @@ def test_build_dynamic_turn_context_includes_uploaded_document_feedback_in_evide
             "supported_claims": ["/funding/primary_source"],
         },
         "uploaded_document_count": 2,
+        "remaining_required_documents": ["funding_proof"],
+        "verified_documents": [],
         "uploaded_documents": [
             {
                 "document_id": "doc-helpful",
@@ -662,3 +629,25 @@ def test_build_dynamic_turn_context_includes_uploaded_document_feedback_in_evide
             },
         ],
     }
+
+
+def test_finalize_question_action_aligns_focus_document_with_requested_document() -> None:
+    service = InterviewRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="need_more_evidence",
+        assistant_message="请上传能显示你和资助人关系的户口本页或出生证明。",
+        requested_documents=["relationship_proof_between_applicant_and_sponsors"],
+        focus_kind="required_document",
+        focus_document_type="funding_proof",
+    )
+
+    finalized = service._finalize_question_action(
+        "need_more_evidence",
+        ScoreState.minimal(profile_version=1, scoring_stage="interview_turn"),
+        action,
+    )
+
+    assert finalized.requested_documents == [
+        "relationship_proof_between_applicant_and_sponsors"
+    ]
+    assert finalized.focus_document_type == "relationship_proof_between_applicant_and_sponsors"

@@ -59,8 +59,10 @@ class RuntimeViewState(BaseModel):
     current_key_proof: str | None = None
     current_risk_code: str | None = None
     requested_documents: list[str] = Field(default_factory=list)
+    remaining_required_documents: list[str] = Field(default_factory=list)
     allowed_next_actions: list[str] = Field(default_factory=list)
     advisory_context: dict[str, Any] = Field(default_factory=dict)
+    document_review: dict[str, Any] = Field(default_factory=dict)
     prompt_trace: dict[str, Any] = Field(default_factory=dict)
 
 

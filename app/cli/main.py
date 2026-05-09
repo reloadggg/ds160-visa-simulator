@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db.session import DATABASE_URL
+from app.db.session import DATABASE_URL, SQLITE_CONNECT_ARGS
 from app.evals.replay_runner import ReplayRunner
 
 
@@ -47,7 +47,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _build_session_factory(database_url: str) -> sessionmaker[Session]:
-    engine = create_engine(database_url, connect_args={"check_same_thread": False})
+    connect_args = SQLITE_CONNECT_ARGS if database_url.startswith("sqlite") else {}
+    engine = create_engine(database_url, connect_args=connect_args)
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 

@@ -8,3 +8,13 @@ __pycache__/
 .dev/
 *.sqlite3
 .env
+*.tsbuildinfo
+web/.next/
+web/node_modules/
+web/.env.local
+.trellis/
+.files/
+.codex/
+.claude/
+.gemini/
+.chainlit/translations/

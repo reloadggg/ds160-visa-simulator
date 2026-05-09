@@ -106,6 +106,9 @@ class GateRuntimeService:
         requested_documents = self._primary_requested_documents(
             gate_status.get("required_documents", [])
         )
+        remaining_required_documents = self._remaining_required_documents(
+            gate_status.get("required_documents", [])
+        )
 
         if overall_status == GateOverallStatus.FAMILY_NOT_SELECTED:
             return {
@@ -118,6 +121,7 @@ class GateRuntimeService:
                     "confidence": 0,
                 },
                 "requested_documents": [],
+                "remaining_required_documents": [],
                 "gate_progress": gate_progress,
             }
 
@@ -135,6 +139,7 @@ class GateRuntimeService:
                     "confidence": 0,
                 },
                 "requested_documents": requested_documents,
+                "remaining_required_documents": remaining_required_documents,
                 "gate_progress": gate_progress,
             }
 
@@ -151,16 +156,23 @@ class GateRuntimeService:
                 "confidence": 0,
             },
             "requested_documents": requested_documents,
+            "remaining_required_documents": remaining_required_documents,
             "gate_progress": gate_progress,
         }
 
     def build_gate_support(self, record: SessionRecord) -> dict:
         gate_status = record.gate_status_json or {}
         gate_progress = self._build_gate_progress(gate_status)
+        remaining_required_documents = self._remaining_required_documents(
+            gate_status.get("required_documents", [])
+        )
         primary_document_item = self._pick_primary_document(
             gate_status.get("required_documents", [])
         )
-        support_message = self._build_support_message(primary_document_item)
+        support_message = self._build_support_message(
+            primary_document_item,
+            remaining_required_documents=remaining_required_documents,
+        )
 
         return {
             "requested_documents": (
@@ -168,6 +180,7 @@ class GateRuntimeService:
                 if primary_document_item is None
                 else [primary_document_item["document_type"]]
             ),
+            "remaining_required_documents": remaining_required_documents,
             "primary_document": (
                 None
                 if primary_document_item is None
@@ -188,6 +201,10 @@ class GateRuntimeService:
         merged = dict(response)
         merged["assistant_message"] = assistant_message
         merged["requested_documents"] = requested_documents
+        merged["remaining_required_documents"] = list(
+            response.get("remaining_required_documents", [])
+            or support["remaining_required_documents"]
+        )
         merged["gate_progress"] = support["gate_progress"]
         return merged
 
@@ -226,11 +243,21 @@ class GateRuntimeService:
         }
 
     def _matches_document_type(self, document: DocumentRecord, document_type: str) -> bool:
-        artifact_document_type = normalize_document_type(
-            DocumentAssessment.from_artifact(document.artifact_json).document_type
-        )
-        if artifact_document_type is not None:
-            return artifact_document_type == normalize_document_type(document_type)
+        target_document_type = normalize_document_type(document_type) or document_type
+        assessment = DocumentAssessment.from_artifact(document.artifact_json)
+        candidate_document_types = [
+            assessment.document_type,
+            *assessment.document_type_candidates,
+        ]
+        has_explicit_document_type = False
+        for candidate in candidate_document_types:
+            normalized_candidate = normalize_document_type(candidate) or candidate
+            if normalized_candidate:
+                has_explicit_document_type = True
+            if normalized_candidate == target_document_type:
+                return True
+        if has_explicit_document_type:
+            return False
 
         filename = document.filename.lower()
         return document_type in filename
@@ -273,20 +300,44 @@ class GateRuntimeService:
                 return item
         return None
 
-    def _build_support_message(self, primary_document_item: dict | None) -> str | None:
+    def _build_support_message(
+        self,
+        primary_document_item: dict | None,
+        *,
+        remaining_required_documents: list[str],
+    ) -> str | None:
         if primary_document_item is None:
             return None
 
         document_type = primary_document_item["document_type"]
+        trailing_documents = [
+            item for item in remaining_required_documents if item != document_type
+        ]
+        trailing_text = ""
+        if trailing_documents:
+            trailing_text = f" 当前仍待补的材料还有：{', '.join(trailing_documents)}。"
         if primary_document_item.get("status") == "uploaded":
-            return f"当前最关键的证明是 {document_type}，系统正在等待解析结果。"
-        return f"当前最缺的关键证明是 {document_type}。"
+            return (
+                f"当前最关键的证明是 {document_type}，系统正在等待解析结果。"
+                f"{trailing_text}"
+            )
+        return f"当前最缺的关键证明是 {document_type}。{trailing_text}".strip()
 
     def _primary_requested_documents(self, required_documents: list[dict]) -> list[str]:
         primary_document_item = self._pick_primary_document(required_documents)
         if primary_document_item is None:
             return []
         return [primary_document_item["document_type"]]
+
+    def _remaining_required_documents(self, required_documents: list[dict]) -> list[str]:
+        remaining: list[str] = []
+        for item in required_documents:
+            if item.get("status") == "ready":
+                continue
+            document_type = item.get("document_type")
+            if isinstance(document_type, str) and document_type and document_type not in remaining:
+                remaining.append(document_type)
+        return remaining
 
     def _persist(self, record: SessionRecord, *, save: bool) -> SessionRecord:
         if save:

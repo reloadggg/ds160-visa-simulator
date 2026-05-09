@@ -279,6 +279,7 @@ def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
     assert response.status_code == 202
     payload = response.json()
     assert payload["requested_documents"] == ["ds160"]
+    assert payload["remaining_required_documents"] == ["ds160", "funding_proof"]
     assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
     assert payload["main_flow_feedback"] == {
         "status": "partial_helpful",
@@ -286,7 +287,7 @@ def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
         "current_focus_document_type": "ds160",
         "message": (
             "这份材料对 funding_proof 有帮助，但当前主线没有改变。"
-            " 当前最缺的关键证明是 ds160。"
+            " 当前最缺的关键证明是 ds160。 当前仍待补的材料还有：funding_proof。"
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
@@ -518,3 +519,57 @@ def test_upload_file_maps_funding_alias_into_gate_flow(
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
+
+
+def test_get_file_content_returns_stored_bytes(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_id = "sess-content"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+      db.add(
+          DocumentRecord(
+              document_id="doc-content-1",
+              session_id=session_id,
+              filename="passport.png",
+              status="parsed",
+              raw_bytes=b"png-bytes",
+              raw_text="OCR text",
+              artifact_json={"content_type": "image/png"},
+          )
+      )
+      db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/files/doc-content-1/content")
+
+    assert response.status_code == 200
+    assert response.content == b"png-bytes"
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_get_file_content_rejects_cross_session_document(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    seed_session(db_session_factory, "sess-owner")
+    seed_session(db_session_factory, "sess-other")
+
+    with db_session_factory() as db:
+      db.add(
+          DocumentRecord(
+              document_id="doc-owner-1",
+              session_id="sess-owner",
+              filename="passport.png",
+              status="parsed",
+              raw_bytes=b"png-bytes",
+              raw_text="OCR text",
+              artifact_json={"content_type": "image/png"},
+          )
+      )
+      db.commit()
+
+    response = client.get("/v1/sessions/sess-other/files/doc-owner-1/content")
+
+    assert response.status_code == 404

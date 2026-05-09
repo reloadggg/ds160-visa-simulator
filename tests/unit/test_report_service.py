@@ -223,6 +223,7 @@ def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:
     assert payload["turn_decision"] == {
         "decision": "continue_interview",
         "governor_decision": "continue_interview",
+        "remaining_required_documents": [],
     }
     assert payload["advisory_context"]["risk_level"] == "none"
     assert payload["runtime_view_state"]["decision"] == "continue_interview"

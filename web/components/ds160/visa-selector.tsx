@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Spinner } from "@/components/ui/spinner"
+import Image from "next/image"
 import { cn } from "@/lib/utils"
 import { VISA_FAMILIES, type VisaFamily } from "@/lib/api/types"
 import { GraduationCap, Users, Briefcase, Building2 } from "lucide-react"
@@ -13,6 +14,7 @@ interface VisaSelectorProps {
   isLoading: boolean
   error?: string | null
   mockMode?: boolean
+  embedded?: boolean
 }
 
 const visaIcons: Record<VisaFamily, React.ComponentType<{ className?: string }>> = {
@@ -27,6 +29,7 @@ export function VisaSelector({
   isLoading,
   error,
   mockMode = false,
+  embedded = false,
 }: VisaSelectorProps) {
   const [selectedVisa, setSelectedVisa] = useState<VisaFamily | null>(null)
 
@@ -37,14 +40,21 @@ export function VisaSelector({
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+    <div
+      className={cn(
+        "bg-background flex justify-center overflow-y-auto p-4 md:p-6",
+        embedded
+          ? "h-full min-h-0 items-start pb-[calc(5.5rem+env(safe-area-inset-bottom))] sm:items-center lg:pb-6"
+          : "min-h-[100dvh] items-center",
+      )}
+    >
       <div className="w-full max-w-2xl">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center mx-auto mb-4">
-            <span className="text-primary-foreground font-bold text-2xl">DS</span>
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl bg-primary/10">
+            <Image src="/brand-icon.svg" alt="面签模拟器" width={64} height={64} className="h-16 w-16" />
           </div>
           <h1 className="text-2xl font-semibold text-foreground mb-2">
-            DS-160 面签模拟器
+            面签模拟器
           </h1>
           <p className="text-muted-foreground">
             选择您要模拟的签证类型，开始练习面签
@@ -63,8 +73,8 @@ export function VisaSelector({
               请选择您计划申请的签证类别
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+          <CardContent className="space-y-4 p-4 md:p-6">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {VISA_FAMILIES.map((visa) => {
                 const Icon = visaIcons[visa.value]
                 const isSelected = selectedVisa === visa.value

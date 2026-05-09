@@ -7,6 +7,12 @@ DOCUMENT_TYPE_ALIASES: dict[str, str] = {
     "sponsor_letter": "funding_proof",
     "affidavit_of_support": "funding_proof",
     "scholarship_letter": "funding_proof",
+    "birth_certificate": "relationship_proof_between_applicant_and_sponsors",
+    "household_register": "relationship_proof_between_applicant_and_sponsors",
+    "hukou": "relationship_proof_between_applicant_and_sponsors",
+    "family_register": "relationship_proof_between_applicant_and_sponsors",
+    "relationship_proof": "relationship_proof_between_applicant_and_sponsors",
+    "relationship_proof_between_applicant_and_sponsors": "relationship_proof_between_applicant_and_sponsors",
 }
 
 

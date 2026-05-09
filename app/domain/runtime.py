@@ -123,6 +123,8 @@ class DS160EvidenceDigest(BaseModel):
     active_main_flow_feedback: dict[str, Any] = Field(default_factory=dict)
     uploaded_document_count: int = 0
     uploaded_documents: list[dict[str, Any]] = Field(default_factory=list)
+    remaining_required_documents: list[str] = Field(default_factory=list)
+    verified_documents: list[str] = Field(default_factory=list)
 
 
 class DS160MemoryStrata(BaseModel):
@@ -225,8 +227,10 @@ class InterviewStateSnapshot(BaseModel):
     risk_level: InterviewRiskLevel = InterviewRiskLevel.NONE
     allowed_next_actions: list[InterviewAllowedNextAction] = Field(default_factory=list)
     requested_documents: list[str] = Field(default_factory=list)
+    remaining_required_documents: list[str] = Field(default_factory=list)
     risk_codes: list[str] = Field(default_factory=list)
     history_turn_count: int = 0
+    document_review: dict[str, Any] = Field(default_factory=dict)
 
 
 def build_initial_gate_status(

@@ -1,5 +1,6 @@
 "use client"
 
+import Image from "next/image"
 import { cn } from "@/lib/utils"
 import { MessageSquare, Clock, FolderOpen, Settings } from "lucide-react"
 
@@ -8,7 +9,7 @@ interface SidebarProps {
   onItemClick: (item: string) => void
 }
 
-const navItems = [
+export const navItems = [
   { id: "workbench", label: "面签工作台", icon: MessageSquare },
   { id: "history", label: "历史记录", icon: Clock },
   { id: "materials", label: "材料库", icon: FolderOpen },
@@ -17,15 +18,15 @@ const navItems = [
 
 export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
   return (
-    <aside className="w-60 bg-card border-r border-border flex flex-col h-full">
+    <aside className="hidden lg:flex w-60 bg-card border-r border-border flex-col h-full">
       {/* Logo */}
       <div className="px-5 pt-12 pb-6 border-b border-border">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
-            <span className="text-primary-foreground font-bold text-sm">DS</span>
+          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-primary/10">
+            <Image src="/brand-icon.svg" alt="面签模拟器" width={40} height={40} className="h-10 w-10" />
           </div>
-          <div>
-            <h1 className="font-semibold text-foreground">DS-160 模拟面签</h1>
+          <div className="min-w-0">
+            <h1 className="truncate font-semibold text-foreground">面签模拟器</h1>
             <p className="text-xs text-muted-foreground">工作台</p>
           </div>
         </div>

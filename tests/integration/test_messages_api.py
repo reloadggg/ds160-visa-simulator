@@ -44,9 +44,19 @@ def assert_interviewer_state_matches_new_contract(
     assert actual_state | {
         "advisory_context": actual_state["advisory_context"],
         "prompt_trace": actual_state["prompt_trace"],
+        "remaining_required_documents": actual_state.get(
+            "remaining_required_documents",
+            [],
+        ),
+        "document_review": actual_state.get("document_review", {}),
     } == expected_state | {
         "advisory_context": actual_state["advisory_context"],
         "prompt_trace": actual_state["prompt_trace"],
+        "remaining_required_documents": expected_state.get(
+            "remaining_required_documents",
+            [],
+        ),
+        "document_review": expected_state.get("document_review", {}),
     }
 
 
@@ -230,6 +240,35 @@ def install_stub_build_question_action(
     )
 
 
+def install_fixed_build_question_action(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    decision: str,
+    assistant_message: str,
+    requested_documents: list[str] | None = None,
+):
+    def fake_build_question_action(
+        self,
+        session_id,
+        profile,
+        score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ):
+        del self, session_id, profile, score, governor_decision, trace_entries, recent_turns
+        return SimpleNamespace(
+            assistant_message=assistant_message,
+            requested_documents=list(requested_documents or []),
+            decision_hint=decision,
+        )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        fake_build_question_action,
+    )
+
+
 def test_message_turn_allows_interview_runtime_when_gate_not_ready(
     client: TestClient,
     db_session_factory,
@@ -385,7 +424,7 @@ def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
     ]
 
 
-def test_message_turn_uses_question_agent_output_for_continue_interview(
+def test_message_turn_uses_adjudication_agent_output_for_continue_interview(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -403,14 +442,8 @@ def test_message_turn_uses_question_agent_output_for_continue_interview(
             ),
             {"model": "gpt-5.4"},
         )
-        if module_key == "question_agent"
+        if module_key == "adjudication_agent"
         else (None, {"model": None}),
-    )
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService._fallback_question_action",
-        lambda self, governor_decision, score: (_ for _ in ()).throw(
-            AssertionError("question agent path should not fall back")
-        ),
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -460,7 +493,7 @@ def test_message_turn_uses_question_agent_output_for_continue_interview(
         assert record.interviewer_state_json["next_action"] == "answer_question"
 
 
-def test_message_turn_returns_503_when_question_agent_config_missing_for_interview_question(
+def test_message_turn_returns_503_when_adjudication_agent_config_missing_for_interview_question(
     client: TestClient,
     db_session_factory,
 ) -> None:
@@ -505,7 +538,7 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
             ),
             {"model": "gpt-5.4"},
         )
-        if module_key == "question_agent"
+        if module_key == "adjudication_agent"
         else (None, {"model": None}),
     )
 
@@ -556,7 +589,7 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
     )
 
 
-def test_message_turn_returns_429_when_question_agent_quota_is_exhausted(
+def test_message_turn_returns_429_when_adjudication_agent_quota_is_exhausted(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -564,14 +597,21 @@ def test_message_turn_returns_429_when_question_agent_quota_is_exhausted(
     monkeypatch.setattr(
         "app.services.interview_runtime_service.AgentModelFactory.build",
         lambda self, module_key, stage_key: (
-            object(),
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "assistant_message": "This value should never be used.",
+                    "requested_documents": [],
+                    "decision_hint": "continue_interview",
+                },
+            ),
             {"model": "gpt-5.4"},
         )
-        if module_key == "question_agent"
+        if module_key == "adjudication_agent"
         else (None, {"model": None}),
     )
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.QuestionAgentRunner.run",
+        "app.services.interview_runtime_service.AdjudicationAgentRunner.run",
         lambda self, **kwargs: (_ for _ in ()).throw(
             ModelRuntimeError(
                 detail="当前对话模型额度已耗尽，请稍后重试或更换可用配置。",
@@ -610,7 +650,7 @@ def test_message_turn_returns_429_when_question_agent_quota_is_exhausted(
     assert not record.runtime_trace_json
 
 
-def test_message_turn_returns_503_when_question_agent_output_is_invalid(
+def test_message_turn_returns_503_when_adjudication_agent_output_is_invalid(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -628,7 +668,7 @@ def test_message_turn_returns_503_when_question_agent_output_is_invalid(
             ),
             {"model": "gpt-5.4"},
         )
-        if module_key == "question_agent"
+        if module_key == "adjudication_agent"
         else (None, {"model": None}),
     )
 
@@ -898,7 +938,10 @@ def test_helpful_secondary_upload_enters_gate_flow_without_hijacking_primary_foc
 
     assert message_response.status_code == 200
     payload = message_response.json()
-    assert payload["assistant_message"] == "当前最缺的关键证明是 ds160。"
+    assert (
+        payload["assistant_message"]
+        == "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：funding_proof。"
+    )
     assert payload["requested_documents"] == ["ds160"]
     assert payload["gate_progress"] == {
         "overall_status": "waiting_for_parse",
@@ -1151,7 +1194,13 @@ def test_gate_progress_reports_ready_uploaded_and_missing_mix(
 def test_confirmed_fraud_message_triggers_simulated_refusal(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="simulated_refusal",
+        assistant_message="当前模拟结果为拒签。已确认存在严重材料真实性冲突，本次面签不再继续。",
+    )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -1165,9 +1214,7 @@ def test_confirmed_fraud_message_triggers_simulated_refusal(
     assert response.status_code == 200
     payload = response.json()
     assert payload["governor_decision"] == "simulated_refusal"
-    assert "模拟拒签" in payload["assistant_message"]
-    assert "已确认" in payload["assistant_message"]
-    assert "hard_conflict" not in payload["assistant_message"]
+    assert "拒签" in payload["assistant_message"]
     assert payload["score_summary"] == {}
 
     with db_session_factory() as db:
@@ -1182,7 +1229,11 @@ def test_confirmed_record_conflict_stays_in_high_risk_review(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="high_risk_review",
+        assistant_message="当前案例需要先进入高风险复核，正式问答暂时不能继续。",
+    )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     profile = ApplicantProfile.minimal(f"profile-{session_id}")
     score = ScoreState.model_validate(
@@ -1212,14 +1263,7 @@ def test_confirmed_record_conflict_stays_in_high_risk_review(
             profile=profile,
             score=score,
             trace_entries=[],
-            findings=[
-                {
-                    "finding_type": "hard_conflict",
-                    "severity": "high",
-                    "status": "confirmed",
-                    "evidence_refs": ["msg:hard"],
-                }
-            ],
+            findings=[],
         ),
     )
 
@@ -1240,6 +1284,11 @@ def test_redline_refusal_is_prioritized_when_multiple_confirmed_high_risks_exist
     db_session_factory,
     monkeypatch,
 ) -> None:
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="simulated_refusal",
+        assistant_message="当前模拟结果为拒签。已确认存在严重红线冲突，本次面签结束。",
+    )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     profile = ApplicantProfile.minimal(f"profile-{session_id}")
     score = ScoreState.model_validate(
@@ -1301,7 +1350,13 @@ def test_redline_refusal_is_prioritized_when_multiple_confirmed_high_risks_exist
 def test_refusal_session_cannot_continue_with_new_messages(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="simulated_refusal",
+        assistant_message="当前模拟结果为拒签。已确认存在严重材料真实性冲突，本次面签不再继续。",
+    )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     first = client.post(
@@ -1319,7 +1374,7 @@ def test_refusal_session_cannot_continue_with_new_messages(
     assert first.status_code == 200
     assert first.json()["governor_decision"] == "simulated_refusal"
     assert second.status_code == 409
-    assert "模拟拒签" in second.json()["detail"]
+    assert "拒签" in second.json()["detail"]
     assert "不能继续" in second.json()["detail"]
 
     with db_session_factory() as db:
@@ -1473,6 +1528,7 @@ def test_message_turn_persists_current_focus_from_interviewer_runtime(
                     "explain_missing_proof",
                 ],
                 "requested_documents": ["funding_proof"],
+                "remaining_required_documents": ["funding_proof"],
                 "risk_codes": [],
                 "history_turn_count": 0,
             },
@@ -1643,7 +1699,11 @@ def test_negated_fraud_statement_does_not_trigger_refusal(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="What is the purpose of your travel?",
+    )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -1662,7 +1722,13 @@ def test_negated_fraud_statement_does_not_trigger_refusal(
 def test_hard_conflict_signal_closes_session_and_keeps_first_evidence_ref(
     client: TestClient,
     db_session_factory,
+    monkeypatch,
 ) -> None:
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="simulated_refusal",
+        assistant_message="当前模拟结果为拒签。已确认存在严重材料真实性冲突，本次面签不再继续。",
+    )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     first = client.post(
@@ -1683,7 +1749,7 @@ def test_hard_conflict_signal_closes_session_and_keeps_first_evidence_ref(
     assert first.status_code == 200
     assert second.status_code == 409
     assert first.json()["governor_decision"] == "simulated_refusal"
-    assert "模拟拒签" in second.json()["detail"]
+    assert "拒签" in second.json()["detail"]
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
@@ -1712,7 +1778,11 @@ def test_funding_claim_change_keeps_old_statement_and_allows_continue(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="What is the purpose of your travel?",
+    )
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1745,12 +1815,16 @@ def test_funding_claim_change_keeps_old_statement_and_allows_continue(
     )
 
 
-def test_repeated_conflicting_funding_explanations_raise_high_risk(
+def test_repeated_conflicting_funding_explanations_no_longer_auto_raise_high_risk(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="What is the purpose of your travel?",
+    )
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1769,36 +1843,28 @@ def test_repeated_conflicting_funding_explanations_raise_high_risk(
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["governor_decision"] == "continue_interview"
-    assert second.json()["governor_decision"] == "high_risk_review"
+    assert second.json()["governor_decision"] == "continue_interview"
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
 
     assert record is not None
-    assert record.interviewer_state_json["status"] == "high_risk_review"
-    assert record.interviewer_state_json["current_risk_code"] == "record_conflict"
+    assert record.interviewer_state_json["status"] != "high_risk_review"
     assert [item["value"] for item in record.profile_json["ds160_view"]["funding_claim_history"]] == [
         "parents",
         "relative",
     ]
 
 
-def test_evasive_answers_accumulate_into_high_risk(
+def test_evasive_answers_no_longer_accumulate_into_hard_risk_watch(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
-            assistant_message=(
-                "This case needs additional review before the interview can continue."
-                if governor_decision == "high_risk_review"
-                else "Who is funding your education?"
-            ),
-            requested_documents=[],
-            decision_hint=governor_decision,
-        ),
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="Who is funding your education?",
     )
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
@@ -1825,25 +1891,25 @@ def test_evasive_answers_accumulate_into_high_risk(
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["governor_decision"] == "continue_interview"
-    assert second.json()["governor_decision"] == "high_risk_review"
+    assert second.json()["governor_decision"] == "continue_interview"
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
 
     assert record is not None
-    assert record.profile_json["ds160_view"]["risk_watch"]["evasive_turn_count"] == 2
-    assert any(
-        flag["code"] == "evasive_answer"
-        for flag in record.score_history_json[-1]["risk_flags"]
-    )
+    assert "risk_watch" not in record.profile_json["ds160_view"]
 
 
-def test_repeated_conflicting_funding_explanations_still_escalate_after_turn_window_rolls(
+def test_repeated_conflicting_funding_explanations_no_longer_auto_escalate_after_turn_window_rolls(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="What is the purpose of your travel?",
+    )
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1876,7 +1942,7 @@ def test_repeated_conflicting_funding_explanations_still_escalate_after_turn_win
     )
 
     assert final_response.status_code == 200
-    assert final_response.json()["governor_decision"] == "high_risk_review"
+    assert final_response.json()["governor_decision"] == "continue_interview"
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
@@ -1889,12 +1955,16 @@ def test_repeated_conflicting_funding_explanations_still_escalate_after_turn_win
     assert archived_history[-1]["value"] == "relative"
 
 
-def test_missing_key_proof_across_turns_escalates_to_high_risk(
+def test_missing_key_proof_across_turns_stays_need_more_evidence_without_hard_watch(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_fixed_build_question_action(
+        monkeypatch,
+        decision="need_more_evidence",
+        assistant_message="Please provide the key supporting document for this point.",
+    )
     session_id = seed_ready_for_interview_session(
         client,
         db_session_factory,
@@ -1925,14 +1995,10 @@ def test_missing_key_proof_across_turns_escalates_to_high_risk(
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["governor_decision"] == "need_more_evidence"
-    assert second.json()["governor_decision"] == "high_risk_review"
+    assert second.json()["governor_decision"] == "need_more_evidence"
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
 
     assert record is not None
-    assert record.profile_json["ds160_view"]["risk_watch"]["missing_key_proof_turn_count"] == 2
-    assert any(
-        flag["code"] == "unresolved_key_proof_gap"
-        for flag in record.score_history_json[-1]["risk_flags"]
-    )
+    assert "risk_watch" not in record.profile_json["ds160_view"]

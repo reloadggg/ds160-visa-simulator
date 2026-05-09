@@ -9,23 +9,17 @@ from app.db.models import SessionRecord
 from app.domain.contracts import (
     ApplicantProfile,
     GovernorDecision,
-    RiskFlag,
     ScoreState,
 )
-from app.domain.runtime import RuntimeTraceEntry
+from app.domain.document_types import normalize_document_type
+from app.domain.runtime import GateOverallStatus, RuntimeTraceEntry
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
-from app.services.boundary_policy_service import BoundaryPolicyService
-from app.services.governor_service import (
-    DIRECT_REFUSAL_REASON_CODES,
-    GovernorService,
-)
 from app.services.interview_runtime_service import InterviewRuntimeService
 from app.services.interviewer_turn_projector_service import (
     InterviewerTurnProjection,
     InterviewerTurnProjectorService,
 )
-from app.services.risk_watch_service import RiskWatchService
 
 
 class InterviewerRuntimeService:
@@ -34,10 +28,7 @@ class InterviewerRuntimeService:
         self.interview_runtime = InterviewRuntimeService(db)
         self.session_repo = SessionRepository(db)
         self.session_turn_repo = SessionTurnRepository(db)
-        self.governor = GovernorService()
-        self.boundary_policy = BoundaryPolicyService(self.governor)
         self.turn_projector = InterviewerTurnProjectorService()
-        self.risk_watch_service = RiskWatchService()
 
     def run_turn(self, record: SessionRecord, message_text: str) -> dict:
         history_turns = self.session_turn_repo.list_session_turns(record.session_id)
@@ -47,8 +38,9 @@ class InterviewerRuntimeService:
             message_text,
             history_turns,
         )
+        score = self._reconcile_score_with_gate(record, score)
         profile_json = profile.model_dump(mode="json")
-        governor, action = self._decide_and_build_action(
+        governor, action, capability_tool_outputs = self._decide_and_build_action(
             record,
             profile,
             score,
@@ -64,6 +56,7 @@ class InterviewerRuntimeService:
             score=score,
             governor_decision=governor["decision"],
             governor_requested_documents=governor.get("requested_documents", []),
+            capability_tool_outputs=capability_tool_outputs,
             trace_entries=trace_entries,
             history_turn_count=history_turn_count,
             history_turns=history_turns,
@@ -113,14 +106,6 @@ class InterviewerRuntimeService:
         findings = self._extract_findings(analysis)
         if profile is None or score is None:
             raise ValueError("interview analysis must include profile and score")
-
-        self._apply_risk_watch_signals(
-            record,
-            profile,
-            score,
-            history_turns,
-            message_text,
-        )
         return trace_entries, profile, score, findings
 
     def _decide_and_build_action(
@@ -131,7 +116,7 @@ class InterviewerRuntimeService:
         findings: list[Any],
         history_turns: list[Any],
         trace_entries: list[RuntimeTraceEntry],
-    ) -> tuple[dict[str, Any], Any]:
+    ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
         governor = self._decide_governor(
             record,
             profile,
@@ -147,7 +132,16 @@ class InterviewerRuntimeService:
             history_turns,
             trace_entries,
         )
-        return governor, action
+        action = self._coerce_action(action)
+        final_governor = {
+            **governor,
+            "decision": action.decision,
+            "requested_documents": list(
+                action.requested_documents or governor.get("requested_documents", [])
+            ),
+        }
+        return final_governor, action, dict(self.interview_runtime._last_capability_tool_outputs)
+
 
     def _apply_turn_state(
         self,
@@ -183,6 +177,41 @@ class InterviewerRuntimeService:
             return []
         return list(findings)
 
+
+    def _reconcile_score_with_gate(
+        self,
+        record: SessionRecord,
+        score: ScoreState,
+    ) -> ScoreState:
+        ready_documents = self._ready_gate_documents(record)
+        if not ready_documents:
+            return score
+        next_score = score.model_copy(deep=True)
+        original_missing = list(next_score.missing_evidence)
+        next_score.missing_evidence = [
+            item
+            for item in next_score.missing_evidence
+            if normalize_document_type(item) not in ready_documents
+        ]
+        removed_missing = len(next_score.missing_evidence) != len(original_missing)
+        if removed_missing and not next_score.missing_evidence:
+            next_score.risk_flags = [
+                flag
+                for flag in next_score.risk_flags
+                if flag.code != "supporting_evidence_missing"
+            ]
+        return next_score
+
+    def _ready_gate_documents(self, record: SessionRecord) -> set[str]:
+        ready_documents: set[str] = set()
+        for item in (record.gate_status_json or {}).get("required_documents", []):
+            if not isinstance(item, dict) or item.get("status") != "ready":
+                continue
+            document_type = normalize_document_type(item.get("document_type"))
+            if document_type is not None:
+                ready_documents.add(document_type)
+        return ready_documents
+
     def _decide_governor(
         self,
         record: SessionRecord,
@@ -191,23 +220,25 @@ class InterviewerRuntimeService:
         trace_entries: list[RuntimeTraceEntry],
         findings: list[Any] | None = None,
     ) -> dict[str, Any]:
-        review_signal = self._high_risk_review_signal(profile, score)
-        governor = self.boundary_policy.decide(
-            profile,
-            score,
-            self._build_early_term_candidate(
-                record.declared_family,
-                findings or [],
-            ),
-            review_signal=review_signal,
+        del profile, trace_entries, findings
+        current_decision = (
+            record.current_governor_decision
+            or GovernorDecision.CONTINUE_INTERVIEW.value
         )
-        trace_entries.append(
-            RuntimeTraceEntry(
-                node_name="governor_decide",
-                summary=f"decision={governor['decision']}",
-            )
-        )
-        return governor
+        if (
+            current_decision == GovernorDecision.NEED_MORE_EVIDENCE.value
+            and not score.missing_evidence
+        ):
+            current_decision = GovernorDecision.CONTINUE_INTERVIEW.value
+        return {
+            "decision": current_decision,
+            "blocked_actions": [],
+            "rationale_refs": [],
+            "requested_documents": [],
+        }
+
+    def _gate_is_ready(self, record: SessionRecord) -> bool:
+        return (record.gate_status_json or {}).get("status") == GateOverallStatus.READY_FOR_INTERVIEW
 
     def _build_next_action(
         self,
@@ -217,7 +248,7 @@ class InterviewerRuntimeService:
         governor_decision: str,
         history_turns: list,
         trace_entries: list[RuntimeTraceEntry],
-        ) -> InterviewNextAction:
+    ) -> InterviewNextAction:
         return self.interview_runtime.build_question_action(
             record.session_id,
             profile,
@@ -252,89 +283,16 @@ class InterviewerRuntimeService:
             self._analysis_value(analysis, "trace_entries", [])
         )
 
-    def _build_early_term_candidate(
-        self,
-        declared_family: str | None,
-        findings: list[Any],
-    ) -> dict | None:
-        family = declared_family or "unknown"
-        confirmed_terminal_findings = [
-            finding
-            for finding in findings
-            if (
-                self._finding_value(finding, "severity") == "high"
-                and self._finding_value(finding, "status") == "confirmed"
-                and self._finding_value(finding, "evidence_refs")
-            )
-        ]
-        if not confirmed_terminal_findings:
-            return None
-
-        prioritized_finding = next(
-            (
-                finding
-                for finding in confirmed_terminal_findings
-                if self._finding_value(finding, "finding_type")
-                in DIRECT_REFUSAL_REASON_CODES
-            ),
-            confirmed_terminal_findings[0],
-        )
-        reason_code = self._finding_value(prioritized_finding, "finding_type")
-        evidence_refs = list(
-            self._finding_value(prioritized_finding, "evidence_refs", [])
-        )
-        return {
-            "eligible": True,
-            "policy_id": f"{family}.tp.{reason_code}",
-            "reason_code": reason_code,
-            "confirmation_required": False,
-            "evidence_refs": evidence_refs,
-        }
-
-    def _finding_value(
-        self,
-        finding: Any,
-        key: str,
-        default: Any = None,
-    ) -> Any:
-        if isinstance(finding, dict):
-            return finding.get(key, default)
-        return getattr(finding, key, default)
-
-    def _high_risk_review_signal(
-        self,
-        profile: ApplicantProfile,
-        score: ScoreState,
-    ) -> RiskFlag | None:
-        return self.risk_watch_service.high_risk_review_signal(profile, score)
-
     def _analysis_value(self, analysis: Any, key: str, default: Any = None) -> Any:
         if isinstance(analysis, dict):
             return analysis.get(key, default)
         return getattr(analysis, key, default)
-
-    def _apply_risk_watch_signals(
-        self,
-        record: SessionRecord,
-        profile: ApplicantProfile,
-        score: ScoreState,
-        history_turns: list[Any],
-        message_text: str,
-    ) -> None:
-        self.risk_watch_service.apply_risk_watch_signals(
-            record,
-            profile,
-            score,
-            history_turns,
-            message_text,
-        )
 
     def _is_evasive_answer(
         self,
         focus_question: str,
         message_text: str,
     ) -> bool:
-        return self.risk_watch_service.is_evasive_answer(
-            focus_question,
-            message_text,
-        )
+        from app.services.risk_watch_service import RiskWatchService
+
+        return RiskWatchService().is_evasive_answer(focus_question, message_text)

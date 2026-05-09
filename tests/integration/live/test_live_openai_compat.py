@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.agents.model_factory import AgentModelFactory
-from app.agents.question_agent import QuestionAgentRunner
+from app.agents.adjudication_agent import AdjudicationAgentRunner
 from app.db.models import SessionRecord
 from app.workers.parse_worker import ParseWorker
 
@@ -51,7 +51,7 @@ def test_live_openai_compat_maps_to_domain_flow(
     build_calls: list[tuple[str, str, str | None]] = []
     run_calls: list[str] = []
     original_build = AgentModelFactory.build
-    original_run = QuestionAgentRunner.run
+    original_run = AdjudicationAgentRunner.run
 
     def tracked_build(self, module_key, stage_key, declared_family=None):
         model, runtime = original_build(
@@ -60,7 +60,7 @@ def test_live_openai_compat_maps_to_domain_flow(
             stage_key,
             declared_family=declared_family,
         )
-        if module_key == "question_agent":
+        if module_key == "adjudication_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
@@ -86,7 +86,7 @@ def test_live_openai_compat_maps_to_domain_flow(
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
-    monkeypatch.setattr(QuestionAgentRunner, "run", tracked_run)
+    monkeypatch.setattr(AdjudicationAgentRunner, "run", tracked_run)
     response = live_api_client.post(
         "/v1/chat/completions",
         json={
@@ -116,9 +116,9 @@ def test_live_openai_compat_maps_to_domain_flow(
     )
     assert build_calls == [
         (
-            "question_agent",
+            "adjudication_agent",
             "interview_turn",
-            live_expected_runtime_model("question_agent", "interview_turn"),
+            live_expected_runtime_model("adjudication_agent", "interview_turn"),
         )
     ]
     assert len(run_calls) == 1
@@ -135,7 +135,7 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
     build_calls: list[tuple[str, str, str | None]] = []
     run_calls: list[str] = []
     original_build = AgentModelFactory.build
-    original_run = QuestionAgentRunner.run
+    original_run = AdjudicationAgentRunner.run
 
     def tracked_build(self, module_key, stage_key, declared_family=None):
         model, runtime = original_build(
@@ -144,7 +144,7 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
             stage_key,
             declared_family=declared_family,
         )
-        if module_key == "question_agent":
+        if module_key == "adjudication_agent":
             build_calls.append((module_key, stage_key, runtime.get("model")))
         return model, runtime
 
@@ -170,7 +170,7 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
         )
 
     monkeypatch.setattr(AgentModelFactory, "build", tracked_build)
-    monkeypatch.setattr(QuestionAgentRunner, "run", tracked_run)
+    monkeypatch.setattr(AdjudicationAgentRunner, "run", tracked_run)
 
     first_completion = live_api_client.post(
         "/v1/chat/completions",
@@ -291,9 +291,9 @@ def test_live_openai_compat_reuses_session_after_upload_and_parse(
         assert user_report["current_key_proof"].lower().replace("-", "_") != "funding_proof"
     assert build_calls
     assert build_calls[-1] == (
-        "question_agent",
+        "adjudication_agent",
         "interview_turn",
-        live_expected_runtime_model("question_agent", "interview_turn"),
+        live_expected_runtime_model("adjudication_agent", "interview_turn"),
     )
     assert run_calls
     assert run_calls[-1] == session_id

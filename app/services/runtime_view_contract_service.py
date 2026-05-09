@@ -43,9 +43,33 @@ class RuntimeViewContractService:
         fallback: dict[str, Any] | None = None,
     ) -> list[str]:
         fallback = fallback or {}
+        if runtime_view_state.get("source_turn_id"):
+            return list(
+                runtime_view_state.get("requested_documents", [])
+                or fallback.get("requested_documents", [])
+                or []
+            )
         return list(
             fallback.get("requested_documents", [])
             or runtime_view_state.get("requested_documents", [])
+            or []
+        )
+
+    @staticmethod
+    def remaining_required_documents(
+        runtime_view_state: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+    ) -> list[str]:
+        fallback = fallback or {}
+        if runtime_view_state.get("source_turn_id"):
+            return list(
+                runtime_view_state.get("remaining_required_documents", [])
+                or fallback.get("remaining_required_documents", [])
+                or []
+            )
+        return list(
+            fallback.get("remaining_required_documents", [])
+            or runtime_view_state.get("remaining_required_documents", [])
             or []
         )
 
@@ -62,12 +86,33 @@ class RuntimeViewContractService:
             payload["requested_documents"] = list(
                 runtime_view_state.get("requested_documents", []) or []
             )
+            payload["remaining_required_documents"] = list(
+                runtime_view_state.get("remaining_required_documents", []) or []
+            )
             payload["current_key_question"] = runtime_view_state.get(
                 "current_key_question"
             )
             payload["current_key_proof"] = runtime_view_state.get("current_key_proof")
             payload["current_risk_code"] = runtime_view_state.get("current_risk_code")
         return payload
+
+    @staticmethod
+    def document_review(
+        runtime_view_state: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        fallback = fallback or {}
+        if runtime_view_state.get("source_turn_id"):
+            return dict(
+                runtime_view_state.get("document_review", {})
+                or fallback.get("document_review", {})
+                or {}
+            )
+        return dict(
+            fallback.get("document_review", {})
+            or runtime_view_state.get("document_review", {})
+            or {}
+        )
 
     @staticmethod
     def prompt_trace(

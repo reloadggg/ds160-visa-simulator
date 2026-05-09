@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
+from app.db.evidence_models import EvidenceItemRecord
 from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.main import app
@@ -238,3 +239,41 @@ def test_required_package_rejects_invalid_stored_family(
 
     assert response.status_code == 409
     assert response.json()["detail"] == "unsupported declared_family: zzz"
+
+
+def test_debug_fill_current_gap_creates_relationship_proof(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.current_focus_json = {
+            "kind": "required_document",
+            "document_type": "relationship_proof_between_applicant_and_sponsors",
+        }
+        db.add(record)
+        db.commit()
+
+    response = client.post(f"/v1/sessions/{session_id}/debug/fill-current-gap")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filled_document_type"] == "relationship_proof_between_applicant_and_sponsors"
+    assert payload["document_id"].startswith("doc-")
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        assert record.profile_json["funding"]["sponsor_relationship"] == "parents"
+        assert record.profile_json["family_specific"]["parent_names"] == "LI WEIGUO; ZHANG HUI"
+
+        evidence = db.query(EvidenceItemRecord).filter_by(session_id=session_id).all()
+
+    assert {item.field_path for item in evidence} >= {
+        "/funding/sponsor_relationship",
+        "/family/parent_names",
+    }

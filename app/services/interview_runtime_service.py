@@ -6,8 +6,8 @@ from typing import Any
 from pydantic_ai.exceptions import ModelHTTPError
 from sqlalchemy.orm import Session
 
+from app.agents.adjudication_agent import AdjudicationAgentRunner
 from app.agents.model_factory import AgentModelFactory
-from app.agents.question_agent import QuestionAgentRunner
 from app.agents.schemas import AgentRuntimeDeps, InterviewNextAction
 from app.db.models import SessionRecord
 from app.domain.contracts import ApplicantProfile, GovernorDecision, ScoreState
@@ -61,6 +61,7 @@ class InterviewRuntimeService:
         self.context_engine = DS160ContextEngine()
         self.capability_orchestrator = CapabilityOrchestrator(db)
         self._last_capability_trace_entries: list[RuntimeTraceEntry] = []
+        self._last_capability_tool_outputs: dict[str, Any] = {}
 
     def analyze_turn(
         self,
@@ -178,6 +179,7 @@ class InterviewRuntimeService:
         recent_turns: list[Any] | None = None,
     ) -> InterviewNextAction:
         self._last_capability_trace_entries = []
+        self._last_capability_tool_outputs = {}
         action, runtime_trace = self._question_action(
             session_id,
             profile,
@@ -262,22 +264,9 @@ class InterviewRuntimeService:
         recent_turns: list[Any] | None = None,
     ) -> tuple[InterviewNextAction, RuntimeTraceEntry]:
         self._last_capability_trace_entries = []
-        if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
-            action = self._fallback_question_action(governor_decision, score)
-            return action, self._build_turn_decision_trace(
-                runtime={},
-                action=action,
-                fallback_used=True,
-                tool_calls=[],
-                retry_count=0,
-                provider=None,
-                model=None,
-                boundary_decision=governor_decision,
-            )
-
+        self._last_capability_tool_outputs = {}
         declared_family = profile.visa_intent.get("declared_family")
-        model, runtime = self._build_question_agent_runtime(declared_family)
-        fallback_messages = runtime.get("fallback_messages", {})
+        model, runtime = self._build_turn_decision_agent_runtime(declared_family)
         self._raise_if_question_model_unavailable(
             runtime=runtime,
             governor_decision=governor_decision,
@@ -303,74 +292,73 @@ class InterviewRuntimeService:
         dynamic_turn_context["capability_plan"] = list(
             capability_result.capability_plan
         )
-        self._last_capability_trace_entries = list(capability_result.trace_entries)
-        if model is not None:
-            try:
-                run_result = QuestionAgentRunner(
-                    model=model,
-                    instructions=runtime.get("instructions")
-                    or self.model_factory.build_instructions(
-                        "question_agent",
-                        declared_family=declared_family,
-                    ),
-                ).run(
-                    deps=self._build_agent_deps(session_id),
-                    dynamic_turn_context=dynamic_turn_context,
-                    tool_outputs=capability_result.tool_outputs,
-                    user_message=latest_user_message,
-                    boundary_decision=governor_decision,
-                )
-                action = self._finalize_question_action(
-                    governor_decision,
-                    score,
-                    run_result.output,
-                )
-                return action, self._build_turn_decision_trace(
-                    runtime=runtime,
-                    action=action,
-                    fallback_used=False,
-                    tool_calls=run_result.tool_calls,
-                    retry_count=run_result.retry_count,
-                    provider=run_result.provider or runtime.get("provider"),
-                    model=run_result.model or runtime.get("model"),
-                    boundary_decision=governor_decision,
-                )
-            except Exception as exc:
-                raise self._normalize_question_agent_error(
-                    exc,
-                    runtime=runtime,
-                ) from exc
-        action = self._fallback_question_action(
-            governor_decision,
-            score,
-            recent_turns=recent_turns,
-            fallback_messages=fallback_messages,
-        )
-        return action, self._build_turn_decision_trace(
-            runtime=runtime,
-            action=action,
-            fallback_used=True,
-            tool_calls=[],
-            retry_count=0,
-            provider=runtime.get("provider"),
-            model=runtime.get("model"),
-            boundary_decision=governor_decision,
-        )
+        self._last_capability_tool_outputs = dict(capability_result.tool_outputs)
+        if model is None:
+            raise ModelUnavailableError(
+                detail=runtime.get("model_unavailable_detail")
+                or "当前后端未配置可用的对话模型，无法生成面签问答。",
+                provider=runtime.get("provider"),
+                model=runtime.get("model"),
+                missing_env_vars=list(
+                    runtime.get("model_unavailable_missing_env_vars") or []
+                ),
+            )
+        try:
+            run_result = AdjudicationAgentRunner(
+                model=model,
+                instructions=runtime.get("instructions")
+                or self.model_factory.build_instructions(
+                    "adjudication_agent",
+                    declared_family=declared_family,
+                ),
+            ).run(
+                deps=self._build_agent_deps(session_id),
+                dynamic_turn_context=dynamic_turn_context,
+                tool_outputs=capability_result.tool_outputs,
+                user_message=latest_user_message,
+                boundary_decision=governor_decision,
+            )
+            action = self._finalize_question_action(
+                governor_decision,
+                score,
+                run_result.output,
+            )
+            self._last_capability_trace_entries = [
+                RuntimeTraceEntry(
+                    node_name="governor_decide",
+                    summary=f"decision={action.decision}",
+                ),
+                *list(capability_result.trace_entries),
+            ]
+            return action, self._build_turn_decision_trace(
+                runtime=runtime,
+                action=action,
+                fallback_used=False,
+                tool_calls=run_result.tool_calls,
+                retry_count=run_result.retry_count,
+                provider=run_result.provider or runtime.get("provider"),
+                model=run_result.model or runtime.get("model"),
+                boundary_decision=action.decision,
+                capability_tool_outputs=capability_result.tool_outputs,
+            )
+        except Exception as exc:
+            raise self._normalize_turn_decision_error(
+                exc,
+                runtime=runtime,
+            ) from exc
 
-    def _build_question_agent_runtime(
+    def _build_turn_decision_agent_runtime(
         self,
         declared_family: str | None,
     ) -> tuple[Any | None, dict[str, Any]]:
         try:
             return self.model_factory.build(
-                "question_agent",
+                "adjudication_agent",
                 "interview_turn",
                 declared_family=declared_family,
             )
-        except TypeError as exc:
-            if "declared_family" not in str(exc):
-                raise
-            return self.model_factory.build("question_agent", "interview_turn")
+        except TypeError:
+            return self.model_factory.build("adjudication_agent", "interview_turn")
 
     def _raise_if_question_model_unavailable(
         self,
@@ -392,7 +380,7 @@ class InterviewRuntimeService:
             ),
         )
 
-    def _normalize_question_agent_error(
+    def _normalize_turn_decision_error(
         self,
         exc: Exception,
         *,
@@ -415,6 +403,8 @@ class InterviewRuntimeService:
                 status_code=status_code,
                 provider=provider,
                 model=model or exc.model_name,
+                upstream_code=upstream_code,
+                body=exc.body,
             )
 
         return ModelRuntimeError(
@@ -472,95 +462,34 @@ class InterviewRuntimeService:
         score: ScoreState,
         action: InterviewNextAction,
     ) -> InterviewNextAction:
-        del score
-        if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:
-            return InterviewNextAction(
-                decision="high_risk_review",
-                assistant_message=action.assistant_message,
-                requested_documents=[],
-                focus_kind="risk_review",
-                focus_risk_code=action.focus_risk_code,
-                reason=action.reason,
-            )
-
         requested_documents = self._coerce_requested_documents(action.requested_documents)
+        if (
+            governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value
+            and action.decision == GovernorDecision.NEED_MORE_EVIDENCE.value
+            and not score.missing_evidence
+        ):
+            return InterviewNextAction(
+                decision=GovernorDecision.CONTINUE_INTERVIEW.value,
+                assistant_message=(
+                    "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。"
+                ),
+                requested_documents=[],
+                focus_kind="interview_question",
+                focus_document_type=None,
+                focus_risk_code=None,
+                reason="ignored_unanchored_document_request_after_gate_ready",
+            )
+        focus_document_type = action.focus_document_type
+        if requested_documents and action.focus_kind == "required_document":
+            focus_document_type = requested_documents[0]
         return InterviewNextAction(
             decision=action.decision,
             assistant_message=action.assistant_message,
             requested_documents=requested_documents,
             focus_kind=action.focus_kind,
-            focus_document_type=action.focus_document_type,
+            focus_document_type=focus_document_type,
             focus_risk_code=action.focus_risk_code,
             reason=action.reason,
-        )
-
-    def _fallback_question_action(
-        self,
-        governor_decision: str,
-        score: ScoreState,
-        *,
-        recent_turns: list[Any] | None = None,
-        fallback_messages: dict[str, str] | None = None,
-    ) -> InterviewNextAction:
-        fallback_messages = fallback_messages or {}
-        fallback_requested_documents = self._coerce_requested_documents(
-            score.missing_evidence
-        )
-        if (
-            governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value
-            and fallback_requested_documents
-        ):
-            return InterviewNextAction(
-                decision="need_more_evidence",
-                assistant_message=fallback_messages.get("need_more_evidence")
-                or "Please provide the key supporting document for this point.",
-                requested_documents=fallback_requested_documents,
-                focus_kind="required_document",
-                focus_document_type=fallback_requested_documents[0],
-            )
-        if governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value:
-            return InterviewNextAction(
-                decision="continue_interview",
-                assistant_message=fallback_messages.get("continue_interview")
-                or self._next_continue_interview_question(recent_turns),
-                requested_documents=[],
-                focus_kind="interview_question",
-            )
-        if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
-            return InterviewNextAction(
-                decision="simulated_refusal",
-                assistant_message=fallback_messages.get("simulated_refusal")
-                or "This simulated case results in refusal based on confirmed record conflicts.",
-                requested_documents=[],
-                focus_kind="refusal",
-            )
-        if governor_decision == GovernorDecision.ROUTE_CORRECTION.value:
-            return InterviewNextAction(
-                decision="route_correction",
-                assistant_message=fallback_messages.get("route_correction")
-                or "Your case may fit a different visa route. Please clarify your travel purpose.",
-                requested_documents=[],
-                focus_kind="route_correction",
-            )
-        if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:
-            return InterviewNextAction(
-                decision="high_risk_review",
-                assistant_message=fallback_messages.get("high_risk_review")
-                or "This case needs additional review before the interview can continue.",
-                requested_documents=[],
-                focus_kind="risk_review",
-            )
-        return InterviewNextAction(
-            decision="need_more_evidence",
-            assistant_message=fallback_messages.get("need_more_evidence")
-            or "Please provide the key supporting document for this point.",
-            requested_documents=fallback_requested_documents,
-            focus_kind="required_document",
-            focus_document_type=(
-                fallback_requested_documents[0]
-                if fallback_requested_documents
-                else "supporting_document"
-            ),
         )
 
     def _coerce_requested_documents(
@@ -575,26 +504,6 @@ class InterviewRuntimeService:
                 if document_type:
                     return [document_type]
         return []
-
-    def _next_continue_interview_question(
-        self,
-        recent_turns: list[Any] | None,
-    ) -> str:
-        previous_assistant_turn = None
-        if recent_turns is not None:
-            previous_assistant_turn = next(
-                (turn for turn in reversed(recent_turns) if getattr(turn, "role", None) == "assistant"),
-                None,
-            )
-        if previous_assistant_turn is None:
-            return "What is the purpose of your travel?"
-
-        lowered = previous_assistant_turn.content.lower()
-        if "purpose of your travel" in lowered:
-            return "Which school admitted you, and why did you choose it?"
-        if "which school admitted you" in lowered:
-            return "How will you pay for your studies?"
-        return "What is the purpose of your travel?"
 
     def _latest_user_message(self, recent_turns: list[Any] | None) -> str:
         if recent_turns is None:
@@ -643,6 +552,7 @@ class InterviewRuntimeService:
             phase_state=phase_state,
             boundary_decision=governor_decision,
             documents=documents,
+            gate_progress=gate_progress,
         )
         snapshot = self.context_engine.build_dynamic_turn_context(
             session_id=session_id,
@@ -676,7 +586,13 @@ class InterviewRuntimeService:
         provider: str | None,
         model: str | None,
         boundary_decision: str,
+        capability_tool_outputs: dict[str, Any],
     ) -> RuntimeTraceEntry:
+        document_review = (
+            capability_tool_outputs.get("document_review", {})
+            if isinstance(capability_tool_outputs, dict)
+            else {}
+        )
         return RuntimeTraceEntry(
             node_name="turn_decision",
             summary=f"decision={action.decision}",
@@ -693,6 +609,11 @@ class InterviewRuntimeService:
                 "focus_kind": action.focus_kind,
                 "focus_document_type": action.focus_document_type,
                 "boundary_decision": boundary_decision,
+                "decision_source": "adjudication_agent",
                 "reasoning_effort": runtime.get("reasoning_effort"),
+                "remaining_required_documents": list(
+                    document_review.get("remaining_required_documents", []) or []
+                ),
+                "document_review_status": document_review.get("review_status"),
             },
         )

@@ -20,6 +20,8 @@ _DOCUMENT_BACKED_FIELDS: list[tuple[str, str, str]] = [
     ("/education/school_name", "education", "school_name"),
     ("/education/program_name", "education", "program_name"),
     ("/education/sponsor_name", "education", "sponsor_name"),
+    ("/funding/sponsor_relationship", "funding", "sponsor_relationship"),
+    ("/family/parent_names", "family_specific", "parent_names"),
 ]
 
 

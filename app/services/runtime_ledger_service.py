@@ -134,13 +134,22 @@ class RuntimeLedgerService:
             turn_record,
             focus,
         )
+        remaining_required_documents = self._remaining_required_documents_from_turn_record(
+            turn_record,
+            requested_documents,
+        )
         advisory_context = self._latest_event_payload(ledger, LedgerEventType.ADVISORY)
         if not advisory_context:
             advisory_context = self._advisory_summary_from_turn_record(turn_record)
         prompt_trace = self._prompt_trace_payload(ledger)
+        document_review = self._document_review_from_turn_record(
+            turn_record,
+            ledger.interviewer_state,
+        )
         current_key_question = self._string_or_none(focus.get("question"))
         current_key_proof = (
             self._string_or_none(focus.get("document_type"))
+            or self._string_or_none(document_review.get("primary_document"))
             or (requested_documents[0] if requested_documents else None)
         )
         advisory_risk_codes = advisory_context.get("risk_codes", [])
@@ -167,12 +176,14 @@ class RuntimeLedgerService:
             current_key_proof=current_key_proof,
             current_risk_code=current_risk_code,
             requested_documents=requested_documents,
+            remaining_required_documents=remaining_required_documents,
             allowed_next_actions=self._derive_allowed_next_actions(
                 public_status=public_status,
                 current_key_question=current_key_question,
                 current_key_proof=current_key_proof,
             ),
             advisory_context=advisory_context,
+            document_review=document_review,
             prompt_trace=prompt_trace,
         )
 
@@ -430,6 +441,36 @@ class RuntimeLedgerService:
         if focus_document_type:
             return [focus_document_type]
         return []
+
+    def _remaining_required_documents_from_turn_record(
+        self,
+        turn_record: dict[str, Any],
+        requested_documents: list[str],
+    ) -> list[str]:
+        remaining_required_documents = turn_record.get("remaining_required_documents")
+        if isinstance(remaining_required_documents, list):
+            normalized = [
+                item.strip()
+                for item in remaining_required_documents
+                if isinstance(item, str) and item.strip()
+            ]
+            if normalized:
+                return normalized
+        return list(requested_documents)
+
+    def _document_review_from_turn_record(
+        self,
+        turn_record: dict[str, Any],
+        interviewer_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        document_review = turn_record.get("document_review")
+        if isinstance(document_review, dict) and document_review:
+            return dict(document_review)
+        if isinstance(interviewer_state, dict):
+            payload = interviewer_state.get("document_review")
+            if isinstance(payload, dict):
+                return dict(payload)
+        return {}
 
     def _derive_public_status(
         self,

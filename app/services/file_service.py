@@ -61,6 +61,23 @@ _CONTEXT_DOCUMENT_TYPE_HINT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = 
     ("ds2019", ("ds-2019", "ds2019", "2019 表", "2019表", "ds2019 表", "ds2019表")),
     ("i20", ("i-20", "i20", "i 20")),
     (
+        "relationship_proof_between_applicant_and_sponsors",
+        (
+            "relationship proof",
+            "birth certificate",
+            "household register",
+            "hukou",
+            "family register",
+            "亲属关系证明",
+            "出生证明",
+            "出生医学证明",
+            "户口本",
+            "户口簿",
+            "常住人口登记卡",
+            "父母关系证明",
+        ),
+    ),
+    (
         "funding_proof",
         (
             "funding proof",
@@ -113,6 +130,7 @@ class FileUploadResult:
     relevant: bool | None = None
     main_flow_feedback: dict[str, Any] | None = None
     requested_documents: list[str] | None = None
+    remaining_required_documents: list[str] | None = None
     gate_progress: dict[str, Any] | None = None
 
 
@@ -311,6 +329,9 @@ class FileService:
             relevant=relevant,
             main_flow_feedback=main_flow_feedback,
             requested_documents=post_upload_support["requested_documents"],
+            remaining_required_documents=post_upload_support[
+                "remaining_required_documents"
+            ],
             gate_progress=post_upload_support["gate_progress"],
         )
 
@@ -333,7 +354,10 @@ class FileService:
             )
         if document_type is not None and candidate_types and document_type not in candidate_types:
             return (
-                f"系统当前更倾向把这份文件识别为 {candidate_types[0]}，如有误你可以在前端纠正类型。",
+                (
+                    f"系统当前更倾向把这份文件识别为 {candidate_types[0]}，"
+                    "如识别不准，请在同一条消息里直接说明材料类型，后端会结合文本纠偏。"
+                ),
                 False,
             )
         if candidate_types:

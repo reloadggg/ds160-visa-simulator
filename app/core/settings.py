@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     openai_timeout_seconds: float = 60.0
     run_live_llm_tests: bool = False
+    app_auth_password: str | None = None
+    app_auth_token_ttl_seconds: int = 60 * 60 * 24
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -26,6 +28,10 @@ class Settings(BaseSettings):
             for origin in self.cors_allow_origins.split(",")
             if origin.strip()
         ]
+
+    @property
+    def app_auth_enabled(self) -> bool:
+        return bool(self.app_auth_password)
 
 
 settings = Settings()

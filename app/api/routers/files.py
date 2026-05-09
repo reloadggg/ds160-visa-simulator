@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.repositories.document_repo import DocumentRepository
 from app.services.file_service import FileService, FileTooLargeError, SessionNotFoundError
 from app.services.file_service import UnsupportedFileTypeError
 
@@ -51,5 +52,25 @@ async def upload_file(
         "relevant": result.relevant,
         "main_flow_feedback": result.main_flow_feedback,
         "requested_documents": list(result.requested_documents or []),
+        "remaining_required_documents": list(
+            result.remaining_required_documents or []
+        ),
         "gate_progress": result.gate_progress,
     }
+
+
+@router.get("/{document_id}/content")
+def get_file_content(
+    session_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+) -> Response:
+    document = DocumentRepository(db).get_document(document_id)
+    if document is None or document.session_id != session_id:
+        raise HTTPException(status_code=404, detail="document not found")
+    content_type = document.artifact_json.get("content_type") or "application/octet-stream"
+    return Response(
+        content=document.raw_bytes or b"",
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{document.filename}"'},
+    )

@@ -141,6 +141,7 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
         "decision": "continue_interview",
         "assistant_message": "What is the purpose of your travel?",
         "requested_documents": [],
+        "remaining_required_documents": [],
         "focus": {
             "owner": "interviewer_runtime_service",
             "kind": "interview_question",
@@ -153,6 +154,7 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
             "missing_evidence": [],
             "risk_level": "medium",
         },
+        "document_review": {},
     }
     assert record.profile_json == profile.model_dump(mode="json")
     assert record.current_focus_json == {
@@ -181,8 +183,10 @@ def test_run_turn_persists_interviewer_owned_focus_and_state(monkeypatch) -> Non
             "clarify_key_issue",
         ],
         "requested_documents": [],
+        "remaining_required_documents": [],
         "risk_codes": ["supporting_evidence_missing"],
         "history_turn_count": 0,
+        "document_review": {},
         "advisory_context": {
             "score_summary": {
                 "category_fit": 61,
@@ -404,8 +408,10 @@ def test_run_turn_keeps_focus_under_single_owner_for_each_next_action(
                 else ["review_refusal_result"]
             ),
             "requested_documents": list(action.requested_documents),
+            "remaining_required_documents": list(score.missing_evidence),
             "risk_codes": expected_risk_codes,
             "history_turn_count": 0,
+            "document_review": {},
             "advisory_context": {
                 "score_summary": {
                     "category_fit": score.category_fit,
@@ -621,6 +627,7 @@ def test_run_turn_builds_turn_record_from_latest_user_turn(monkeypatch) -> None:
         "decision": "need_more_evidence",
         "assistant_message": "Please upload funding proof.",
         "requested_documents": ["funding_proof"],
+        "remaining_required_documents": ["funding_proof"],
         "focus": {
             "owner": "interviewer_runtime_service",
             "kind": "required_document",
@@ -638,6 +645,7 @@ def test_run_turn_builds_turn_record_from_latest_user_turn(monkeypatch) -> None:
             "missing_evidence": ["funding_proof"],
             "risk_level": "none",
         },
+        "document_review": {},
     }
 
 
@@ -796,9 +804,7 @@ def test_run_turn_uses_governor_requested_document_when_action_and_score_are_emp
     }
 
 
-def test_decide_governor_only_routes_explicit_high_risk_review_signals(
-    monkeypatch,
-) -> None:
+def test_decide_governor_defaults_to_continue_interview_hint() -> None:
     service = InterviewerRuntimeService(db=object())
     profile = ApplicantProfile.minimal("profile-sess-high-risk")
     score = _build_score(risk_codes=["custom_high_signal"])
@@ -808,26 +814,13 @@ def test_decide_governor_only_routes_explicit_high_risk_review_signals(
         declared_family="f1",
     )
 
-    monkeypatch.setattr(
-        service.governor,
-        "decide",
-        lambda current_profile, current_score, early_term_candidate: {
-            "decision": "continue_interview",
-            "blocked_actions": [],
-            "rationale_refs": [],
-            "requested_documents": [],
-        },
-    )
-
     governor = service._decide_governor(record, profile, score, trace_entries)
 
     assert governor["decision"] == "continue_interview"
-    assert trace_entries[-1].summary == "decision=continue_interview"
+    assert trace_entries == []
 
 
-def test_decide_governor_routes_record_conflict_to_high_risk_review(
-    monkeypatch,
-) -> None:
+def test_decide_governor_reuses_prior_turn_decision_as_hint() -> None:
     service = InterviewerRuntimeService(db=object())
     profile = ApplicantProfile.minimal("profile-sess-record-conflict")
     score = _build_score(risk_codes=["record_conflict"])
@@ -835,30 +828,20 @@ def test_decide_governor_routes_record_conflict_to_high_risk_review(
     record = SessionRecord(
         session_id="sess-record-conflict",
         declared_family="f1",
-    )
-
-    monkeypatch.setattr(
-        service.governor,
-        "decide",
-        lambda current_profile, current_score, early_term_candidate: {
-            "decision": "continue_interview",
-            "blocked_actions": [],
-            "rationale_refs": [],
-            "requested_documents": [],
-        },
+        current_governor_decision="high_risk_review",
     )
 
     governor = service._decide_governor(record, profile, score, trace_entries)
 
     assert governor == {
         "decision": "high_risk_review",
-        "blocked_actions": ["high_risk_review_signal"],
-        "rationale_refs": ["msg:last_user_turn"],
+        "blocked_actions": [],
+        "rationale_refs": [],
         "requested_documents": [],
     }
 
 
-def test_decide_governor_does_not_allow_score_only_redline_to_trigger_refusal() -> None:
+def test_decide_governor_no_longer_promotes_score_only_redline_to_refusal() -> None:
     service = InterviewerRuntimeService(db=object())
     profile = ApplicantProfile.minimal("profile-sess-score-only-redline")
     score = _build_score(risk_codes=["hard_conflict"])
@@ -879,9 +862,7 @@ def test_decide_governor_does_not_allow_score_only_redline_to_trigger_refusal() 
     assert governor["decision"] == "continue_interview"
 
 
-def test_decide_governor_allows_refusal_only_when_owner_findings_confirm_redline(
-    monkeypatch,
-) -> None:
+def test_decide_governor_no_longer_turns_confirmed_findings_into_hard_refusal() -> None:
     service = InterviewerRuntimeService(db=object())
     profile = ApplicantProfile.minimal("profile-sess-owner-redline")
     score = _build_score(risk_codes=["hard_conflict"])
@@ -906,7 +887,7 @@ def test_decide_governor_allows_refusal_only_when_owner_findings_confirm_redline
         ],
     )
 
-    assert governor["decision"] == "simulated_refusal"
+    assert governor["decision"] == "continue_interview"
 
 
 def test_run_turn_keeps_prior_focus_document_when_only_focus_can_name_the_key_proof(

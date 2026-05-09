@@ -103,6 +103,7 @@ def test_project_builds_projection_for_continue_interview() -> None:
         "decision": "continue_interview",
         "assistant_message": "What is the purpose of your travel?",
         "requested_documents": [],
+        "remaining_required_documents": [],
         "focus": {
             "owner": "interviewer_runtime_service",
             "kind": "interview_question",
@@ -115,6 +116,7 @@ def test_project_builds_projection_for_continue_interview() -> None:
             "missing_evidence": [],
             "risk_level": "medium",
         },
+        "document_review": {},
     }
 
 
@@ -246,3 +248,26 @@ def test_project_appends_capability_artifacts_from_trace_metadata() -> None:
             "feedback_status": "helpful",
         },
     ]
+
+
+def test_select_remaining_required_documents_prefers_active_requested_document_over_gate() -> None:
+    projector = InterviewerTurnProjectorService()
+    record = SessionRecord(
+        session_id="sess-1",
+        gate_status_json={
+            "required_documents": [
+                {"document_type": "funding_proof", "status": "uploaded"},
+            ]
+        },
+    )
+    score = ScoreState.minimal(profile_version=1, scoring_stage="interview_turn")
+
+    remaining = projector.select_remaining_required_documents(
+        record=record,
+        score=score,
+        requested_documents=["relationship_proof_between_applicant_and_sponsors"],
+        governor_requested_documents=[],
+        document_review={},
+    )
+
+    assert remaining == ["relationship_proof_between_applicant_and_sponsors"]

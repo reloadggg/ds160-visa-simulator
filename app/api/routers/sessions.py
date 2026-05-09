@@ -2,9 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.visa_families import validate_declared_family
+from app.db.session import get_db
 from app.core.dependencies import get_session_repo
 from app.repositories.session_repo import SessionRepository
+from app.services.debug_fill_service import DebugFillService
 from app.services.gate_service import GateService
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -53,3 +56,14 @@ def get_required_package(
 
     required = GateService().required_package(declared_family)
     return {"required_initial_package": required}
+
+
+@router.post("/{session_id}/debug/fill-current-gap")
+def debug_fill_current_gap(
+    session_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return DebugFillService(db).fill_current_gap(session_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

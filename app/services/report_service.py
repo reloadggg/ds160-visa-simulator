@@ -69,11 +69,17 @@ class ReportService:
         current_key_question = effective_interviewer_state.get("current_key_question")
         current_key_proof = effective_interviewer_state.get("current_key_proof")
         current_risk_code = effective_interviewer_state.get("current_risk_code")
+        remaining_required_documents = list(
+            effective_interviewer_state.get("remaining_required_documents", []) or []
+        )
         allowed_next_actions = list(
             effective_interviewer_state.get("allowed_next_actions", [])
         )
         advisory_context = dict(
             effective_interviewer_state.get("advisory_context", {}) or {}
+        )
+        document_review = dict(
+            effective_interviewer_state.get("document_review", {}) or {}
         )
         prompt_trace = dict(
             effective_interviewer_state.get("prompt_trace", {}) or {}
@@ -147,6 +153,7 @@ class ReportService:
             "strengths": ["已完成基本签证家族识别"],
             "risk_points": [],
             "missing_evidence": missing_evidence,
+            "remaining_required_documents": remaining_required_documents,
             "risk_level": risk_level,
             "current_key_question": current_key_question,
             "current_key_proof": current_key_proof,
@@ -155,6 +162,7 @@ class ReportService:
             "recommended_improvements": recommended_improvements,
             "turn_decision": turn_decision,
             "advisory_context": advisory_context,
+            "document_review": document_review,
             "prompt_trace": prompt_trace,
         }
 
@@ -208,10 +216,20 @@ class ReportService:
                 or interviewer_state_json.get("decision", governor_decision),
                 "governor_decision": runtime_view_state_payload.get("governor_decision")
                 or interviewer_state_json.get("governor_decision", governor_decision),
+                "remaining_required_documents": list(
+                    runtime_view_state_payload.get("remaining_required_documents", [])
+                    or interviewer_state_json.get("remaining_required_documents", [])
+                    or []
+                ),
             },
             "advisory_context": dict(
                 runtime_view_state_payload.get("advisory_context")
                 or interviewer_state_json.get("advisory_context", {})
+                or {}
+            ),
+            "document_review": dict(
+                runtime_view_state_payload.get("document_review")
+                or interviewer_state_json.get("document_review", {})
                 or {}
             ),
         }
@@ -251,6 +269,8 @@ class ReportService:
             "requested_documents",
             "allowed_next_actions",
             "advisory_context",
+            "remaining_required_documents",
+            "document_review",
             "prompt_trace",
         ):
             if key not in runtime_view_state:
@@ -289,6 +309,12 @@ class ReportService:
         missing_evidence: list[str] = []
         requested_documents = interviewer_state_json.get("requested_documents", [])
         for document_type in requested_documents:
+            if document_type and document_type not in missing_evidence:
+                missing_evidence.append(document_type)
+        remaining_required_documents = interviewer_state_json.get(
+            "remaining_required_documents", []
+        )
+        for document_type in remaining_required_documents:
             if document_type and document_type not in missing_evidence:
                 missing_evidence.append(document_type)
 

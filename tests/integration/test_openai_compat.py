@@ -63,7 +63,9 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
         "context_mode",
         "governor_decision",
         "requested_documents",
+        "remaining_required_documents",
         "turn_decision",
+        "document_review",
         "prompt_trace",
         "runtime_view_state",
     }
@@ -200,7 +202,9 @@ def test_chat_completions_reuses_existing_session_when_metadata_session_id_prese
         "context_mode": "existing_session",
         "governor_decision": "continue_interview",
         "requested_documents": [],
+        "remaining_required_documents": [],
         "turn_decision": {},
+        "document_review": {},
         "prompt_trace": {},
         "runtime_view_state": {},
     }

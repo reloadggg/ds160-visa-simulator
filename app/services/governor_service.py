@@ -46,6 +46,14 @@ class GovernorService:
             if not blocked_actions:
                 blocked_actions = ["low_score_only_blocked"]
 
+        if self._requires_more_evidence_for_candidate(early_term_candidate, reason_code):
+            return {
+                "decision": GovernorDecision.NEED_MORE_EVIDENCE.value,
+                "blocked_actions": blocked_actions,
+                "rationale_refs": [],
+                "requested_documents": [],
+            }
+
         return {
             "decision": GovernorDecision.CONTINUE_INTERVIEW.value,
             "blocked_actions": blocked_actions,

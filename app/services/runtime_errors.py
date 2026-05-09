@@ -50,10 +50,14 @@ class ProviderAPIError(ModelRuntimeError):
         detail: str,
         provider: str | None = None,
         model: str | None = None,
+        upstream_code: str | None = None,
+        body: object | None = None,
     ) -> None:
         super().__init__(
             detail=detail,
             status_code=status_code,
             provider=provider,
             model=model,
+            upstream_code=upstream_code,
+            body=body,
         )
