@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from types import SimpleNamespace
 
 from app.db.base import Base
 from app.db.session import get_db
@@ -42,9 +43,41 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
     engine.dispose()
 
 
+def install_stub_build_question_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_build_question_action(
+        self,
+        session_id,
+        profile,
+        score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ):
+        del self, session_id, profile, governor_decision, trace_entries, recent_turns
+        requested_documents = list(score.missing_evidence[:1])
+        if requested_documents:
+            return SimpleNamespace(
+                assistant_message=f"Please upload {requested_documents[0]}.",
+                requested_documents=requested_documents,
+                decision_hint="need_more_evidence",
+            )
+        return SimpleNamespace(
+            assistant_message="What is the purpose of your travel?",
+            requested_documents=[],
+            decision_hint="continue_interview",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        fake_build_question_action,
+    )
+
+
 def test_f1_happy_path_fixture_produces_expected_user_report(
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     fixture_dir = Path("fixtures/f1/f1_parent_sponsored_consistent_01")
     case_payload = json.loads((fixture_dir / "case.json").read_text())
     expected_score = json.loads((fixture_dir / "expected_score.json").read_text())

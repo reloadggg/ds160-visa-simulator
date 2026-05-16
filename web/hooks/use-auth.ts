@@ -2,20 +2,91 @@ import { useState, useEffect, useCallback } from "react"
 import { login as apiLogin, logout as apiLogout } from "@/lib/api/client"
 
 const AUTH_TOKEN_KEY = "auth_token"
+const AUTH_USER_KEY = "auth_user"
+const DEFAULT_AVATAR_URL = "/default-user-avatar.svg"
+
+export interface AuthUserProfile {
+  displayName: string
+  avatarUrl: string
+}
+
+function generateDefaultUserName(): string {
+  const value = Math.floor(100000 + Math.random() * 900000)
+  return `User_${value}`
+}
+
+function normalizeDisplayName(displayName?: string): string {
+  const trimmed = displayName?.trim()
+  return trimmed || generateDefaultUserName()
+}
+
+function buildUserProfile(displayName?: string): AuthUserProfile {
+  return {
+    displayName: normalizeDisplayName(displayName),
+    avatarUrl: DEFAULT_AVATAR_URL,
+  }
+}
+
+function readStoredUserProfile(): AuthUserProfile | null {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  try {
+    const raw = localStorage.getItem(AUTH_USER_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as Partial<AuthUserProfile>
+    if (typeof parsed.displayName !== "string" || !parsed.displayName.trim()) {
+      return null
+    }
+    return {
+      displayName: parsed.displayName.trim(),
+      avatarUrl:
+        typeof parsed.avatarUrl === "string" && parsed.avatarUrl.trim()
+          ? parsed.avatarUrl
+          : DEFAULT_AVATAR_URL,
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeStoredUserProfile(profile: AuthUserProfile): void {
+  if (typeof window === "undefined") {
+    return
+  }
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(profile))
+}
+
+function clearStoredUserProfile(): void {
+  if (typeof window === "undefined") {
+    return
+  }
+  localStorage.removeItem(AUTH_USER_KEY)
+}
 
 export function useAuth() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoggingIn, setIsLoggingIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [userProfile, setUserProfile] = useState<AuthUserProfile | null>(null)
 
   useEffect(() => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY)
     if (token) {
-      queueMicrotask(() => setIsAuthenticated(true))
+      queueMicrotask(() => {
+        const profile = readStoredUserProfile() ?? buildUserProfile()
+        writeStoredUserProfile(profile)
+        setUserProfile(profile)
+        setIsAuthenticated(true)
+      })
     }
 
-    // Listen for unauthorized event from API client
     const handleUnauthorized = () => {
+      clearStoredUserProfile()
+      setUserProfile(null)
       setIsAuthenticated(false)
       setError("会话已过期，请重新登录")
     }
@@ -26,11 +97,14 @@ export function useAuth() {
     }
   }, [])
 
-  const login = useCallback(async (password: string) => {
+  const login = useCallback(async (password: string, displayName?: string) => {
     setIsLoggingIn(true)
     setError(null)
     try {
       await apiLogin(password)
+      const profile = buildUserProfile(displayName)
+      writeStoredUserProfile(profile)
+      setUserProfile(profile)
       setIsAuthenticated(true)
       return true
     } catch (err) {
@@ -44,6 +118,8 @@ export function useAuth() {
 
   const logout = useCallback(() => {
     apiLogout()
+    clearStoredUserProfile()
+    setUserProfile(null)
     setIsAuthenticated(false)
   }, [])
 
@@ -51,6 +127,7 @@ export function useAuth() {
     isAuthenticated,
     isLoggingIn,
     error,
+    userProfile,
     login,
     logout,
   }

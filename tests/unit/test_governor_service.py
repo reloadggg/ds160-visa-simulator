@@ -37,7 +37,7 @@ def test_governor_blocks_refusal_without_evidence_refs() -> None:
         },
     )
 
-    assert decision["decision"] == GovernorDecision.CONTINUE_INTERVIEW.value
+    assert decision["decision"] == GovernorDecision.NEED_MORE_EVIDENCE.value
     assert "missing_evidence_refs_blocked" in decision["blocked_actions"]
 
 

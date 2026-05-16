@@ -3,8 +3,18 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +26,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import type { ModelListItem, UserModelConfig } from "@/lib/api/types"
 
 interface SettingsPanelProps {
   mockMode: boolean
@@ -23,6 +34,12 @@ interface SettingsPanelProps {
   sessionId: string | null
   historyCount: number
   feedback?: string | null
+  userModelConfig: UserModelConfig
+  availableModels: ModelListItem[]
+  isLoadingModels: boolean
+  modelConfigError?: string | null
+  onUserModelConfigChange: (config: UserModelConfig) => void
+  onFetchUserModels: () => void
   onCopySessionId: () => void
   onExportSession: () => void
   onExportConversationImage: () => void
@@ -37,6 +54,12 @@ export function SettingsPanel({
   sessionId,
   historyCount,
   feedback,
+  userModelConfig,
+  availableModels,
+  isLoadingModels,
+  modelConfigError,
+  onUserModelConfigChange,
+  onFetchUserModels,
   onCopySessionId,
   onExportSession,
   onExportConversationImage,
@@ -44,6 +67,13 @@ export function SettingsPanel({
   onResetCurrentSession,
   onClearHistory,
 }: SettingsPanelProps) {
+  const updateModelConfig = (patch: Partial<UserModelConfig>) => {
+    onUserModelConfigChange({
+      ...userModelConfig,
+      ...patch,
+    })
+  }
+
   return (
     <ScrollArea className="h-full">
       <div className="space-y-4 p-4">
@@ -78,6 +108,114 @@ export function SettingsPanel({
                 {sessionId ?? "当前没有进行中的会话"}
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="py-4">
+          <CardHeader className="px-5 pb-3">
+            <CardTitle className="text-base">自带模型配置</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 px-5">
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">启用前端模型设置</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  需要后端开启 ALLOW_USER_MODEL_CONFIG；聊天、材料和报告仍保存在后端数据库。
+                </div>
+              </div>
+              <Switch
+                checked={userModelConfig.enabled}
+                onCheckedChange={(checked) => updateModelConfig({ enabled: checked })}
+                aria-label="启用自带模型配置"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="model-base-url">Base URL</Label>
+              <Input
+                id="model-base-url"
+                value={userModelConfig.baseUrl}
+                onChange={(event) => updateModelConfig({ baseUrl: event.target.value })}
+                placeholder="https://api.openai.com/v1"
+                autoComplete="off"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="model-api-key">API Key</Label>
+              <Input
+                id="model-api-key"
+                type="password"
+                value={userModelConfig.apiKey}
+                onChange={(event) => updateModelConfig({ apiKey: event.target.value })}
+                placeholder="sk-..."
+                autoComplete="off"
+              />
+              <div className="text-xs leading-5 text-muted-foreground">
+                API Key 只保存在当前页面内存中，刷新页面后需要重新填写。
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+              <div className="space-y-2">
+                <Label htmlFor="model-name">Model</Label>
+                {availableModels.length ? (
+                  <Select
+                    value={userModelConfig.model}
+                    onValueChange={(value) => updateModelConfig({ model: value })}
+                  >
+                    <SelectTrigger id="model-name" className="w-full">
+                      <SelectValue placeholder="选择模型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableModels.map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    id="model-name"
+                    value={userModelConfig.model}
+                    onChange={(event) => updateModelConfig({ model: event.target.value })}
+                    placeholder="gpt-4.1-mini"
+                    autoComplete="off"
+                  />
+                )}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="self-end"
+                onClick={onFetchUserModels}
+                disabled={isLoadingModels}
+              >
+                <RefreshCw className={isLoadingModels ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                拉取模型
+              </Button>
+            </div>
+
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">事件式流式输出</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  先流式显示处理阶段，最终回复仍由后端结构化评估完成后返回。
+                </div>
+              </div>
+              <Switch
+                checked={userModelConfig.streamingEnabled}
+                onCheckedChange={(checked) => updateModelConfig({ streamingEnabled: checked })}
+                aria-label="启用事件式流式输出"
+              />
+            </div>
+
+            {modelConfigError ? (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {modelConfigError}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

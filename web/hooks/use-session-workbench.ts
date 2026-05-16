@@ -13,7 +13,9 @@ import {
   getInternalReport,
   getRequiredPackage,
   getUserReport,
+  listUserModels,
   sendMessage,
+  sendMessageStream,
   uploadFile,
 } from "@/lib/api/client"
 import { getApiBaseUrl } from "@/lib/api/config"
@@ -35,16 +37,28 @@ import type {
   FileUploadResponse,
   InternalReport,
   InterviewReviewResponse,
+  ModelListItem,
   RequiredPackage,
   Session,
   SessionHistoryEntry,
   UploadedMaterial,
+  UserModelConfig,
+  UserModelRuntimeConfig,
   UserReport,
   VisaFamily,
 } from "@/lib/api/types"
 
 const HISTORY_STORAGE_KEY = "ds160-web-history-v1"
+const MODEL_CONFIG_STORAGE_KEY = "ds160-user-model-config-v1"
 const MAX_PERSISTED_PREVIEW_BYTES = 2 * 1024 * 1024
+
+const DEFAULT_USER_MODEL_CONFIG: UserModelConfig = {
+  enabled: false,
+  streamingEnabled: false,
+  baseUrl: "",
+  apiKey: "",
+  model: "",
+}
 
 function getTimestamp(): string {
   return new Date().toLocaleTimeString("zh-CN", {
@@ -55,6 +69,62 @@ function getTimestamp(): string {
 
 function getIsoTimestamp(): string {
   return new Date().toISOString()
+}
+
+function loadUserModelConfig(): UserModelConfig {
+  if (typeof window === "undefined") {
+    return DEFAULT_USER_MODEL_CONFIG
+  }
+
+  const raw = window.localStorage.getItem(MODEL_CONFIG_STORAGE_KEY)
+  if (!raw) {
+    return DEFAULT_USER_MODEL_CONFIG
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<UserModelConfig>
+    return {
+      enabled: Boolean(parsed.enabled),
+      streamingEnabled: Boolean(parsed.streamingEnabled),
+      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
+      model: typeof parsed.model === "string" ? parsed.model : "",
+    }
+  } catch {
+    return DEFAULT_USER_MODEL_CONFIG
+  }
+}
+
+function persistUserModelConfig(config: UserModelConfig): void {
+  if (typeof window === "undefined") {
+    return
+  }
+  window.localStorage.setItem(
+    MODEL_CONFIG_STORAGE_KEY,
+    JSON.stringify({
+      enabled: config.enabled,
+      streamingEnabled: config.streamingEnabled,
+      baseUrl: config.baseUrl,
+      model: config.model,
+    }),
+  )
+}
+
+function toRuntimeModelConfig(config: UserModelConfig): UserModelRuntimeConfig | null {
+  if (!config.enabled) {
+    return null
+  }
+  const baseUrl = config.baseUrl.trim()
+  const apiKey = config.apiKey.trim()
+  const model = config.model.trim()
+  if (!baseUrl || !apiKey || !model) {
+    return null
+  }
+  return {
+    base_url: baseUrl,
+    api_key: apiKey,
+    model,
+  }
 }
 
 function formatRequestedDocuments(labels: string[]): string {
@@ -1030,6 +1100,12 @@ export function useSessionWorkbench() {
   )
   const [composerCommand, setComposerCommand] = useState<ComposerCommand | null>(null)
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null)
+  const [userModelConfig, setUserModelConfig] = useState<UserModelConfig>(
+    () => loadUserModelConfig(),
+  )
+  const [availableModels, setAvailableModels] = useState<ModelListItem[]>([])
+  const [isLoadingModels, setIsLoadingModels] = useState(false)
+  const [modelConfigError, setModelConfigError] = useState<string | null>(null)
 
   const [isPaused, setIsPaused] = useState(false)
   const [sessionTime, setSessionTime] = useState(0)
@@ -1050,6 +1126,10 @@ export function useSessionWorkbench() {
       window.clearTimeout(timer)
     }
   }, [settingsFeedback])
+
+  useEffect(() => {
+    persistUserModelConfig(userModelConfig)
+  }, [userModelConfig])
 
   useEffect(() => {
     if (!sessionId || isPaused) {
@@ -1550,7 +1630,23 @@ export function useSessionWorkbench() {
               content: randomResponse,
             })
           } else {
-            const response = await sendMessage(sessionId, trimmedContent)
+            const runtimeModelConfig = toRuntimeModelConfig(userModelConfig)
+            if (userModelConfig.enabled && !runtimeModelConfig) {
+              throw new Error("请完整填写 Base URL、API Key 和模型名称，或关闭自带模型。")
+            }
+            const response =
+              runtimeModelConfig && userModelConfig.streamingEnabled
+                ? await sendMessageStream(
+                    sessionId,
+                    trimmedContent,
+                    runtimeModelConfig,
+                    (event) => {
+                      if (event.event === "analyzing") {
+                        setSettingsFeedback("模型请求处理中，等待后端完成本轮评估。")
+                      }
+                    },
+                  )
+                : await sendMessage(sessionId, trimmedContent, runtimeModelConfig)
             updateMessageStatus(userMsgId, "sent")
             appendMessage({
               role: "officer",
@@ -1600,6 +1696,7 @@ export function useSessionWorkbench() {
       sessionId,
       updateMessageAttachment,
       updateMessageStatus,
+      userModelConfig,
     ],
   )
 
@@ -1782,6 +1879,37 @@ export function useSessionWorkbench() {
       setSettingsFeedback("复制失败，请手动复制当前会话 ID。")
     }
   }, [sessionId])
+
+  const handleUserModelConfigChange = useCallback((nextConfig: UserModelConfig) => {
+    setUserModelConfig(nextConfig)
+    setModelConfigError(null)
+  }, [])
+
+  const handleFetchUserModels = useCallback(async () => {
+    const baseUrl = userModelConfig.baseUrl.trim()
+    const apiKey = userModelConfig.apiKey.trim()
+    if (!baseUrl || !apiKey) {
+      setModelConfigError("请先填写 Base URL 和 API Key。")
+      return
+    }
+
+    setIsLoadingModels(true)
+    setModelConfigError(null)
+    try {
+      const response = await listUserModels(baseUrl, apiKey)
+      setAvailableModels(response.models)
+      setSettingsFeedback(
+        response.models.length
+          ? `已获取 ${response.models.length} 个模型。`
+          : "模型服务未返回可选模型，可手动输入模型名称。",
+      )
+    } catch (error) {
+      setAvailableModels([])
+      setModelConfigError(getErrorMessage(error, "模型列表获取失败，可手动输入模型名称。"))
+    } finally {
+      setIsLoadingModels(false)
+    }
+  }, [getErrorMessage, userModelConfig.apiKey, userModelConfig.baseUrl])
 
   const handleExportSession = useCallback(async () => {
     if (!sessionId) {
@@ -1976,6 +2104,10 @@ export function useSessionWorkbench() {
     sessionHistory,
     composerCommand,
     settingsFeedback,
+    userModelConfig,
+    availableModels,
+    isLoadingModels,
+    modelConfigError,
     currentFocusDocumentLabel,
     handleComposerCommandHandled,
     handleVisaSelect,
@@ -1986,6 +2118,8 @@ export function useSessionWorkbench() {
     handleEndSession,
     handleReset,
     handleCopySessionId,
+    handleUserModelConfigChange,
+    handleFetchUserModels,
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,

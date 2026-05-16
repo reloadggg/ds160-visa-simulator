@@ -7,6 +7,7 @@ from typing import Any
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from app.agents.user_model_config import current_user_model_config
 from app.services.interviewer_prompt_registry import InterviewerPromptRegistry
 from app.services.runtime_policies import RuntimePolicyRegistry
 
@@ -77,13 +78,22 @@ class AgentModelFactory:
         if runtime.get("provider") not in SUPPORTED_PROVIDERS:
             return None, runtime
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_BASE_URL")
+        user_config = current_user_model_config()
+        api_key = user_config.api_key if user_config is not None else os.getenv("OPENAI_API_KEY")
+        base_url = user_config.base_url if user_config is not None else os.getenv("OPENAI_BASE_URL")
+        if user_config is not None:
+            runtime["model"] = user_config.model
+            runtime["provider"] = "openai_compatible"
+            runtime["user_model_configured"] = True
         missing_env_vars = [
             env_var
             for env_var, value in (
-                ("OPENAI_API_KEY", api_key),
-                ("OPENAI_BASE_URL", base_url),
+                ("USER_MODEL_API_KEY", api_key)
+                if user_config is not None
+                else ("OPENAI_API_KEY", api_key),
+                ("USER_MODEL_BASE_URL", base_url)
+                if user_config is not None
+                else ("OPENAI_BASE_URL", base_url),
             )
             if not value
         ]

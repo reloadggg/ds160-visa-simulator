@@ -21,9 +21,12 @@ import type {
   InternalReport,
   InterviewReviewResponse,
   MessageResponse,
+  MessageStreamEvent,
+  ModelListResponse,
   RequiredPackage,
   Session,
   SessionExportPayload,
+  UserModelRuntimeConfig,
   UserReport,
   VisaFamily,
 } from "./types"
@@ -73,6 +76,17 @@ function getAuthHeaders(contentType?: string): HeadersInit {
   }
 
   return headers
+}
+
+function toBackendModelConfig(config?: UserModelRuntimeConfig | null) {
+  if (!config) {
+    return undefined
+  }
+  return {
+    base_url: config.base_url,
+    api_key: config.api_key,
+    model: config.model,
+  }
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
@@ -148,6 +162,7 @@ export async function getRequiredPackage(sessionId: string): Promise<RequiredPac
 export async function sendMessage(
   sessionId: string,
   content: string,
+  modelConfig?: UserModelRuntimeConfig | null,
 ): Promise<MessageResponse> {
   const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
     method: "POST",
@@ -155,10 +170,113 @@ export async function sendMessage(
     body: JSON.stringify({
       role: "user",
       content,
+      model_config: toBackendModelConfig(modelConfig),
     }),
   })
 
   return mapMessageResponse(await handleResponse<BackendMessageResponse>(response))
+}
+
+export async function sendMessageStream(
+  sessionId: string,
+  content: string,
+  modelConfig: UserModelRuntimeConfig | null,
+  onEvent: (event: MessageStreamEvent) => void,
+): Promise<MessageResponse> {
+  const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/messages/stream`), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify({
+      role: "user",
+      content,
+      model_config: toBackendModelConfig(modelConfig),
+    }),
+  })
+
+  if (!response.ok) {
+    return mapMessageResponse(await handleResponse<BackendMessageResponse>(response))
+  }
+  if (!response.body) {
+    throw new ApiError("当前浏览器不支持读取流式响应。", 0)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let finalPayload: BackendMessageResponse | null = null
+
+  const processChunk = (chunk: string) => {
+    buffer += chunk
+    const events = buffer.split("\n\n")
+    buffer = events.pop() ?? ""
+    for (const rawEvent of events) {
+      const parsed = parseSseEvent(rawEvent)
+      if (!parsed) {
+        continue
+      }
+      onEvent(parsed)
+      if (parsed.event === "final") {
+        finalPayload = parsed.data
+      }
+      if (parsed.event === "error") {
+        throw new ApiError(parsed.data.detail ?? "流式消息处理失败。", parsed.data.status ?? 500, parsed.data)
+      }
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+    processChunk(decoder.decode(value, { stream: true }))
+  }
+  processChunk(decoder.decode())
+
+  if (!finalPayload) {
+    throw new ApiError("流式响应没有返回最终消息。", 502)
+  }
+  return mapMessageResponse(finalPayload)
+}
+
+function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
+  const eventLine = rawEvent
+    .split("\n")
+    .find((line) => line.startsWith("event:"))
+  const dataLine = rawEvent
+    .split("\n")
+    .find((line) => line.startsWith("data:"))
+  if (!eventLine || !dataLine) {
+    return null
+  }
+  const event = eventLine.slice("event:".length).trim()
+  const data = JSON.parse(dataLine.slice("data:".length).trim()) as unknown
+  if (event === "accepted" || event === "analyzing") {
+    return { event, data: data as Record<string, unknown> }
+  }
+  if (event === "final") {
+    return { event, data: data as BackendMessageResponse }
+  }
+  if (event === "error") {
+    return { event, data: data as { status?: number; detail?: string } }
+  }
+  return null
+}
+
+export async function listUserModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<ModelListResponse> {
+  const response = await fetch(buildApiUrl("/v1/model-config/models"), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify({
+      base_url: baseUrl,
+      api_key: apiKey,
+    }),
+  })
+
+  return handleResponse<ModelListResponse>(response)
 }
 
 export async function getUserReport(sessionId: string): Promise<UserReport> {

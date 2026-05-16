@@ -79,8 +79,8 @@
 }
 
 @theme inline {
-  --font-sans: var(--font-noto-sans-sc), var(--font-geist), 'Noto Sans SC', 'Geist', system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), 'Geist Mono', monospace;
+  --font-sans: 'Noto Sans SC', 'Microsoft YaHei UI', 'PingFang SC', 'Hiragino Sans GB', system-ui, sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

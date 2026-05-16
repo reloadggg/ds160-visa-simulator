@@ -1,15 +1,6 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono, Noto_Sans_SC } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
-
-const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
-const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
-const notoSansSC = Noto_Sans_SC({ 
-  subsets: ["latin"], 
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-noto-sans-sc"
-});
 
 export const metadata: Metadata = {
   title: '面签模拟器',
@@ -41,7 +32,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" className="bg-background">
-      <body className={`${geist.variable} ${geistMono.variable} ${notoSansSC.variable} font-sans antialiased`}>
+      <body className="font-sans antialiased">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

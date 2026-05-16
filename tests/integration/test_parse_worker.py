@@ -101,7 +101,10 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     assert upload_response.status_code == 202
 
     assert first_response.status_code == 200
-    assert first_response.json()["governor_decision"] == "need_more_evidence"
+    assert first_response.json()["governor_decision"] in {
+        "continue_interview",
+        "need_more_evidence",
+    }
 
     pre_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",

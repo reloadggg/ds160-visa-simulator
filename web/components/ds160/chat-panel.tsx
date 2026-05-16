@@ -12,6 +12,8 @@ import type { ChatAttachment, ChatMessage, ComposerCommand } from "@/lib/api/typ
 interface ChatPanelProps {
   messages: ChatMessage[]
   onSendMessage: (message: string, files?: File[]) => void
+  userName: string
+  userAvatarUrl: string
   isLoading?: boolean
   isSending?: boolean
   isUploading?: boolean
@@ -23,6 +25,8 @@ interface ChatPanelProps {
 export function ChatPanel({
   messages,
   onSendMessage,
+  userName,
+  userAvatarUrl,
   isLoading = false,
   isSending = false,
   isUploading = false,
@@ -138,6 +142,13 @@ export function ChatPanel({
 
   const isDisabled = isSending || isUploading
   const isSendDisabled = (!inputValue.trim() && attachments.length === 0) || isDisabled
+  const displayName = userName.trim() || "User"
+  const fallbackInitials = displayName
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "U"
 
   const renderAttachment = (attachment: ChatAttachment) => {
     const preview = attachment.kind === "image" && attachment.preview_url
@@ -225,11 +236,11 @@ export function ChatPanel({
                   ) : (
                     <>
                       <AvatarImage
-                        src="https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=36&h=36&fit=crop&crop=face"
-                        alt="用户"
+                        src={userAvatarUrl}
+                        alt={`${displayName} 的头像`}
                       />
                       <AvatarFallback className="bg-primary text-xs text-primary-foreground">
-                        AZ
+                        {fallbackInitials}
                       </AvatarFallback>
                     </>
                   )}
@@ -247,7 +258,7 @@ export function ChatPanel({
                 {message.role !== "system" && (
                   <div className="mb-1 flex items-center gap-2">
                     <span className="text-xs font-medium text-foreground md:text-sm">
-                      {message.role === "officer" ? "签证官" : "用户"}
+                      {message.role === "officer" ? "签证官" : displayName}
                     </span>
                     <span className="text-[10px] text-muted-foreground md:text-xs">
                       {message.timestamp}

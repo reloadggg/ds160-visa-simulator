@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from app.api.routers.auth import router as auth_router
 from app.api.routers.files import router as files_router
 from app.api.routers.messages import router as messages_router
+from app.api.routers.model_config import router as model_config_router
 from app.api.routers.openai_compat import router as openai_compat_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
@@ -199,6 +200,7 @@ app.include_router(sessions_router)
 app.include_router(auth_router)
 app.include_router(files_router)
 app.include_router(messages_router)
+app.include_router(model_config_router)
 app.include_router(reports_router)
 app.include_router(openai_compat_router)
 

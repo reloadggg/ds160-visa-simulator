@@ -21,10 +21,11 @@ export function AuthGuard({ children }: AuthGuardProps) {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
     const password = String(formData.get("password") ?? "").trim()
+    const displayName = String(formData.get("displayName") ?? "").trim()
     if (!password || isLoggingIn) {
       return
     }
-    await login(password)
+    await login(password, displayName)
   }
 
   if (isAuthenticated) {
@@ -107,6 +108,24 @@ export function AuthGuard({ children }: AuthGuardProps) {
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 ) : null}
+
+                <div className="space-y-2">
+                  <Label htmlFor="auth-display-name" className="text-sm font-medium text-slate-700">
+                    用户名
+                  </Label>
+                  <Input
+                    id="auth-display-name"
+                    name="displayName"
+                    type="text"
+                    placeholder="不填则自动生成 User_123456"
+                    autoComplete="nickname"
+                    disabled={isLoggingIn}
+                    className={cn(
+                      "h-12 rounded-2xl border-slate-200 bg-white/80 px-4 text-base shadow-sm transition-all sm:h-13",
+                      "placeholder:text-slate-400 focus-visible:border-sky-400/20 focus-visible:ring-sky-400/20",
+                    )}
+                  />
+                </div>
 
                 <div className="space-y-2">
                   <Label htmlFor="auth-password" className="text-sm font-medium text-slate-700">

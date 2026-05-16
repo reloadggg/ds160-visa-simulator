@@ -19,6 +19,8 @@ interface TopBarProps {
   sessionTime: string
   isPaused: boolean
   activeTab: string
+  userName: string
+  userAvatarUrl: string
   mockMode?: boolean
   onTabChange: (tab: string) => void
   onPause: () => void
@@ -33,6 +35,8 @@ export function TopBar({
   sessionTime,
   isPaused,
   activeTab,
+  userName,
+  userAvatarUrl,
   mockMode = false,
   onTabChange,
   onPause,
@@ -41,6 +45,14 @@ export function TopBar({
   onDebugFillCurrentGap,
   onExportConversationImage,
 }: TopBarProps) {
+  const displayName = userName.trim() || "User"
+  const fallbackInitials = displayName
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "U"
+
   return (
     <header className="flex h-16 min-w-0 items-center border-b border-border bg-card px-4 lg:px-6">
       {/* Left section - Session info */}
@@ -163,10 +175,10 @@ export function TopBar({
 
         <div className="hidden min-w-0 items-center gap-2 border-l border-border pl-3 lg:flex">
           <Avatar className="h-8 w-8 shrink-0">
-            <AvatarImage src="https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=32&h=32&fit=crop&crop=face" alt="用户头像" />
-            <AvatarFallback>AZ</AvatarFallback>
+            <AvatarImage src={userAvatarUrl} alt={`${displayName} 的头像`} />
+            <AvatarFallback>{fallbackInitials}</AvatarFallback>
           </Avatar>
-          <span className="max-w-28 truncate text-sm font-medium text-foreground">Alex Zhang</span>
+          <span className="max-w-28 truncate text-sm font-medium text-foreground">{displayName}</span>
           <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
         </div>
       </div>

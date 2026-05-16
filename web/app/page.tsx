@@ -13,6 +13,7 @@ import { Sidebar, navItems } from "@/components/ds160/sidebar"
 import { TopBar } from "@/components/ds160/top-bar"
 import { VisaSelector } from "@/components/ds160/visa-selector"
 import { AuthGuard } from "@/components/ds160/auth-guard"
+import { useAuth } from "@/hooks/use-auth"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
 import type { SessionHistoryEntry } from "@/lib/api/types"
 
@@ -27,6 +28,7 @@ export default function DS160Workbench() {
 function Workbench() {
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [activeTab, setActiveTab] = useState("simulation")
+  const { userProfile } = useAuth()
 
   const {
     apiBaseUrl,
@@ -56,6 +58,10 @@ function Workbench() {
     sessionHistory,
     composerCommand,
     settingsFeedback,
+    userModelConfig,
+    availableModels,
+    isLoadingModels,
+    modelConfigError,
     handleComposerCommandHandled,
     handleVisaSelect,
     handleSendMessage,
@@ -65,6 +71,8 @@ function Workbench() {
     handleEndSession,
     handleReset,
     handleCopySessionId,
+    handleUserModelConfigChange,
+    handleFetchUserModels,
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,
@@ -86,6 +94,8 @@ function Workbench() {
           sessionTime={sessionTimeLabel}
           isPaused={isPaused}
           activeTab={activeTab}
+          userName={userProfile?.displayName ?? "User"}
+          userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
           mockMode={mockMode}
           onTabChange={setActiveTab}
           onPause={handlePause}
@@ -138,6 +148,8 @@ function Workbench() {
           <ChatPanel
             messages={messages}
             onSendMessage={handleSendMessage}
+            userName={userProfile?.displayName ?? "User"}
+            userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
             isSending={isSending}
             isUploading={isUploading}
             error={chatError}
@@ -194,6 +206,12 @@ function Workbench() {
                 sessionId={sessionId}
                 historyCount={sessionHistory.length}
                 feedback={settingsFeedback}
+                userModelConfig={userModelConfig}
+                availableModels={availableModels}
+                isLoadingModels={isLoadingModels}
+                modelConfigError={modelConfigError}
+                onUserModelConfigChange={handleUserModelConfigChange}
+                onFetchUserModels={handleFetchUserModels}
                 onCopySessionId={handleCopySessionId}
                 onExportSession={handleExportSession}
                 onExportConversationImage={handleExportConversationImage}

@@ -15,6 +15,35 @@ export type AllowedActionCode =
   | "review_refusal_result"
   | (string & {})
 
+export interface UserModelConfig {
+  enabled: boolean
+  streamingEnabled: boolean
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
+export interface UserModelRuntimeConfig {
+  base_url: string
+  api_key: string
+  model: string
+}
+
+export interface ModelListItem {
+  id: string
+  label: string
+}
+
+export interface ModelListResponse {
+  models: ModelListItem[]
+}
+
+export type MessageStreamEvent =
+  | { event: "accepted"; data: Record<string, unknown> }
+  | { event: "analyzing"; data: Record<string, unknown> }
+  | { event: "final"; data: BackendMessageResponse }
+  | { event: "error"; data: { status?: number; detail?: string } }
+
 export interface ChatAttachment {
   id: string
   name: string

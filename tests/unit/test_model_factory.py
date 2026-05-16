@@ -12,6 +12,7 @@ from app.agents.schemas import (
     RiskFlagProposal,
     ScoreProposal,
 )
+from app.agents.user_model_config import UserModelConfig, user_model_runtime
 
 
 def test_model_factory_returns_none_without_openai_config(
@@ -86,6 +87,44 @@ def test_model_factory_builds_openai_chat_model_from_custom_runtime_path(
     assert isinstance(model, OpenAIChatModel)
     assert runtime["provider"] == "openai_compatible"
     assert runtime["model"] == "gpt-5.4"
+
+
+def test_model_factory_uses_request_scoped_user_model_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_policy_path = tmp_path / "runtime.yaml"
+    runtime_policy_path.write_text(
+        "\n".join(
+            [
+                "scoring_agent:",
+                "  interview_turn:",
+                "    provider: openai_compatible",
+                "    model: server-model",
+                "    reasoning_effort: xhigh",
+                "    prompt_template_id: scoring-agent-v1",
+                "    prompt_version: v1",
+            ]
+        )
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    with user_model_runtime(
+        UserModelConfig(
+            base_url="https://models.example.test/v1",
+            api_key="user-key",
+            model="user-model",
+        )
+    ):
+        model, runtime = AgentModelFactory(
+            runtime_policy_path=str(runtime_policy_path)
+        ).build("scoring_agent", "interview_turn")
+
+    assert isinstance(model, OpenAIChatModel)
+    assert runtime["provider"] == "openai_compatible"
+    assert runtime["model"] == "user-model"
+    assert runtime["user_model_configured"] is True
 
 
 def test_model_factory_reads_env_overrides_from_runtime_registry(

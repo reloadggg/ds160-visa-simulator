@@ -197,7 +197,9 @@ def test_golden_path_f1_parent_sponsored_progresses_after_helpful_upload(
 
 def test_irrelevant_upload_does_not_drift_mainline_focus(
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    install_stub_build_question_action(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
 
     assert session_resp.status_code == 201

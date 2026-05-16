@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Default user avatar</title>
+  <desc id="desc">A default profile avatar for the DS-160 workbench.</desc>
+  <defs>
+    <linearGradient id="bg" x1="18" y1="10" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f766e"/>
+      <stop offset="0.52" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="38" y1="18" x2="96" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="64" fill="url(#bg)"/>
+  <circle cx="42" cy="28" r="48" fill="url(#shine)"/>
+  <circle cx="64" cy="50" r="22" fill="#f8fafc" opacity="0.94"/>
+  <path d="M27 108c4.7-24.2 19.1-37 37-37s32.3 12.8 37 37" fill="#f8fafc" opacity="0.94"/>
+  <path d="M24 108h80c-6 8.9-19.6 15-40 15s-34-6.1-40-15Z" fill="#e0f2fe" opacity="0.9"/>
+</svg>

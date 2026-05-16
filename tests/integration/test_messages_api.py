@@ -22,6 +22,8 @@ from app.domain.contracts import (
 )
 from app.domain.runtime import RuntimeTraceEntry, build_initial_gate_status
 from app.main import app
+from app.agents.user_model_config import current_user_model_config
+from app.core import settings as settings_module
 from app.services.runtime_errors import ModelRuntimeError
 from app.workers.parse_worker import ParseWorker
 
@@ -369,6 +371,100 @@ def test_message_turn_allows_interview_runtime_when_gate_not_ready(
         assert record is not None
         assert record.phase_state == "gate_review"
         assert record.gate_status_json["status"] == "pending_documents"
+
+
+def test_messages_reject_user_model_config_when_disabled(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "My parents will pay.",
+            "model_config": {
+                "base_url": "https://models.example.test/v1",
+                "api_key": "user-key",
+                "model": "user-model",
+            },
+        },
+    )
+
+    assert response.status_code == 403
+    assert "未启用用户自定义模型配置" in response.json()["detail"]
+
+
+def test_messages_apply_user_model_config_for_request_scope(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_configs = []
+    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+
+    def fake_run_turn(self, record, message_text: str) -> dict:
+        captured_configs.append(current_user_model_config())
+        return {
+            "assistant_message": "Which school will you attend?",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "My parents will pay.",
+            "model_config": {
+                "base_url": "https://models.example.test",
+                "api_key": "user-key",
+                "model": "user-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assistant_message"] == "Which school will you attend?"
+    assert len(captured_configs) == 1
+    runtime_config = captured_configs[0]
+    assert runtime_config is not None
+    assert runtime_config.base_url == "https://models.example.test/v1"
+    assert runtime_config.api_key == "user-key"
+    assert runtime_config.model == "user-model"
+
+
+def test_messages_stream_requires_streaming_switch(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages/stream",
+        json={
+            "role": "user",
+            "content": "My parents will pay.",
+            "model_config": {
+                "base_url": "https://models.example.test",
+                "api_key": "user-key",
+                "model": "user-model",
+            },
+        },
+    )
+
+    assert response.status_code == 403
+    assert "未启用用户模型流式输出" in response.json()["detail"]
 
 
 def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
