@@ -4,6 +4,7 @@ __pycache__/
 .mypy_cache/
 .DS_Store
 .superpowers/
+docs/superpowers/
 .worktrees/
 .dev/
 *.sqlite3
@@ -17,4 +18,6 @@ web/.env.local
 .codex/
 .claude/
 .gemini/
+.agents/
+AGENTS.md
 .chainlit/translations/

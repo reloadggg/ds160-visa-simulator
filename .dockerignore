@@ -6,6 +6,12 @@ __pycache__
 .dev
 .worktrees
 .superpowers
+docs/superpowers
+.agents
+.codex
+.claude
+.gemini
+AGENTS.md
 .trellis/workspace
 .trellis/tasks/archive
 .env

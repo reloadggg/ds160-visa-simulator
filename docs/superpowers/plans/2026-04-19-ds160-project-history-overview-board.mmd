@@ -1,9 +1,0 @@
-flowchart TD
-    A["2026-04-17 创立<br/>v1 产品稿 + 实现计划落地<br/>明确先按规格推进"] --> B["v1 骨架期<br/>FastAPI 单体<br/>domain / persistence / policy registry<br/>upload / gate / scoring / reports / OpenAI-compatible"]
-    B --> C["价值确认<br/>先把端到端系统跑起来<br/>很快具备真实验收条件"]
-    C --> D["2026-04-18 扩展补强<br/>evidence foundation<br/>PydanticAI runtime<br/>formal runtime / Chainlit UI<br/>typed multimodal uploads"]
-    D --> E["问题暴露<br/>UX 评估指出 gate 过硬<br/>上传链路不顺<br/>系统像流程控制器而不像面签官"]
-    E --> F["2026-04-19 v1.5 重构决策<br/>主线改成<br/>本次会话记忆 + 材料证据 + interviewer owner 主判断"]
-    F --> G["v1.5 执行主线<br/>14 个任务完成方向纠偏<br/>记忆底座 / owner 统一 / 材料证据化 / prompt 外置 / scoring 退后台"]
-    G --> H["当前状态<br/>Task 1-14 完成<br/>非 live 回归通过<br/>226 passed / 8 deselected"]
-    H --> I["待补事项<br/>live LLM 测试待凭据环境<br/>继续守住本次会话边界和 score_summary 防回漏"]
