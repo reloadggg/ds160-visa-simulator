@@ -1,6 +1,4 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
@@ -205,18 +203,6 @@ app.include_router(model_config_router)
 app.include_router(rag_router)
 app.include_router(reports_router)
 app.include_router(openai_compat_router)
-
-try:
-    from chainlit.utils import mount_chainlit
-except ModuleNotFoundError:
-    mount_chainlit = None
-
-if mount_chainlit is not None:
-    mount_chainlit(
-        app,
-        target=str(Path(__file__).resolve().parents[1] / "chainlit_app.py"),
-        path="/ui",
-    )
 
 
 @app.get("/healthz")

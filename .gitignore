@@ -24,4 +24,3 @@ web/.env.local
 .gemini/
 .agents/
 AGENTS.md
-.chainlit/translations/

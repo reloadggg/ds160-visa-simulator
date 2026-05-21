@@ -42,9 +42,7 @@ RUN apt-get update \
 
 COPY --from=python-deps /app/.venv ./.venv
 COPY app ./app
-COPY chainlit_app.py ./chainlit_app.py
 COPY fixtures ./fixtures
-COPY .chainlit ./.chainlit
 COPY --from=web-builder /app/web/.next/standalone ./web
 COPY --from=web-builder /app/web/.next/static ./web/.next/static
 COPY --from=web-builder /app/web/public ./web/public
