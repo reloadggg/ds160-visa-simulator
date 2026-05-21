@@ -62,6 +62,10 @@ function Workbench() {
     availableModels,
     isLoadingModels,
     modelConfigError,
+    ragStatus,
+    isLoadingRagStatus,
+    isUploadingRagFile,
+    ragError,
     handleComposerCommandHandled,
     handleVisaSelect,
     handleSendMessage,
@@ -73,6 +77,8 @@ function Workbench() {
     handleCopySessionId,
     handleUserModelConfigChange,
     handleFetchUserModels,
+    handleUploadRagFile,
+    refreshRagStatus,
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,
@@ -210,8 +216,14 @@ function Workbench() {
                 availableModels={availableModels}
                 isLoadingModels={isLoadingModels}
                 modelConfigError={modelConfigError}
+                ragStatus={ragStatus}
+                isLoadingRagStatus={isLoadingRagStatus}
+                isUploadingRagFile={isUploadingRagFile}
+                ragError={ragError}
                 onUserModelConfigChange={handleUserModelConfigChange}
                 onFetchUserModels={handleFetchUserModels}
+                onUploadRagFile={handleUploadRagFile}
+                onRefreshRagStatus={refreshRagStatus}
                 onCopySessionId={handleCopySessionId}
                 onExportSession={handleExportSession}
                 onExportConversationImage={handleExportConversationImage}

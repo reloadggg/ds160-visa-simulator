@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,8 +21,43 @@ class Settings(BaseSettings):
     app_auth_token_ttl_seconds: int = 60 * 60 * 24
     allow_user_model_config: bool = False
     allow_user_model_streaming: bool = False
+    rag_enabled: bool = False
+    rag_vector_store: str = "chroma"
+    rag_index_version: str = "v1"
+    rag_chroma_mode: str = "persistent"
+    rag_chroma_path: str = "./data/chroma/us_visa"
+    rag_chroma_host: str = "localhost"
+    rag_chroma_port: int = 8000
+    rag_chroma_ssl: bool = False
+    rag_collection_prefix: str = "us_visa"
+    siliconflow_base_url: str = "https://api.siliconflow.com/v1"
+    siliconflow_api_key: str | None = None
+    siliconflow_embedding_model: str = "BAAI/bge-m3"
+    siliconflow_embedding_dimensions: int | None = None
+    siliconflow_embedding_batch_size: int = 32
+    siliconflow_rerank_model: str = "Qwen/Qwen3-Reranker-4B"
+    rag_vector_top_k_per_collection: int = 8
+    rag_candidate_limit: int = 24
+    rag_rerank_top_n: int = 6
+    rag_min_final_score: float = 0.15
+    rag_max_context_chars: int = 5000
+    rag_chunk_size: int = 900
+    rag_chunk_overlap: int = 150
+    rag_upload_max_size_mb: int = 32
+    rag_allow_third_party_reference: bool = False
+    rag_source_manifest: str = (
+        "docs/superpowers/research/2026-05-21-us-visa-rag-source-manifest-100plus.md"
+    )
+    rag_raw_doc_dir: str = "data/rag/us_visa/raw"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("siliconflow_embedding_dimensions", mode="before")
+    @classmethod
+    def empty_embedding_dimensions_as_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
     @property
     def cors_allow_origins_list(self) -> list[str]:
@@ -34,6 +70,29 @@ class Settings(BaseSettings):
     @property
     def app_auth_enabled(self) -> bool:
         return bool(self.app_auth_password)
+
+    @property
+    def siliconflow_embedding_dimensions_supported(self) -> bool:
+        return self.siliconflow_embedding_model.startswith("Qwen/Qwen3-Embedding-")
+
+    @property
+    def rag_ready(self) -> bool:
+        return self.rag_enabled and self.rag_skip_reason is None
+
+    @property
+    def rag_skip_reason(self) -> str | None:
+        if not self.rag_enabled:
+            return "disabled"
+        if not self.siliconflow_api_key:
+            return "missing_siliconflow_api_key"
+        if (
+            self.siliconflow_embedding_dimensions is not None
+            and not self.siliconflow_embedding_dimensions_supported
+        ):
+            return "embedding_dimensions_unsupported"
+        if self.rag_vector_store != "chroma":
+            return "unsupported_vector_store"
+        return None
 
 
 settings = Settings()

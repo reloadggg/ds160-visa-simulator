@@ -167,6 +167,51 @@ def test_build_question_action_appends_capability_trace_before_turn_decision(
         "turn_decision",
     ]
 
+
+def test_turn_decision_trace_includes_policy_citations() -> None:
+    service = InterviewRuntimeService(db=object())
+    action = InterviewNextAction(
+        assistant_message="What school will you attend?",
+        requested_documents=[],
+        decision_hint="continue_interview",
+    )
+
+    trace = service._build_turn_decision_trace(
+        runtime={
+            "prompt_pack_id": "ds160.interviewer",
+            "prompt_version": "v2",
+            "reasoning_effort": "high",
+        },
+        action=action,
+        fallback_used=False,
+        tool_calls=[],
+        retry_count=0,
+        provider="openai_compatible",
+        model="test-model",
+        boundary_decision="continue_interview",
+        capability_tool_outputs={
+            "policy_knowledge_retrieval": {
+                "citations": [
+                    {
+                        "source_id": "src-1",
+                        "title": "DS-160",
+                        "url": "https://example.test/ds160",
+                    }
+                ],
+                "skipped": False,
+            }
+        },
+    )
+
+    assert trace.metadata["policy_knowledge_status"] == "completed"
+    assert trace.metadata["policy_citations"] == [
+        {
+            "source_id": "src-1",
+            "title": "DS-160",
+            "url": "https://example.test/ds160",
+        }
+    ]
+
 def test_raise_if_question_model_unavailable_blocks_interview_question_path() -> None:
     service = InterviewRuntimeService(db=object())
     score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")

@@ -13,6 +13,7 @@ from app.services.evidence_service import EvidenceService
 from app.services.report_service import ReportService
 from app.services.retrieval_service import RetrievalService
 from app.services.session_read_model_service import SessionReadModelService
+from app.services.visa_policy_retrieval_service import VisaPolicyRetrievalService
 
 
 class InterviewReviewService:
@@ -52,6 +53,7 @@ class InterviewReviewService:
                     session_id=session_id,
                     retrieval=RetrievalService(self.db),
                     evidence=EvidenceService(self.db),
+                    policy_retrieval=VisaPolicyRetrievalService(),
                 ),
                 review_context=review_context,
             )

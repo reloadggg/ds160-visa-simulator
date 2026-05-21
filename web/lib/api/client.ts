@@ -23,6 +23,9 @@ import type {
   MessageResponse,
   MessageStreamEvent,
   ModelListResponse,
+  RagUploadMetadata,
+  RagStatus,
+  RagUploadResponse,
   RequiredPackage,
   Session,
   SessionExportPayload,
@@ -277,6 +280,41 @@ export async function listUserModels(
   })
 
   return handleResponse<ModelListResponse>(response)
+}
+
+export async function getRagStatus(): Promise<RagStatus> {
+  const response = await fetch(buildApiUrl("/v1/rag/status"), {
+    headers: getAuthHeaders(),
+  })
+
+  return handleResponse<RagStatus>(response)
+}
+
+export async function uploadRagFile(
+  file: File,
+  metadata: RagUploadMetadata = {},
+): Promise<RagUploadResponse> {
+  const formData = new FormData()
+  formData.append("file", file)
+
+  const fields: RagUploadMetadata = {
+    ...metadata,
+    title: metadata.title?.trim() || file.name,
+  }
+  Object.entries(fields).forEach(([key, value]) => {
+    const normalized = value?.trim()
+    if (normalized) {
+      formData.append(key, normalized)
+    }
+  })
+
+  const response = await fetch(buildApiUrl("/v1/rag/files"), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: formData,
+  })
+
+  return handleResponse<RagUploadResponse>(response)
 }
 
 export async function getUserReport(sessionId: string): Promise<UserReport> {

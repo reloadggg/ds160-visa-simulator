@@ -7,6 +7,7 @@ from typing import Any
 from pydantic_ai import Agent
 from pydantic_ai import messages as ai_messages
 
+from app.agents.knowledge_tools import register_policy_knowledge_tools
 from app.agents.schemas import AgentRuntimeDeps, InterviewNextAction
 from app.agents.tools import register_evidence_tools
 
@@ -29,6 +30,7 @@ class AdjudicationAgentRunner:
             instructions=instructions,
         )
         register_evidence_tools(self.agent)
+        register_policy_knowledge_tools(self.agent)
 
     def run(
         self,

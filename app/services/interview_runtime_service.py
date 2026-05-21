@@ -36,6 +36,7 @@ from app.services.runtime_errors import (
 )
 from app.services.scoring_service import ScoringService
 from app.services.session_read_model_service import SessionReadModelService
+from app.services.visa_policy_retrieval_service import VisaPolicyRetrievalService
 
 
 @dataclass
@@ -454,6 +455,7 @@ class InterviewRuntimeService:
             session_id=session_id,
             retrieval=RetrievalService(self.db),
             evidence=EvidenceService(self.db),
+            policy_retrieval=VisaPolicyRetrievalService(),
         )
 
     def _finalize_question_action(
@@ -593,6 +595,12 @@ class InterviewRuntimeService:
             if isinstance(capability_tool_outputs, dict)
             else {}
         )
+        policy_knowledge = (
+            capability_tool_outputs.get("policy_knowledge_retrieval", {})
+            if isinstance(capability_tool_outputs, dict)
+            else {}
+        )
+        policy_citations = list(policy_knowledge.get("citations", []) or [])
         return RuntimeTraceEntry(
             node_name="turn_decision",
             summary=f"decision={action.decision}",
@@ -615,5 +623,14 @@ class InterviewRuntimeService:
                     document_review.get("remaining_required_documents", []) or []
                 ),
                 "document_review_status": document_review.get("review_status"),
+                "policy_citations": policy_citations,
+                "policy_knowledge_status": (
+                    "skipped"
+                    if policy_knowledge.get("skipped")
+                    else "completed"
+                    if policy_knowledge
+                    else "not_requested"
+                ),
+                "policy_knowledge_skip_reason": policy_knowledge.get("skip_reason"),
             },
         )

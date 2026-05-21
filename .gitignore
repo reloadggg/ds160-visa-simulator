@@ -10,6 +10,10 @@ docs/superpowers/
 *.sqlite3
 .env
 *.tsbuildinfo
+data/
+*_raw_materials_pack.zip
+rag_live_eval_*.json
+rag_live_eval_*.md
 web/.next/
 web/node_modules/
 web/.env.local

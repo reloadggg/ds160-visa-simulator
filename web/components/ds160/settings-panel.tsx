@@ -1,11 +1,14 @@
 "use client"
 
+import { type ChangeEvent, useRef, useState } from "react"
+
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
@@ -14,7 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw } from "lucide-react"
+import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw, Upload } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,7 +29,23 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import type { ModelListItem, UserModelConfig } from "@/lib/api/types"
+import type { ModelListItem, RagStatus, RagUploadMetadata, UserModelConfig } from "@/lib/api/types"
+
+const VISA_FAMILY_OPTIONS = [
+  { value: "f1", label: "F-1" },
+  { value: "j1", label: "J-1" },
+  { value: "b1_b2", label: "B-1/B-2" },
+  { value: "h1b", label: "H-1B" },
+]
+
+const EMPTY_RAG_UPLOAD_FORM = {
+  title: "",
+  url: "",
+  visaFamily: "",
+  country: "",
+  post: "",
+  notes: "",
+}
 
 interface SettingsPanelProps {
   mockMode: boolean
@@ -38,8 +57,14 @@ interface SettingsPanelProps {
   availableModels: ModelListItem[]
   isLoadingModels: boolean
   modelConfigError?: string | null
+  ragStatus: RagStatus | null
+  isLoadingRagStatus: boolean
+  isUploadingRagFile: boolean
+  ragError?: string | null
   onUserModelConfigChange: (config: UserModelConfig) => void
   onFetchUserModels: () => void
+  onUploadRagFile: (file: File, metadata?: RagUploadMetadata) => void
+  onRefreshRagStatus: () => void
   onCopySessionId: () => void
   onExportSession: () => void
   onExportConversationImage: () => void
@@ -58,8 +83,14 @@ export function SettingsPanel({
   availableModels,
   isLoadingModels,
   modelConfigError,
+  ragStatus,
+  isLoadingRagStatus,
+  isUploadingRagFile,
+  ragError,
   onUserModelConfigChange,
   onFetchUserModels,
+  onUploadRagFile,
+  onRefreshRagStatus,
   onCopySessionId,
   onExportSession,
   onExportConversationImage,
@@ -67,12 +98,76 @@ export function SettingsPanel({
   onResetCurrentSession,
   onClearHistory,
 }: SettingsPanelProps) {
+  const ragFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [ragUploadFile, setRagUploadFile] = useState<File | null>(null)
+  const [ragUploadForm, setRagUploadForm] = useState(EMPTY_RAG_UPLOAD_FORM)
   const updateModelConfig = (patch: Partial<UserModelConfig>) => {
     onUserModelConfigChange({
       ...userModelConfig,
       ...patch,
     })
   }
+  const updateRagUploadForm = (patch: Partial<typeof EMPTY_RAG_UPLOAD_FORM>) => {
+    setRagUploadForm((current) => ({
+      ...current,
+      ...patch,
+    }))
+  }
+  const handleRagFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null
+    event.target.value = ""
+    setRagUploadFile(file)
+    if (file && !ragUploadForm.title.trim()) {
+      updateRagUploadForm({ title: file.name })
+    }
+  }
+  const handleRagUploadSubmit = () => {
+    if (!ragUploadFile) {
+      return
+    }
+    onUploadRagFile(ragUploadFile, {
+      title: ragUploadForm.title,
+      url: ragUploadForm.url,
+      visa_family: ragUploadForm.visaFamily,
+      country: ragUploadForm.country,
+      post: ragUploadForm.post,
+      section_path: ragUploadForm.notes,
+    })
+    setRagUploadFile(null)
+    setRagUploadForm(EMPTY_RAG_UPLOAD_FORM)
+  }
+
+  const ragStatusLabel = (() => {
+    if (!ragStatus) {
+      return "未知"
+    }
+    if (ragStatus.status === "available") {
+      return "可用"
+    }
+    if (ragStatus.status === "index_empty") {
+      return "索引为空"
+    }
+    if (ragStatus.skip_reason === "disabled") {
+      return "已关闭"
+    }
+    if (ragStatus.skip_reason === "missing_siliconflow_api_key") {
+      return "未配置 API Key"
+    }
+    if (ragStatus.skip_reason === "mock_mode") {
+      return "Mock 模式"
+    }
+    return "不可用"
+  })()
+
+  const indexedChunkCount = ragStatus?.collections.reduce(
+    (total, collection) => total + collection.count,
+    0,
+  ) ?? 0
+  const canUploadRagFile = Boolean(
+    ragStatus &&
+      ragStatus.enabled &&
+      (ragStatus.ready || ragStatus.skip_reason === "index_empty"),
+  )
 
   return (
     <ScrollArea className="h-full">
@@ -108,6 +203,181 @@ export function SettingsPanel({
                 {sessionId ?? "当前没有进行中的会话"}
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="py-4">
+          <CardHeader className="px-5 pb-3">
+            <CardTitle className="text-base">知识库 / RAG 状态</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 px-5">
+            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-foreground">服务端知识库</div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    RAG 使用后端 SiliconFlow 与 Chroma 配置，不使用前端自带模型 API Key。
+                  </div>
+                </div>
+                <Badge variant={ragStatus?.ready ? "default" : "outline"}>
+                  {isLoadingRagStatus ? "检查中" : ragStatusLabel}
+                </Badge>
+              </div>
+
+              <div className="mt-3 grid gap-2 text-xs leading-5 text-muted-foreground">
+                <div>Embedding：{ragStatus?.embedding_model ?? "未获取"}</div>
+                <div>Rerank：{ragStatus?.rerank_model ?? "未获取"}</div>
+                <div>索引版本：{ragStatus?.index_version ?? "未获取"}</div>
+                <div>已索引分块：{indexedChunkCount}</div>
+              </div>
+            </div>
+
+            {ragStatus?.collections.length ? (
+              <div className="space-y-2 rounded-xl border border-border bg-muted/20 px-4 py-3">
+                {ragStatus.collections.map((collection) => (
+                  <div key={collection.name} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="min-w-0 truncate text-muted-foreground">{collection.source_type}</span>
+                    <span className="font-medium text-foreground">{collection.count}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <input
+              ref={ragFileInputRef}
+              type="file"
+              className="hidden"
+              accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg"
+              onChange={handleRagFileChange}
+            />
+
+            <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-foreground">上传资料</div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    可直接上传案例文件；下方标签全是选填，只用于检索过滤和排序。
+                  </div>
+                </div>
+                <Badge variant="outline">third_party_reference</Badge>
+              </div>
+
+              <div className="grid gap-3">
+                <div className="grid gap-2">
+                  <Label htmlFor="rag-upload-title">标题</Label>
+                  <Input
+                    id="rag-upload-title"
+                    value={ragUploadForm.title}
+                    onChange={(event) => updateRagUploadForm({ title: event.target.value })}
+                    placeholder="默认使用文件名"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="rag-upload-url">来源链接</Label>
+                  <Input
+                    id="rag-upload-url"
+                    value={ragUploadForm.url}
+                    onChange={(event) => updateRagUploadForm({ url: event.target.value })}
+                    placeholder="https://..."
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="rag-upload-visa-family">签证类型</Label>
+                    <Select
+                      value={ragUploadForm.visaFamily || "unspecified"}
+                      onValueChange={(value) => updateRagUploadForm({
+                        visaFamily: value === "unspecified" ? "" : value,
+                      })}
+                    >
+                      <SelectTrigger id="rag-upload-visa-family" className="w-full">
+                        <SelectValue placeholder="不指定" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unspecified">不指定</SelectItem>
+                        {VISA_FAMILY_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="rag-upload-country">国家</Label>
+                    <Input
+                      id="rag-upload-country"
+                      value={ragUploadForm.country}
+                      onChange={(event) => updateRagUploadForm({ country: event.target.value })}
+                      placeholder="例：china"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="rag-upload-post">领馆/地区</Label>
+                    <Input
+                      id="rag-upload-post"
+                      value={ragUploadForm.post}
+                      onChange={(event) => updateRagUploadForm({ post: event.target.value })}
+                      placeholder="例：uk"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="rag-upload-notes">备注</Label>
+                  <Textarea
+                    id="rag-upload-notes"
+                    value={ragUploadForm.notes}
+                    onChange={(event) => updateRagUploadForm({ notes: event.target.value })}
+                    placeholder="可记录来源分类、案例批次或其它检索备注"
+                    rows={3}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="justify-start"
+                  onClick={() => ragFileInputRef.current?.click()}
+                  disabled={!canUploadRagFile || isUploadingRagFile}
+                >
+                  <Upload className="h-4 w-4" />
+                  {ragUploadFile ? "更换文件" : "选择文件"}
+                </Button>
+                <Button
+                  type="button"
+                  className="justify-start"
+                  onClick={handleRagUploadSubmit}
+                  disabled={!canUploadRagFile || !ragUploadFile || isUploadingRagFile}
+                >
+                  <Upload className="h-4 w-4" />
+                  {isUploadingRagFile ? "写入中" : "写入知识库"}
+                </Button>
+              </div>
+              <div className="min-h-5 truncate text-xs text-muted-foreground">
+                {ragUploadFile ? ragUploadFile.name : "尚未选择文件"}
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="justify-start"
+                onClick={onRefreshRagStatus}
+                disabled={isLoadingRagStatus}
+              >
+                <RefreshCw className={isLoadingRagStatus ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                刷新状态
+              </Button>
+            </div>
+
+            {ragError ? (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {ragError}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

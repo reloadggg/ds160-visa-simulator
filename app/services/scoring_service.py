@@ -9,6 +9,7 @@ from app.domain.contracts import ApplicantProfile, ScoreState
 from app.services.evidence_service import EvidenceService
 from app.services.retrieval_service import RetrievalService
 from app.services.score_state_builder import ScoreStateBuilder
+from app.services.visa_policy_retrieval_service import VisaPolicyRetrievalService
 
 
 class ScoringService:
@@ -74,6 +75,7 @@ class ScoringService:
             session_id=profile.profile_id.removeprefix("profile-"),
             retrieval=RetrievalService(self.db),
             evidence=EvidenceService(self.db),
+            policy_retrieval=VisaPolicyRetrievalService(),
         )
 
     def _normalize_findings(

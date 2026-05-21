@@ -1,6 +1,7 @@
 from app.agents.schemas import EvidenceHit
 from app.domain.contracts import RiskFlag, ScoreState
 from app.domain.evidence import DocumentSourceType
+from app.domain.rag import PolicyKnowledgeHit, PolicyKnowledgeSearchResult
 from app.services.capability_orchestrator import CapabilityOrchestrator
 
 
@@ -31,6 +32,25 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
                 score=8.5,
             )
         ],
+    )
+    monkeypatch.setattr(
+        "app.services.visa_policy_retrieval_service.VisaPolicyRetrievalService.search_policy",
+        lambda self, query, **kwargs: PolicyKnowledgeSearchResult.from_hits(
+            query=query,
+            hits=[
+                PolicyKnowledgeHit(
+                    chunk_id="policy-chunk-1",
+                    source_id="study_i20",
+                    source_type="federal_official",
+                    title="Students and the Form I-20",
+                    url="https://studyinthestates.dhs.gov/i20",
+                    section_path="I-20",
+                    excerpt="Students need a Form I-20.",
+                    final_score=0.88,
+                    fetched_at="2026-05-21",
+                )
+            ],
+        ),
     )
 
     result = CapabilityOrchestrator(db=object()).orchestrate(
@@ -76,6 +96,7 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
         "document_assessment",
         "document_review",
         "evidence_retrieval",
+        "policy_knowledge_retrieval",
         "consistency_review",
     ]
     assert all(item["status"] == "completed" for item in result.capability_plan)
@@ -83,12 +104,15 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
         "document_assessment",
         "document_review",
         "evidence_retrieval",
+        "policy_knowledge_retrieval",
         "consistency_review",
     }
     assert result.tool_outputs["document_assessment"]["uploaded_document_count"] == 1
     assert result.tool_outputs["document_review"]["review_status"] == "reviewed"
     assert result.tool_outputs["document_review"]["primary_document"] == "funding_proof"
     assert result.tool_outputs["evidence_retrieval"]["hit_count"] == 1
+    assert result.tool_outputs["policy_knowledge_retrieval"]["hit_count"] == 1
+    assert result.tool_outputs["policy_knowledge_retrieval"]["citations"][0]["source_id"] == "study_i20"
     assert result.tool_outputs["consistency_review"]["risk_codes"] == [
         "supporting_evidence_missing"
     ]
@@ -123,12 +147,60 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
         },
         {
             "kind": "capability",
+            "capability_name": "policy_knowledge_retrieval",
+            "status": "completed",
+            "query": "funding proof",
+            "hit_count": 1,
+            "skip_reason": None,
+            "policy_citations": [
+                {
+                    "source_id": "study_i20",
+                    "title": "Students and the Form I-20",
+                    "url": "https://studyinthestates.dhs.gov/i20",
+                    "section_path": "I-20",
+                    "source_type": "federal_official",
+                    "fetched_at": "2026-05-21",
+                    "excerpt": "Students need a Form I-20.",
+                    "final_score": 0.88,
+                }
+            ],
+        },
+        {
+            "kind": "capability",
             "capability_name": "consistency_review",
             "status": "completed",
             "risk_codes": ["supporting_evidence_missing"],
             "missing_evidence": ["funding_proof"],
         },
     ]
+
+
+def test_capability_orchestrator_records_policy_retrieval_skip(monkeypatch) -> None:
+    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
+    monkeypatch.setattr(
+        "app.services.visa_policy_retrieval_service.VisaPolicyRetrievalService.search_policy",
+        lambda self, query, **kwargs: PolicyKnowledgeSearchResult.skipped_result(
+            query,
+            "disabled",
+        ),
+    )
+
+    result = CapabilityOrchestrator(db=object()).orchestrate(
+        session_id="sess-1",
+        governor_decision="continue_interview",
+        latest_user_message="What is DS-160?",
+        dynamic_turn_context={},
+        score=score,
+    )
+
+    assert result.tool_outputs["policy_knowledge_retrieval"]["skipped"] is True
+    policy_plan = [
+        item
+        for item in result.capability_plan
+        if item["capability_name"] == "policy_knowledge_retrieval"
+    ][0]
+    assert policy_plan["status"] == "skipped"
+    assert policy_plan["summary"] == "skipped=disabled"
 
 
 def test_document_review_context_extracts_fields_for_candidate_document_types() -> None:

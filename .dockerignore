@@ -16,6 +16,10 @@ AGENTS.md
 .trellis/tasks/archive
 .env
 *.sqlite3
+data
+*_raw_materials_pack.zip
+rag_live_eval_*.json
+rag_live_eval_*.md
 *.tsbuildinfo
 .files
 web/node_modules

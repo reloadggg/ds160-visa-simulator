@@ -386,3 +386,4 @@ class AgentRuntimeDeps(BaseModel):
     session_id: str
     retrieval: object
     evidence: object
+    policy_retrieval: object | None = None

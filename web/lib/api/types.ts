@@ -38,6 +38,48 @@ export interface ModelListResponse {
   models: ModelListItem[]
 }
 
+export interface RagCollectionStatus {
+  name: string
+  source_type: string
+  count: number
+}
+
+export interface RagStatus {
+  enabled: boolean
+  ready: boolean
+  status: string
+  skip_reason?: string | null
+  vector_store: string
+  index_version: string
+  collection_prefix: string
+  chroma_mode: string
+  embedding_model: string
+  rerank_model: string
+  upload_max_size_mb: number
+  allow_third_party_reference: boolean
+  collections: RagCollectionStatus[]
+}
+
+export interface RagUploadResponse {
+  status: string
+  source_id: string
+  source_type: string
+  title: string
+  collection_name: string
+  chunk_count: number
+  skipped: boolean
+  skip_reason?: string | null
+}
+
+export interface RagUploadMetadata {
+  title?: string
+  url?: string
+  visa_family?: string
+  country?: string
+  post?: string
+  section_path?: string
+}
+
 export type MessageStreamEvent =
   | { event: "accepted"; data: Record<string, unknown> }
   | { event: "analyzing"; data: Record<string, unknown> }

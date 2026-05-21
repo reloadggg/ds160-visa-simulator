@@ -13,6 +13,7 @@ from app.domain.contracts import (
 )
 from app.services.evidence_service import EvidenceService
 from app.services.retrieval_service import RetrievalService
+from app.services.visa_policy_retrieval_service import VisaPolicyRetrievalService
 
 FIELD_BINDINGS: dict[str, tuple[str, str]] = {
     "/funding/primary_source": ("funding", "primary_source"),
@@ -82,6 +83,7 @@ class ExtractorService:
             session_id=profile.profile_id.removeprefix("profile-"),
             retrieval=RetrievalService(self.db),
             evidence=EvidenceService(self.db),
+            policy_retrieval=VisaPolicyRetrievalService(),
         )
 
     def _apply_output(

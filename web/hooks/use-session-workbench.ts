@@ -12,11 +12,13 @@ import {
   getFileContentUrl,
   getInternalReport,
   getRequiredPackage,
+  getRagStatus,
   getUserReport,
   listUserModels,
   sendMessage,
   sendMessageStream,
   uploadFile,
+  uploadRagFile,
 } from "@/lib/api/client"
 import { getApiBaseUrl } from "@/lib/api/config"
 import {
@@ -38,6 +40,8 @@ import type {
   InternalReport,
   InterviewReviewResponse,
   ModelListItem,
+  RagUploadMetadata,
+  RagStatus,
   RequiredPackage,
   Session,
   SessionHistoryEntry,
@@ -1106,6 +1110,10 @@ export function useSessionWorkbench() {
   const [availableModels, setAvailableModels] = useState<ModelListItem[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [modelConfigError, setModelConfigError] = useState<string | null>(null)
+  const [ragStatus, setRagStatus] = useState<RagStatus | null>(null)
+  const [isLoadingRagStatus, setIsLoadingRagStatus] = useState(false)
+  const [isUploadingRagFile, setIsUploadingRagFile] = useState(false)
+  const [ragError, setRagError] = useState<string | null>(null)
 
   const [isPaused, setIsPaused] = useState(false)
   const [sessionTime, setSessionTime] = useState(0)
@@ -1199,6 +1207,47 @@ export function useSessionWorkbench() {
     }
     return fallback
   }, [])
+
+  const refreshRagStatus = useCallback(async () => {
+    if (mockMode) {
+      setRagStatus({
+        enabled: false,
+        ready: false,
+        status: "unavailable",
+        skip_reason: "mock_mode",
+        vector_store: "chroma",
+        index_version: "v1",
+        collection_prefix: "us_visa",
+        chroma_mode: "persistent",
+        embedding_model: "BAAI/bge-m3",
+        rerank_model: "Qwen/Qwen3-Reranker-4B",
+        upload_max_size_mb: 32,
+        allow_third_party_reference: false,
+        collections: [],
+      })
+      return
+    }
+
+    setIsLoadingRagStatus(true)
+    setRagError(null)
+    try {
+      setRagStatus(await getRagStatus())
+    } catch (error) {
+      setRagError(getErrorMessage(error, "获取 RAG 状态失败。"))
+    } finally {
+      setIsLoadingRagStatus(false)
+    }
+  }, [getErrorMessage, mockMode])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshRagStatus()
+    }, 0)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [refreshRagStatus])
 
   const fetchUserReport = useCallback(
     async (targetSessionId: string): Promise<UserReport | null> => {
@@ -1911,6 +1960,34 @@ export function useSessionWorkbench() {
     }
   }, [getErrorMessage, userModelConfig.apiKey, userModelConfig.baseUrl])
 
+  const handleUploadRagFile = useCallback(
+    async (file: File, metadata: RagUploadMetadata = {}) => {
+      if (mockMode) {
+        setSettingsFeedback("Mock 模式不会写入 RAG 知识库。")
+        return
+      }
+
+      setIsUploadingRagFile(true)
+      setRagError(null)
+      try {
+        const response = await uploadRagFile(file, metadata)
+        if (response.skipped) {
+          setRagError(`RAG 上传已跳过：${response.skip_reason ?? "未知原因"}`)
+        } else {
+          setSettingsFeedback(
+            `已写入 RAG 知识库：${response.chunk_count} 个分块。`,
+          )
+        }
+        await refreshRagStatus()
+      } catch (error) {
+        setRagError(getErrorMessage(error, "RAG 文件上传失败。"))
+      } finally {
+        setIsUploadingRagFile(false)
+      }
+    },
+    [getErrorMessage, mockMode, refreshRagStatus],
+  )
+
   const handleExportSession = useCallback(async () => {
     if (!sessionId) {
       setSettingsFeedback("当前没有可导出的会话。")
@@ -2108,6 +2185,10 @@ export function useSessionWorkbench() {
     availableModels,
     isLoadingModels,
     modelConfigError,
+    ragStatus,
+    isLoadingRagStatus,
+    isUploadingRagFile,
+    ragError,
     currentFocusDocumentLabel,
     handleComposerCommandHandled,
     handleVisaSelect,
@@ -2120,6 +2201,8 @@ export function useSessionWorkbench() {
     handleCopySessionId,
     handleUserModelConfigChange,
     handleFetchUserModels,
+    handleUploadRagFile,
+    refreshRagStatus,
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,

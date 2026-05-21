@@ -12,6 +12,7 @@ from app.domain.runtime import RuntimeTraceEntry
 from app.repositories.document_repo import DocumentRepository
 from app.services.evidence_service import EvidenceService
 from app.services.retrieval_service import RetrievalService
+from app.services.visa_policy_retrieval_service import VisaPolicyRetrievalService
 
 
 @dataclass
@@ -125,6 +126,25 @@ class CapabilityOrchestrator:
         )
         if evidence_retrieval is not None:
             tool_outputs["evidence_retrieval"] = evidence_retrieval
+
+        policy_knowledge = self._policy_knowledge_retrieval_output(
+            latest_user_message=latest_user_message,
+            dynamic_turn_context=dynamic_turn_context,
+            evidence_digest=evidence_digest,
+            focus_thread=focus_thread,
+        )
+        capability_plan.append(
+            self._plan_entry(
+                capability_name="policy_knowledge_retrieval",
+                governor_decision=governor_decision,
+                completed=policy_knowledge is not None
+                and not bool(policy_knowledge.get("skipped")),
+                reason=self._policy_knowledge_reason(policy_knowledge),
+                summary=self._policy_knowledge_summary(policy_knowledge),
+            )
+        )
+        if policy_knowledge is not None:
+            tool_outputs["policy_knowledge_retrieval"] = policy_knowledge
 
         consistency_review = self._consistency_review_output(
             score=score,
@@ -348,6 +368,80 @@ class CapabilityOrchestrator:
             "hits": hits,
         }
 
+    def _policy_knowledge_retrieval_output(
+        self,
+        *,
+        latest_user_message: str,
+        dynamic_turn_context: dict[str, Any],
+        evidence_digest: dict[str, Any],
+        focus_thread: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        query = self._policy_query(
+            latest_user_message=latest_user_message,
+            evidence_digest=evidence_digest,
+            focus_thread=focus_thread,
+        )
+        if query is None:
+            return None
+
+        case_brief = self._payload(dynamic_turn_context.get("case_brief"))
+        visa_family = self._string_or_none(
+            dynamic_turn_context.get("declared_family")
+        ) or self._string_or_none(case_brief.get("declared_family"))
+        try:
+            result = VisaPolicyRetrievalService().search_policy(
+                query,
+                visa_family=visa_family,
+                limit=5,
+            )
+        except Exception:
+            return {
+                "query": query,
+                "hit_count": 0,
+                "hits": [],
+                "citations": [],
+                "citation_policy": "official_first",
+                "skipped": True,
+                "skip_reason": "retrieval_error",
+            }
+        if hasattr(result, "tool_payload"):
+            return result.tool_payload()
+        if isinstance(result, dict):
+            return dict(result)
+        return None
+
+    def _policy_query(
+        self,
+        *,
+        latest_user_message: str,
+        evidence_digest: dict[str, Any],
+        focus_thread: dict[str, Any],
+    ) -> str | None:
+        candidates = [
+            self._string_or_none(evidence_digest.get("current_focus_document_type")),
+            self._string_or_none(focus_thread.get("current_key_proof")),
+            self._string_or_none(focus_thread.get("current_key_question")),
+            self._string_or_none(latest_user_message),
+        ]
+        for candidate in candidates:
+            if candidate:
+                return candidate.replace("_", " ")
+        return None
+
+    def _policy_knowledge_reason(self, policy_knowledge: dict[str, Any] | None) -> str:
+        if policy_knowledge is None:
+            return "当前回合没有足够稳定的政策检索锚点"
+        if policy_knowledge.get("skipped"):
+            return f"政策知识检索跳过：{policy_knowledge.get('skip_reason')}"
+        return "根据当前签证类型、主线和用户输入检索美签政策知识"
+
+    def _policy_knowledge_summary(self, policy_knowledge: dict[str, Any] | None) -> str:
+        if policy_knowledge is None:
+            return "no_query"
+        if policy_knowledge.get("skipped"):
+            return f"skipped={policy_knowledge.get('skip_reason')}"
+        return f"hits={policy_knowledge.get('hit_count', 0)}"
+
     def _consistency_review_output(
         self,
         *,
@@ -430,6 +524,25 @@ class CapabilityOrchestrator:
                     "status": "completed",
                     "query": evidence_retrieval.get("query"),
                     "hit_count": evidence_retrieval.get("hit_count", 0),
+                }
+            )
+        policy_knowledge = self._payload(tool_outputs.get("policy_knowledge_retrieval"))
+        if policy_knowledge:
+            artifacts.append(
+                {
+                    "kind": "capability",
+                    "capability_name": "policy_knowledge_retrieval",
+                    "status": (
+                        "skipped"
+                        if policy_knowledge.get("skipped")
+                        else "completed"
+                    ),
+                    "query": policy_knowledge.get("query"),
+                    "hit_count": policy_knowledge.get("hit_count", 0),
+                    "skip_reason": policy_knowledge.get("skip_reason"),
+                    "policy_citations": list(
+                        policy_knowledge.get("citations", []) or []
+                    ),
                 }
             )
         consistency_review = self._payload(tool_outputs.get("consistency_review"))
@@ -525,6 +638,7 @@ class CapabilityOrchestrator:
             session_id=session_id,
             retrieval=RetrievalService(self.db),
             evidence=EvidenceService(self.db),
+            policy_retrieval=VisaPolicyRetrievalService(),
         )
 
     def _build_document_review_context(

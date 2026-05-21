@@ -18,6 +18,7 @@ dependencies = [
   "httpx>=0.28.1,<0.29.0",
   "pydantic-ai-slim[openai]>=1.77.0,<1.78.0",
   "chainlit>=2.11.0",
+  "chromadb>=1.3.0,<1.4.0",
 ]
 
 [dependency-groups]
