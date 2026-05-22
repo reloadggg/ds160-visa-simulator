@@ -150,7 +150,7 @@ class GateRuntimeService:
 
         return {
             "assistant_message": support_message
-            or "当前处于材料门控阶段。请先补齐必需材料，之后才能进入正式 interview。",
+            or "当前处于材料门控阶段。请先补齐当前门控材料，之后才能进入正式 interview。",
             "governor_decision": "need_more_evidence",
             "score_summary": {
                 "category_fit": 0,

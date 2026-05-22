@@ -1180,3 +1180,312 @@ def test_run_turn_routes_repeated_claim_document_conflict_to_review(
     assert record.phase_state == "interview"
     assert record.interviewer_state_json["status"] == "high_risk_review"
     assert record.current_focus_json["kind"] == "risk_review"
+
+
+def test_run_turn_downgrades_repeated_non_redline_conflict_refusal_to_review(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-conflict-refusal")
+    score = _build_score(risk_codes=["record_conflict"])
+    record = SessionRecord(
+        session_id="sess-conflict-refusal",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "你最终入读哪一所学校？",
+        },
+        gate_status_json={
+            "status": "ready_for_interview",
+            "required_documents": [],
+        },
+    )
+    claim_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "申请人口头学校与已提交学校材料不一致。",
+        "field_paths": ["/education/school_name"],
+        "document_ids": ["doc-i20"],
+        "evidence_refs": ["evi-i20"],
+    }
+    prior_turns = [
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={"document_review": {"claim_conflicts": [claim_conflict]}},
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="我读 Claimed Example University"),
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={
+                "turn_record": {"document_review": {"claim_conflicts": [claim_conflict]}}
+            },
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="我还是读 Claimed Example University"),
+    ]
+
+    monkeypatch.setattr(
+        service.session_turn_repo,
+        "list_session_turns",
+        lambda session_id: prior_turns,
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[],
+            findings=[],
+        ),
+    )
+
+    def fake_build_question_action(
+        session_id,
+        current_profile,
+        current_score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ) -> InterviewNextAction:
+        service.interview_runtime._last_capability_tool_outputs = {
+            "document_review": {"claim_conflicts": [claim_conflict]},
+        }
+        return InterviewNextAction(
+            assistant_message="This simulated case results in refusal.",
+            requested_documents=[],
+            decision="simulated_refusal",
+        )
+
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        fake_build_question_action,
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+
+    response = service.run_turn(record, "我读 Claimed Example University")
+
+    assert response["governor_decision"] == "high_risk_review"
+    assert response["turn_decision"]["decision"] == "high_risk_review"
+    assert record.phase_state == "interview"
+    assert record.interviewer_state_json["status"] == "high_risk_review"
+    assert record.current_focus_json["kind"] == "risk_review"
+
+
+def test_run_turn_keeps_redline_refusal_even_with_repeated_claim_conflict(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-redline-refusal")
+    score = _build_score(risk_codes=["fraud_admission"])
+    record = SessionRecord(
+        session_id="sess-redline-refusal",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={},
+        gate_status_json={
+            "status": "ready_for_interview",
+            "required_documents": [],
+        },
+    )
+    claim_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "申请人口头说明与已提交材料不一致。",
+        "field_paths": ["/education/school_name"],
+        "document_ids": ["doc-i20"],
+        "evidence_refs": ["evi-i20"],
+    }
+    prior_turns = [
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={"document_review": {"claim_conflicts": [claim_conflict]}},
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="我承认提交了虚假材料"),
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={
+                "turn_record": {"document_review": {"claim_conflicts": [claim_conflict]}}
+            },
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="我承认提交了虚假材料"),
+    ]
+
+    monkeypatch.setattr(
+        service.session_turn_repo,
+        "list_session_turns",
+        lambda session_id: prior_turns,
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[],
+            findings=[],
+        ),
+    )
+
+    def fake_build_question_action(
+        session_id,
+        current_profile,
+        current_score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ) -> InterviewNextAction:
+        service.interview_runtime._last_capability_tool_outputs = {
+            "document_review": {"claim_conflicts": [claim_conflict]},
+        }
+        return InterviewNextAction(
+            assistant_message="This simulated case results in refusal.",
+            requested_documents=[],
+            decision="simulated_refusal",
+        )
+
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        fake_build_question_action,
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+
+    response = service.run_turn(record, "我承认提交了虚假材料")
+
+    assert response["governor_decision"] == "simulated_refusal"
+    assert response["turn_decision"]["decision"] == "simulated_refusal"
+    assert record.phase_state == "session_closed"
+
+
+def test_run_turn_does_not_converge_different_claim_conflicts(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-different-conflicts")
+    score = _build_score(risk_codes=["record_conflict"])
+    record = SessionRecord(
+        session_id="sess-different-conflicts",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={},
+        gate_status_json={
+            "status": "ready_for_interview",
+            "required_documents": [],
+        },
+    )
+    prior_school_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "学校口头说明与材料不一致。",
+        "field_paths": ["/education/school_name"],
+        "document_ids": ["doc-i20"],
+        "evidence_refs": ["evi-i20"],
+    }
+    prior_funding_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "资金来源口头说明与材料不一致。",
+        "field_paths": ["/funding/primary_source"],
+        "document_ids": ["doc-funding"],
+        "evidence_refs": ["evi-funding"],
+    }
+    current_sponsor_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "资助人关系口头说明与材料不一致。",
+        "field_paths": ["/funding/sponsor_relationship"],
+        "document_ids": ["doc-relationship"],
+        "evidence_refs": ["evi-relationship"],
+    }
+    prior_turns = [
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={"document_review": {"claim_conflicts": [prior_school_conflict]}},
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="学校说明"),
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={
+                "turn_record": {
+                    "document_review": {"claim_conflicts": [prior_funding_conflict]}
+                }
+            },
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="资金说明"),
+    ]
+
+    monkeypatch.setattr(
+        service.session_turn_repo,
+        "list_session_turns",
+        lambda session_id: prior_turns,
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[],
+            findings=[],
+        ),
+    )
+
+    def fake_build_question_action(
+        session_id,
+        current_profile,
+        current_score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ) -> InterviewNextAction:
+        service.interview_runtime._last_capability_tool_outputs = {
+            "document_review": {"claim_conflicts": [current_sponsor_conflict]},
+        }
+        return InterviewNextAction(
+            assistant_message="请继续澄清资助人关系。",
+            requested_documents=[],
+            decision="continue_interview",
+        )
+
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        fake_build_question_action,
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+
+    response = service.run_turn(record, "资助人关系说明")
+
+    assert response["governor_decision"] == "continue_interview"
+    assert response["turn_decision"]["decision"] == "continue_interview"
+    assert record.current_focus_json["kind"] == "interview_question"

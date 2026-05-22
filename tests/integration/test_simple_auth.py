@@ -84,3 +84,17 @@ def test_auth_is_disabled_without_password(client: TestClient) -> None:
     response = client.post("/v1/sessions", json={"declared_family": "f1"})
 
     assert response.status_code == 201
+
+
+def test_debug_fill_is_disabled_by_default(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "allow_debug_fill", False)
+    session_response = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_response.json()["session_id"]
+
+    response = client.post(f"/v1/sessions/{session_id}/debug/fill-current-gap")
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "debug fill is disabled"}

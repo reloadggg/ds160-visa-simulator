@@ -10,7 +10,6 @@ from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
-from app.agents.schemas import InterviewNextAction
 
 
 @pytest.fixture()
@@ -268,11 +267,9 @@ def test_debug_fill_current_gap_creates_relationship_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message="What is the purpose of your travel?",
-            requested_documents=[],
-            decision="continue_interview",
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 refresh")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -294,19 +291,32 @@ def test_debug_fill_current_gap_creates_relationship_proof(
     payload = response.json()
     assert payload["filled_document_type"] == "relationship_proof_between_applicant_and_sponsors"
     assert payload["document_id"].startswith("doc-")
-    assert payload["assistant_message"] == "What is the purpose of your travel?"
-    assert payload["governor_decision"] == "continue_interview"
-    assert payload["turn_decision"]["decision"] == "continue_interview"
-    assert payload["runtime_view_state"]["decision"] == "continue_interview"
+    assert payload["assistant_message"] == (
+        "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：passport_bio, i20, "
+        "admission_letter, funding_proof。"
+    )
+    assert payload["governor_decision"] == "need_more_evidence"
+    assert payload["requested_documents"] == ["ds160"]
+    assert payload["remaining_required_documents"] == [
+        "ds160",
+        "passport_bio",
+        "i20",
+        "admission_letter",
+        "funding_proof",
+    ]
+    assert payload["turn_decision"]["decision"] == "need_more_evidence"
+    assert payload["runtime_view_state"]["decision"] == "need_more_evidence"
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
         assert record is not None
-        assert record.current_governor_decision == "continue_interview"
+        assert record.phase_state == "gate_review"
+        assert record.gate_status_json["status"] == "pending_documents"
+        assert record.current_governor_decision == "need_more_evidence"
         assert record.current_focus_json == {
-            "owner": "interviewer_runtime_service",
-            "kind": "interview_question",
-            "question": "What is the purpose of your travel?",
+            "owner": "gate_runtime_service",
+            "kind": "required_document",
+            "document_type": "ds160",
         }
         assert record.profile_json["funding"]["sponsor_relationship"] == "parents"
         assert (
@@ -328,11 +338,9 @@ def test_debug_fill_current_gap_supports_normal_school_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message="Please explain why you chose this university.",
-            requested_documents=[],
-            decision="continue_interview",
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 refresh")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -373,7 +381,11 @@ def test_debug_fill_current_gap_supports_normal_school_data(
     assert payload["fill_scenario"] == "normal"
     assert payload["filled_document_type"] == "i20"
     assert "正常材料" in payload["fill_scenario_label"]
-    assert payload["assistant_message"] == "Please explain why you chose this university."
+    assert payload["assistant_message"] == (
+        "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：passport_bio, "
+        "admission_letter, funding_proof。"
+    )
+    assert payload["requested_documents"] == ["ds160"]
 
     with db_session_factory() as db:
         document = db.query(DocumentRecord).filter_by(session_id=session_id).one()
@@ -392,11 +404,9 @@ def test_debug_fill_current_gap_supports_generic_school_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message="Which school will you attend?",
-            requested_documents=[],
-            decision="continue_interview",
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 refresh")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -435,7 +445,11 @@ def test_debug_fill_current_gap_supports_generic_school_mismatch(
     payload = response.json()
     assert payload["fill_scenario"] == "school_mismatch"
     assert payload["filled_document_type"] == "i20"
-    assert payload["assistant_message"] == "Which school will you attend?"
+    assert payload["assistant_message"] == (
+        "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：passport_bio, "
+        "admission_letter, funding_proof。"
+    )
+    assert payload["requested_documents"] == ["ds160"]
 
     with db_session_factory() as db:
         document = db.query(DocumentRecord).filter_by(session_id=session_id).one()
@@ -455,11 +469,9 @@ def test_debug_fill_current_gap_supports_sponsor_equity_gap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message="Please explain the source of your parents' funds.",
-            requested_documents=[],
-            decision="continue_interview",
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 refresh")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -475,6 +487,11 @@ def test_debug_fill_current_gap_supports_sponsor_equity_gap(
     assert payload["fill_scenario"] == "sponsor_equity_gap"
     assert payload["filled_document_type"] == "funding_proof"
     assert "股权" in payload["fill_scenario_label"]
+    assert payload["assistant_message"] == (
+        "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：passport_bio, i20, "
+        "admission_letter。"
+    )
+    assert payload["requested_documents"] == ["ds160"]
 
     with db_session_factory() as db:
         evidence = db.query(EvidenceItemRecord).filter_by(
@@ -491,11 +508,9 @@ def test_debug_fill_current_gap_normalizes_chinese_remaining_document_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message="Please continue.",
-            requested_documents=[],
-            decision="continue_interview",
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 refresh")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -542,11 +557,9 @@ def test_debug_fill_current_gap_persists_assistant_refresh_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message="Now explain your study plan.",
-            requested_documents=[],
-            decision="continue_interview",
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 refresh")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -558,7 +571,10 @@ def test_debug_fill_current_gap_persists_assistant_refresh_turn(
     )
 
     assert response.status_code == 200
-    assert response.json()["assistant_message"] == "Now explain your study plan."
+    assert response.json()["assistant_message"] == (
+        "当前最缺的关键证明是 passport_bio。 当前仍待补的材料还有：i20, "
+        "admission_letter, funding_proof。"
+    )
 
     with db_session_factory() as db:
         chunk_count = db.query(DocumentChunkRecord).filter_by(session_id=session_id).count()
@@ -568,6 +584,8 @@ def test_debug_fill_current_gap_persists_assistant_refresh_turn(
 
     assert chunk_count >= 1
     assert any(
-        turn.role == "assistant" and turn.content == "Now explain your study plan."
+        turn.role == "assistant"
+        and turn.source == "gate_runtime_service"
+        and turn.content.startswith("当前最缺的关键证明是 passport_bio。")
         for turn in persisted_messages
     )

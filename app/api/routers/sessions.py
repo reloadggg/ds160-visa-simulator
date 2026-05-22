@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.core import settings as settings_module
 from app.core.visa_families import validate_declared_family
 from app.db.session import get_db
 from app.core.dependencies import get_session_repo
@@ -70,6 +71,8 @@ def debug_fill_current_gap(
     payload: DebugFillCurrentGapRequest | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
+    if not settings_module.settings.allow_debug_fill:
+        raise HTTPException(status_code=403, detail="debug fill is disabled")
     try:
         scenario = payload.scenario if payload is not None else "normal"
         return DebugFillService(db).fill_current_gap(session_id, scenario=scenario)

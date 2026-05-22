@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     run_live_llm_tests: bool = False
     app_auth_password: str | None = None
     app_auth_token_ttl_seconds: int = 60 * 60 * 24
+    allow_debug_fill: bool = False
     allow_user_model_config: bool = False
     allow_user_model_streaming: bool = False
     rag_enabled: bool = False

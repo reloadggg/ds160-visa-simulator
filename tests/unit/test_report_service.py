@@ -90,9 +90,9 @@ def test_user_report_prefers_gate_copy_when_gate_still_needs_documents() -> None
     assert payload["current_key_proof"] == "funding_proof"
     assert (
         payload["summary"]
-        == "当前处于材料门控阶段。仍缺必需材料，暂不能进入正式 interview。"
+        == "当前处于材料门控阶段。仍缺当前门控材料，暂不能进入正式 interview。"
     )
-    assert payload["recommended_improvements"] == ["补齐必需材料后再继续。"]
+    assert payload["recommended_improvements"] == ["补齐当前门控材料后再继续。"]
 
 
 def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -> None:
@@ -184,7 +184,7 @@ def test_user_report_uses_gate_primary_focus_during_gate_review_even_if_runtime_
     assert payload["missing_evidence"] == ["ds160"]
     assert payload["advisory_context"]["missing_evidence"] == ["ds160"]
     assert payload["advisory_context"]["missing_evidence_summary"] == "ds160"
-    assert payload["recommended_improvements"] == ["补齐必需材料后再继续。"]
+    assert payload["recommended_improvements"] == ["补齐当前门控材料后再继续。"]
 
 
 def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:

@@ -52,6 +52,12 @@ class MessageService:
 
             if record.gate_status_json.get("status") != GateOverallStatus.READY_FOR_INTERVIEW:
                 response = self.gate_runtime.build_gate_response(record)
+                self._apply_gate_response_state(
+                    record,
+                    response,
+                    user_input=message_text,
+                    user_turn_id=None,
+                )
                 assistant_turn = self._append_assistant_turn(record, response)
                 self._sync_runtime_view_contract(record, response, assistant_turn)
                 self.session_repo.save(record)
@@ -83,6 +89,19 @@ class MessageService:
             return {}
 
         try:
+            if record.gate_status_json.get("status") != GateOverallStatus.READY_FOR_INTERVIEW:
+                response = self.gate_runtime.build_gate_response(record)
+                self._apply_gate_response_state(
+                    record,
+                    response,
+                    user_input=reason,
+                    user_turn_id=None,
+                )
+                assistant_turn = self._append_assistant_turn(record, response)
+                self._sync_runtime_view_contract(record, response, assistant_turn)
+                self.session_repo.save(record)
+                return response
+
             interview_response = self.interviewer_runtime.refresh_after_material_change(
                 record,
                 reason=reason,
@@ -107,6 +126,47 @@ class MessageService:
             return True
         return record.phase_state == "session_closed"
 
+    def _apply_gate_response_state(
+        self,
+        record,
+        response: dict,
+        *,
+        user_input: str,
+        user_turn_id: str | None,
+    ) -> None:
+        decision = response.get("governor_decision") or "need_more_evidence"
+        record.current_governor_decision = decision
+        requested_documents = list(response.get("requested_documents", []) or [])
+        remaining_required_documents = list(
+            response.get("remaining_required_documents", []) or requested_documents
+        )
+        if requested_documents:
+            record.current_focus_json = {
+                "owner": "gate_runtime_service",
+                "kind": "required_document",
+                "document_type": requested_documents[0],
+            }
+        else:
+            record.current_focus_json = {
+                "owner": "gate_runtime_service",
+                "kind": "gate_review",
+            }
+        response["turn_record"] = TurnRecord.create(
+            session_id=record.session_id,
+            user_turn_id=user_turn_id,
+            user_input=user_input,
+            decision=decision,
+            assistant_message=response.get("assistant_message", ""),
+            requested_documents=requested_documents,
+            remaining_required_documents=remaining_required_documents,
+            focus=record.current_focus_json,
+            trace_refs=[],
+            artifacts=[
+                {"kind": "requested_document", "document_type": document_type}
+                for document_type in requested_documents
+            ],
+        ).model_dump(mode="json", exclude_none=True)
+
     def _closed_session_detail(self, record) -> str:
         current_focus = record.current_focus_json or {}
         reason = current_focus.get("reason")
@@ -119,9 +179,10 @@ class MessageService:
         record,
         response: dict,
     ) -> SessionTurnRecord:
+        gate_status = record.gate_status_json.get("status")
         source = (
             "gate_runtime_service"
-            if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED
+            if gate_status != GateOverallStatus.READY_FOR_INTERVIEW
             else "interviewer_runtime_service"
         )
         assistant_turn = self.session_turn_repo.append_assistant_turn(

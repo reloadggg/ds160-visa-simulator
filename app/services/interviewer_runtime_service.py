@@ -421,12 +421,18 @@ class InterviewerRuntimeService:
         capability_tool_outputs: dict[str, Any],
         history_turns: list[Any],
     ) -> InterviewNextAction:
-        if action.decision == GovernorDecision.SIMULATED_REFUSAL.value:
-            return action
-        if self._repeated_claim_conflict_count(history_turns) < 2:
+        if (
+            action.decision == GovernorDecision.SIMULATED_REFUSAL.value
+            and self._has_refusal_redline(score)
+        ):
             return action
         conflict = self._primary_high_claim_conflict(capability_tool_outputs)
         if conflict is None:
+            return action
+        if self._repeated_claim_conflict_count(
+            history_turns,
+            target_conflict=conflict,
+        ) < 2:
             return action
         risk_code = self._first_score_risk_code(score) or "record_conflict"
         summary = self._runtime_text(conflict.get("summary")) or (
@@ -445,7 +451,19 @@ class InterviewerRuntimeService:
             reason="repeated_claim_document_conflict",
         )
 
-    def _repeated_claim_conflict_count(self, history_turns: list[Any]) -> int:
+    def _has_refusal_redline(self, score: ScoreState) -> bool:
+        return any(
+            self._runtime_text(risk_flag.code) in {"hard_conflict", "fraud_admission"}
+            for risk_flag in score.risk_flags
+        )
+
+    def _repeated_claim_conflict_count(
+        self,
+        history_turns: list[Any],
+        *,
+        target_conflict: dict[str, Any],
+    ) -> int:
+        target_fingerprint = self._claim_conflict_fingerprint(target_conflict)
         count = 0
         for turn in reversed(history_turns):
             if getattr(turn, "role", None) != "assistant":
@@ -456,9 +474,32 @@ class InterviewerRuntimeService:
                 turn_record = metadata.get("turn_record")
                 if isinstance(turn_record, dict):
                     document_review = turn_record.get("document_review")
-            if self._primary_high_claim_conflict({"document_review": document_review}):
+            conflict = self._primary_high_claim_conflict(
+                {"document_review": document_review}
+            )
+            if conflict is None:
+                continue
+            if self._claim_conflict_fingerprint(conflict) == target_fingerprint:
                 count += 1
         return count
+
+    def _claim_conflict_fingerprint(self, conflict: dict[str, Any]) -> tuple:
+        return (
+            conflict.get("conflict_type"),
+            tuple(self._normalized_string_list(conflict.get("field_paths"))),
+            tuple(self._normalized_string_list(conflict.get("document_ids"))),
+            tuple(self._normalized_string_list(conflict.get("evidence_refs"))),
+        )
+
+    def _normalized_string_list(self, values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        normalized = [
+            value.strip()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        ]
+        return sorted(set(normalized))
 
     def _primary_high_claim_conflict(
         self,
