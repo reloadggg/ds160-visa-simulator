@@ -1,6 +1,13 @@
 visa_family: f1
 scenarios:
   parent_sponsored:
+    official_pre_interview_required:
+      - ds160
+      - passport_bio
+      - i20
+    simulator_recommended_evidence:
+      - admission_letter
+      - funding_proof
     required_initial_package:
       - ds160
       - passport_bio

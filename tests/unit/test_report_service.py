@@ -62,7 +62,7 @@ def test_user_report_stays_in_gate_review_copy_until_ready() -> None:
     assert payload["recommended_improvements"] == ["等待解析完成后再继续。"]
 
 
-def test_user_report_prefers_interview_copy_when_public_status_already_continues() -> None:
+def test_user_report_prefers_gate_copy_when_gate_still_needs_documents() -> None:
     service = ReportService()
     gate_status = build_initial_gate_status(
         declared_family="f1",
@@ -85,13 +85,14 @@ def test_user_report_prefers_interview_copy_when_public_status_already_continues
         },
     )
 
-    assert payload["interview_status"] == "continue_interview"
-    assert payload["outcome_label"] == "正式问答进行中"
+    assert payload["interview_status"] == "waiting_key_proof"
+    assert payload["outcome_label"] == "补件审核中"
+    assert payload["current_key_proof"] == "funding_proof"
     assert (
         payload["summary"]
-        == "当前已进入正式 interview 阶段，当前关键问题是：What is the purpose of your travel?"
+        == "当前处于材料门控阶段。仍缺必需材料，暂不能进入正式 interview。"
     )
-    assert payload["recommended_improvements"] == ["继续回答后续问题，并保持叙事一致。"]
+    assert payload["recommended_improvements"] == ["补齐必需材料后再继续。"]
 
 
 def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -> None:

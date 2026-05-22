@@ -210,7 +210,10 @@ def test_document_review_context_extracts_fields_for_candidate_document_types() 
                 document_id = "doc-1"
                 filename = "hukou.jpg"
                 status = "parsed"
-                raw_text = "Applicant LI MINGHAO Father LI WEIGUO Mother ZHANG HUI"
+                raw_text = (
+                    "Applicant TEST APPLICANT "
+                    "Parent PARENT SPONSOR A Parent PARENT SPONSOR B"
+                )
                 artifact_json = {
                     "metadata": {
                         "document_assessment": {

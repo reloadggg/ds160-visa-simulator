@@ -271,30 +271,16 @@ def install_fixed_build_question_action(
     )
 
 
-def test_message_turn_allows_interview_runtime_when_gate_not_ready(
+def test_message_turn_uses_gate_response_when_gate_not_ready(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    runtime_calls: list[tuple[str, str, str]] = []
-
-    def fake_run_turn(self, record, message_text: str) -> dict:
-        runtime_calls.append((record.session_id, message_text, record.phase_state))
-        return {
-            "assistant_message": "Why do you want to study in the U.S.?",
-            "governor_decision": "continue_interview",
-            "score_summary": {
-                "category_fit": 65,
-                "document_readiness": 20,
-                "narrative_consistency": 60,
-                "confidence": 55,
-            },
-            "requested_documents": [],
-        }
-
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("gate 未 ready 时不应进入正式面谈 runtime")
+        ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
@@ -306,21 +292,17 @@ def test_message_turn_allows_interview_runtime_when_gate_not_ready(
 
     assert response.status_code == 200
     payload = response.json()
-    assert runtime_calls == [
-        (
-            session_id,
-            "My parents will pay for my studies.",
-            "gate_review",
-        )
-    ]
-    assert payload["governor_decision"] == "continue_interview"
-    assert payload["assistant_message"] == "Why do you want to study in the U.S.?"
-    assert payload["requested_documents"] == []
+    assert payload["governor_decision"] == "need_more_evidence"
+    assert (
+        payload["assistant_message"]
+        == "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：passport_bio, i20, admission_letter, funding_proof。"
+    )
+    assert payload["requested_documents"] == ["ds160"]
     assert payload["score_summary"] == {
-        "category_fit": 65,
-        "document_readiness": 20,
-        "narrative_consistency": 60,
-        "confidence": 55,
+        "category_fit": 0,
+        "document_readiness": 0,
+        "narrative_consistency": 0,
+        "confidence": 0,
     }
     assert payload["gate_progress"] == {
         "overall_status": "pending_documents",
@@ -398,6 +380,7 @@ def test_messages_reject_user_model_config_when_disabled(
 
 def test_messages_apply_user_model_config_for_request_scope(
     client: TestClient,
+    db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_configs = []
@@ -417,8 +400,7 @@ def test_messages_apply_user_model_config_for_request_scope(
         fake_run_turn,
     )
 
-    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
-    session_id = session_resp.json()["session_id"]
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
     response = client.post(
         f"/v1/sessions/{session_id}/messages",
         json={
@@ -840,9 +822,12 @@ def test_funding_proof_upload_keeps_interview_flow_while_parse_is_pending(
 
     assert pre_worker_response.status_code == 200
     pre_worker_payload = pre_worker_response.json()
-    assert pre_worker_payload["governor_decision"] == "continue_interview"
-    assert pre_worker_payload["assistant_message"] == "What school will you attend?"
-    assert pre_worker_payload["requested_documents"] == []
+    assert pre_worker_payload["governor_decision"] == "need_more_evidence"
+    assert (
+        pre_worker_payload["assistant_message"]
+        == "当前最缺的关键证明是 ds160。 当前仍待补的材料还有：passport_bio, i20, admission_letter, funding_proof。"
+    )
+    assert pre_worker_payload["requested_documents"] == ["ds160"]
     assert pre_worker_payload["gate_progress"] == {
         "overall_status": "waiting_for_parse",
         "ready_count": 0,
@@ -1253,9 +1238,12 @@ def test_gate_progress_reports_ready_uploaded_and_missing_mix(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["governor_decision"] == "continue_interview"
-    assert payload["assistant_message"] == "Please explain your study plan."
-    assert payload["requested_documents"] == []
+    assert payload["governor_decision"] == "need_more_evidence"
+    assert (
+        payload["assistant_message"]
+        == "当前最缺的关键证明是 funding_proof。 当前仍待补的材料还有：passport_bio。"
+    )
+    assert payload["requested_documents"] == ["funding_proof"]
     assert payload["gate_progress"] == {
         "overall_status": "waiting_for_parse",
         "ready_count": 1,

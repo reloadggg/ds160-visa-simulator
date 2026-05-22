@@ -325,11 +325,14 @@ class InterviewerRuntimeService:
         boundary: dict[str, Any],
         action: InterviewNextAction,
     ) -> dict[str, Any]:
-        if action.decision != GovernorDecision.SIMULATED_REFUSAL.value:
+        if action.decision not in {
+            GovernorDecision.HIGH_RISK_REVIEW.value,
+            GovernorDecision.SIMULATED_REFUSAL.value,
+        }:
             return boundary
         return {
             **boundary,
-            "decision": GovernorDecision.SIMULATED_REFUSAL.value,
+            "decision": action.decision,
         }
 
     def _gate_is_ready(self, record: SessionRecord) -> bool:
@@ -430,13 +433,13 @@ class InterviewerRuntimeService:
             "你的连续回答仍与已提交材料存在核心冲突。"
         )
         return InterviewNextAction(
-            decision=GovernorDecision.SIMULATED_REFUSAL.value,
+            decision=GovernorDecision.HIGH_RISK_REVIEW.value,
             assistant_message=(
-                f"{summary} 你已经多次坚持与材料不一致的说法，"
-                "当前模拟结果为拒签，本次面签到此结束。"
+                f"{summary} 这个冲突已经无法通过继续重复追问澄清，"
+                "当前案例需要先进入高风险复核。"
             ),
             requested_documents=[],
-            focus_kind="refusal",
+            focus_kind="risk_review",
             focus_document_type=None,
             focus_risk_code=risk_code,
             reason="repeated_claim_document_conflict",

@@ -50,7 +50,7 @@ class MessageService:
                 commit=False,
             )
 
-            if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
+            if record.gate_status_json.get("status") != GateOverallStatus.READY_FOR_INTERVIEW:
                 response = self.gate_runtime.build_gate_response(record)
                 assistant_turn = self._append_assistant_turn(record, response)
                 self._sync_runtime_view_contract(record, response, assistant_turn)

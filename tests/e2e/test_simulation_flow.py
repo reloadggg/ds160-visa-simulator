@@ -53,6 +53,65 @@ def install_stub_build_question_action(
     )
 
 
+def upload_f1_gate_package(client: TestClient, session_id: str) -> None:
+    files = {
+        "ds160": (
+            "ds160.pdf",
+            build_pdf_bytes(
+                "DS-160 Confirmation Page\n"
+                "Full name: TEST APPLICANT\n"
+                "Passport number: X00000000\n"
+                "Travel purpose: STUDENT (F1)\n"
+            ),
+        ),
+        "passport_bio": (
+            "passport_bio.pdf",
+            build_pdf_bytes(
+                "Passport Bio Page\n"
+                "Full name: TEST APPLICANT\n"
+                "Passport number: X00000000\n"
+                "Nationality: EXAMPLELAND\n"
+            ),
+        ),
+        "i20": (
+            "i20.pdf",
+            build_pdf_bytes(
+                "Form I-20\n"
+                "SEVIS ID: N0000000000\n"
+                "School name: Example University\n"
+                "Program: Example Degree Program\n"
+            ),
+        ),
+        "admission_letter": (
+            "admission_letter.pdf",
+            build_pdf_bytes(
+                "Admission Letter\n"
+                "School name: Example University\n"
+                "Program: Example Degree Program\n"
+            ),
+        ),
+        "funding_proof": (
+            "funding_proof.pdf",
+            build_pdf_bytes("Parent sponsor bank statement for tuition"),
+        ),
+    }
+    for document_type, (filename, raw_bytes) in files.items():
+        response = client.post(
+            f"/v1/sessions/{session_id}/files",
+            data={"document_type": document_type},
+            files={"file": (filename, raw_bytes, "application/pdf")},
+        )
+        assert response.status_code == 202
+
+
+def drain_parse_worker(db_session_factory) -> bool:
+    with db_session_factory() as db:
+        processed_any = False
+        while ParseWorker(db).run_once():
+            processed_any = True
+    return processed_any
+
+
 @pytest.fixture(autouse=True)
 def disable_runtime_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -118,29 +177,10 @@ def test_golden_path_f1_parent_sponsored_progresses_after_helpful_upload(
     assert first_response.status_code == 200
     first_payload = first_response.json()
     assert first_payload["governor_decision"] == "need_more_evidence"
-    assert first_payload["requested_documents"] == ["funding_proof"]
+    assert first_payload["requested_documents"] == ["ds160"]
+    assert "funding_proof" in first_payload["remaining_required_documents"]
 
-    upload_response = client.post(
-        f"/v1/sessions/{session_id}/files",
-        files={
-            "file": (
-                "funding_proof.pdf",
-                build_pdf_bytes("Parent sponsor bank statement for tuition"),
-                "application/pdf",
-            )
-        },
-    )
-
-    assert upload_response.status_code == 202
-    upload_payload = upload_response.json()
-    assert upload_payload["main_flow_feedback"]["status"] in {
-        "helpful",
-        "partial_helpful",
-    }
-    assert upload_payload["main_flow_feedback"]["supported_document_type"] == (
-        "funding_proof"
-    )
-    assert upload_payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+    upload_f1_gate_package(client, session_id)
 
     pre_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",
@@ -154,12 +194,7 @@ def test_golden_path_f1_parent_sponsored_progresses_after_helpful_upload(
         == "waiting_for_parse"
     )
 
-    with db_session_factory() as db:
-        processed_any = False
-        while ParseWorker(db).run_once():
-            processed_any = True
-
-    assert processed_any is True
+    assert drain_parse_worker(db_session_factory) is True
 
     post_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",
@@ -215,7 +250,8 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
 
     assert first_response.status_code == 200
     assert first_response.json()["governor_decision"] == "need_more_evidence"
-    assert first_response.json()["requested_documents"] == ["funding_proof"]
+    assert first_response.json()["requested_documents"] == ["ds160"]
+    assert "funding_proof" in first_response.json()["remaining_required_documents"]
 
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
@@ -241,7 +277,8 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
     assert next_response.status_code == 200
     next_payload = next_response.json()
     assert next_payload["governor_decision"] == "need_more_evidence"
-    assert next_payload["requested_documents"] == ["funding_proof"]
+    assert next_payload["requested_documents"] == ["ds160"]
+    assert "funding_proof" in next_payload["remaining_required_documents"]
 
     user_report_response = client.get(f"/v1/sessions/{session_id}/reports/user")
 
@@ -249,7 +286,7 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
     user_report = user_report_response.json()
     assert user_report["governor_decision"] == "need_more_evidence"
     assert user_report["interview_status"] == "waiting_key_proof"
-    assert user_report["current_key_proof"] == "funding_proof"
+    assert user_report["current_key_proof"] == "ds160"
     assert "upload_key_proof" in user_report["allowed_next_actions"]
 
 
@@ -277,10 +314,11 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     first_payload = first_completion.json()
     session_id = first_payload["metadata"]["session_id"]
     assert first_payload["metadata"]["session_id"] == session_id
-    assert first_payload["metadata"]["phase_state"] == "interview"
+    assert first_payload["metadata"]["phase_state"] == "gate_review"
     assert first_payload["metadata"]["context_mode"] == "new_session"
     assert first_payload["metadata"]["governor_decision"] == "need_more_evidence"
-    assert "funding_proof" in first_payload["metadata"]["requested_documents"]
+    assert first_payload["metadata"]["requested_documents"] == ["ds160"]
+    assert "funding_proof" in first_payload["metadata"]["remaining_required_documents"]
 
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
@@ -313,16 +351,11 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert second_completion.status_code == 200
     second_payload = second_completion.json()
     assert second_payload["metadata"]["session_id"] == session_id
-    assert second_payload["metadata"]["phase_state"] == "interview"
+    assert second_payload["metadata"]["phase_state"] == "gate_review"
     assert second_payload["metadata"]["context_mode"] == "existing_session"
     assert second_payload["metadata"]["governor_decision"] == "need_more_evidence"
 
-    with db_session_factory() as db:
-        processed_any = False
-        while ParseWorker(db).run_once():
-            processed_any = True
-
-    assert processed_any is True
+    assert drain_parse_worker(db_session_factory) is True
 
     third_completion = client.post(
         "/v1/chat/completions",
@@ -342,7 +375,7 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert third_completion.status_code == 200
     third_payload = third_completion.json()
     assert third_payload["metadata"]["session_id"] == session_id
-    assert third_payload["metadata"]["phase_state"] == "interview"
+    assert third_payload["metadata"]["phase_state"] == "gate_review"
     assert third_payload["metadata"]["context_mode"] == "existing_session"
     assert third_payload["choices"][0]["message"]["role"] == "assistant"
     assert third_payload["choices"][0]["message"]["content"]
@@ -351,10 +384,8 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
 
     assert user_report_response.status_code == 200
     user_report = user_report_response.json()
-    assert user_report["interview_status"] == "continue_interview"
-    assert user_report["current_key_question"] == third_payload["choices"][0]["message"][
-        "content"
-    ]
+    assert user_report["interview_status"] == "waiting_key_proof"
+    assert user_report["current_key_proof"] == "ds160"
 
     with db_session_factory() as db:
         session_count = db.scalar(select(func.count()).select_from(SessionRecord))

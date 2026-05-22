@@ -1083,7 +1083,7 @@ def test_run_turn_clears_ready_document_request_before_persisting_state(
     }
 
 
-def test_run_turn_converges_after_repeated_claim_document_conflict(
+def test_run_turn_routes_repeated_claim_document_conflict_to_review(
     monkeypatch,
 ) -> None:
     service = InterviewerRuntimeService(db=object())
@@ -1111,7 +1111,7 @@ def test_run_turn_converges_after_repeated_claim_document_conflict(
     claim_conflict = {
         "conflict_type": "claim_vs_document",
         "severity": "high",
-        "summary": "申请人口头称纽约大学，但 I-20 和录取信显示 Wisconsin。",
+        "summary": "申请人口头学校与 I-20 和录取信显示的学校不一致。",
         "field_paths": ["/education/school_name"],
         "document_ids": ["doc-i20", "doc-admission"],
         "evidence_refs": ["evi-i20", "evi-admission"],
@@ -1121,12 +1121,12 @@ def test_run_turn_converges_after_repeated_claim_document_conflict(
             role="assistant",
             metadata_json={"document_review": {"claim_conflicts": [claim_conflict]}},
         ),
-        SimpleNamespace(role="user", metadata_json={}, content="我读纽约大学"),
+        SimpleNamespace(role="user", metadata_json={}, content="我读 Claimed Example University"),
         SimpleNamespace(
             role="assistant",
             metadata_json={"turn_record": {"document_review": {"claim_conflicts": [claim_conflict]}}},
         ),
-        SimpleNamespace(role="user", metadata_json={}, content="我还是读纽约大学"),
+        SimpleNamespace(role="user", metadata_json={}, content="我还是读 Claimed Example University"),
     ]
 
     monkeypatch.setattr(
@@ -1173,10 +1173,10 @@ def test_run_turn_converges_after_repeated_claim_document_conflict(
         lambda current_record, **kwargs: current_record,
     )
 
-    response = service.run_turn(record, "我读纽约大学")
+    response = service.run_turn(record, "我读 Claimed Example University")
 
-    assert response["governor_decision"] == "simulated_refusal"
-    assert response["turn_decision"]["decision"] == "simulated_refusal"
-    assert record.phase_state == "session_closed"
-    assert record.interviewer_state_json["status"] == "simulated_refusal"
-    assert record.current_focus_json["kind"] == "refusal"
+    assert response["governor_decision"] == "high_risk_review"
+    assert response["turn_decision"]["decision"] == "high_risk_review"
+    assert record.phase_state == "interview"
+    assert record.interviewer_state_json["status"] == "high_risk_review"
+    assert record.current_focus_json["kind"] == "risk_review"

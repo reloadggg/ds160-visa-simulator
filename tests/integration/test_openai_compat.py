@@ -70,11 +70,11 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
         "runtime_view_state",
     }
     assert payload["metadata"]["session_id"].startswith("sess-")
-    assert payload["metadata"]["phase_state"] == "interview"
+    assert payload["metadata"]["phase_state"] == "gate_review"
     assert payload["metadata"]["context_mode"] == "new_session"
     assert isinstance(payload["metadata"]["runtime_view_state"], dict)
     assert payload["metadata"]["runtime_view_state"]["decision"]
-    assert payload["metadata"]["runtime_view_state"]["prompt_trace"] == payload["metadata"][
+    assert payload["metadata"]["runtime_view_state"].get("prompt_trace", {}) == payload["metadata"][
         "prompt_trace"
     ]
 

@@ -185,7 +185,18 @@ def test_required_package_endpoint_uses_declared_family(
     response = client.get(f"/v1/sessions/{session_id}/required-package")
 
     assert response.status_code == 200
-    assert response.json()["required_initial_package"] == [
+    payload = response.json()
+    assert payload["scenario_key"] == "parent_sponsored"
+    assert payload["official_pre_interview_required"] == [
+        "ds160",
+        "passport_bio",
+        "i20",
+    ]
+    assert payload["simulator_recommended_evidence"] == [
+        "admission_letter",
+        "funding_proof",
+    ]
+    assert payload["required_initial_package"] == [
         "ds160",
         "passport_bio",
         "i20",
@@ -203,7 +214,16 @@ def test_required_package_endpoint_supports_non_f1_family(
     response = client.get(f"/v1/sessions/{session_id}/required-package")
 
     assert response.status_code == 200
-    assert response.json()["required_initial_package"] == [
+    payload = response.json()
+    assert payload["scenario_key"] == "institution_funded"
+    assert payload["official_pre_interview_required"] == [
+        "ds160",
+        "passport_bio",
+        "ds2019",
+        "funding_proof",
+    ]
+    assert payload["simulator_recommended_evidence"] == []
+    assert payload["required_initial_package"] == [
         "ds160",
         "passport_bio",
         "ds2019",
@@ -289,7 +309,10 @@ def test_debug_fill_current_gap_creates_relationship_proof(
             "question": "What is the purpose of your travel?",
         }
         assert record.profile_json["funding"]["sponsor_relationship"] == "parents"
-        assert record.profile_json["family_specific"]["parent_names"] == "LI WEIGUO; ZHANG HUI"
+        assert (
+            record.profile_json["family_specific"]["parent_names"]
+            == "PARENT SPONSOR A; PARENT SPONSOR B"
+        )
 
         evidence = db.query(EvidenceItemRecord).filter_by(session_id=session_id).all()
 
@@ -321,12 +344,12 @@ def test_debug_fill_current_gap_supports_normal_school_data(
         record.profile_json = {
             "profile_id": f"profile-{session_id}",
             "profile_version": 1,
-            "identity": {"full_name": "LI, MINGHAO"},
+            "identity": {"full_name": "TEST APPLICANT"},
             "visa_intent": {"declared_family": "f1"},
             "education": {
-                "school_name": "New York University",
-                "program_name": "Master of Science in Computer Science",
-                "sevis_id": "N0034567890",
+                "school_name": "Example University",
+                "program_name": "Example Degree Program",
+                "sevis_id": "N0000000000",
             },
             "funding": {},
             "ds160_view": {},
@@ -359,8 +382,71 @@ def test_debug_fill_current_gap_supports_normal_school_data(
             field_path="/education/school_name",
         ).one()
 
-    assert "School name: New York University" in document.raw_text
-    assert evidence.value == "New York University"
+    assert "School name: Example University" in document.raw_text
+    assert evidence.value == "Example University"
+
+
+def test_debug_fill_current_gap_supports_generic_school_mismatch(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Which school will you attend?",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.profile_json = {
+            "profile_id": f"profile-{session_id}",
+            "profile_version": 1,
+            "identity": {"full_name": "TEST APPLICANT"},
+            "visa_intent": {"declared_family": "f1"},
+            "education": {
+                "school_name": "Example University",
+                "program_name": "Example Degree Program",
+            },
+            "funding": {},
+            "ds160_view": {},
+            "field_states": {},
+            "field_provenance": {},
+        }
+        record.current_focus_json = {
+            "kind": "required_document",
+            "document_type": "i20",
+        }
+        db.add(record)
+        db.commit()
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "school_mismatch"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fill_scenario"] == "school_mismatch"
+    assert payload["filled_document_type"] == "i20"
+    assert payload["assistant_message"] == "Which school will you attend?"
+
+    with db_session_factory() as db:
+        document = db.query(DocumentRecord).filter_by(session_id=session_id).one()
+        evidence = db.query(EvidenceItemRecord).filter_by(
+            session_id=session_id,
+            field_path="/education/school_name",
+        ).one()
+
+    assert "School name: Alternate Example University" in document.raw_text
+    assert evidence.value == "Alternate Example University"
+    assert evidence.value != "Example University"
 
 
 def test_debug_fill_current_gap_supports_sponsor_equity_gap(
@@ -420,7 +506,7 @@ def test_debug_fill_current_gap_normalizes_chinese_remaining_document_text(
         assert record is not None
         record.interviewer_state_json = {
             "remaining_required_documents": [
-                "如申请人坚持最终入读纽约大学，请提供与纽约大学对应的最新 I-20 或录取材料"
+                "如申请人坚持最终入读目标学校，请提供与目标学校对应的最新 I-20 或录取材料"
             ]
         }
         db.add(record)

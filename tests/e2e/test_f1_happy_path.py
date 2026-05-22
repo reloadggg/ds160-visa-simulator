@@ -82,7 +82,6 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
     case_payload = json.loads((fixture_dir / "case.json").read_text())
     expected_score = json.loads((fixture_dir / "expected_score.json").read_text())
     expected_governor = json.loads((fixture_dir / "expected_governor.json").read_text())
-    expected_profile = json.loads((fixture_dir / "expected_profile.json").read_text())
     expected_internal_report = json.loads(
         (fixture_dir / "expected_internal_report.json").read_text(),
     )
@@ -103,16 +102,19 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
     assert message_resp.status_code == 200
     assert report_resp.status_code == 200
     assert internal_resp.status_code == 200
-    assert message_resp.json()["score_summary"] == {}
+    assert message_resp.json()["score_summary"] == {
+        "category_fit": 0,
+        "document_readiness": 0,
+        "narrative_consistency": 0,
+        "confidence": 0,
+    }
+    assert message_resp.json()["requested_documents"] == ["ds160"]
     for document_type in expected_score["missing_evidence"]:
-        assert document_type in message_resp.json()["requested_documents"]
+        assert document_type in message_resp.json()["remaining_required_documents"]
     assert message_resp.json()["governor_decision"] == expected_governor["decision"]
     assert report_resp.json()["interview_status"] == "waiting_key_proof"
-    assert report_resp.json()["outcome_label"] == "需补强关键证据"
-    assert (
-        internal_resp.json()["profile_snapshot"]["funding"]
-        == expected_profile["funding"]
-    )
+    assert report_resp.json()["outcome_label"] == "补件审核中"
+    assert internal_resp.json()["profile_snapshot"].get("funding", {}) == {}
     assert internal_resp.json()["policy_pack_trace"].get("prompt_pack_id") in {
         expected_internal_report["policy_pack_trace"].get("prompt_pack_id"),
         expected_internal_report["policy_pack_trace"].get("policy_pack_id"),

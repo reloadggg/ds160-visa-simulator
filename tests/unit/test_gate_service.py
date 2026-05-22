@@ -49,6 +49,23 @@ def test_required_package_without_scenario_uses_family_default() -> None:
     ]
 
 
+def test_required_package_detail_separates_official_and_simulator_evidence() -> None:
+    service = GateService()
+
+    assert service.required_package_detail("f1") == {
+        "scenario_key": "parent_sponsored",
+        "official_pre_interview_required": ["ds160", "passport_bio", "i20"],
+        "simulator_recommended_evidence": ["admission_letter", "funding_proof"],
+        "required_initial_package": [
+            "ds160",
+            "passport_bio",
+            "i20",
+            "admission_letter",
+            "funding_proof",
+        ],
+    }
+
+
 def test_initial_gate_status_uses_policy_pack_default_scenario() -> None:
     service = GateService()
 

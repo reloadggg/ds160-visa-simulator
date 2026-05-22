@@ -41,6 +41,16 @@ DEBUG_FILL_SCENARIOS: dict[str, str] = {
     "sponsor_equity_gap": "生成父母股权/资金来源缺陷材料",
 }
 
+SYNTHETIC_APPLICANT_NAME = "TEST APPLICANT"
+SYNTHETIC_PASSPORT_NUMBER = "X00000000"
+SYNTHETIC_NATIONALITY = "EXAMPLELAND"
+SYNTHETIC_SEVIS_ID = "N0000000000"
+SYNTHETIC_SCHOOL_NAME = "Example University"
+SYNTHETIC_CONFLICT_SCHOOL_NAME = "Alternate Example University"
+SYNTHETIC_PROGRAM_NAME = "Example Degree Program"
+SYNTHETIC_PARENT_NAMES = ("PARENT SPONSOR A", "PARENT SPONSOR B")
+SYNTHETIC_COMPANY_NAME = "Example Family Business LLC"
+
 
 class DebugFillService:
     def __init__(self, db: Session) -> None:
@@ -184,11 +194,33 @@ class DebugFillService:
         *,
         scenario: DebugFillScenario,
     ) -> DebugFillDocument:
-        applicant_name = str(profile.identity.get("full_name") or "LI, MINGHAO")
-        passport_number = str(profile.identity.get("passport_number") or "E98765432")
+        applicant_name = self._profile_value(
+            profile.identity,
+            "full_name",
+            SYNTHETIC_APPLICANT_NAME,
+        )
+        passport_number = self._profile_value(
+            profile.identity,
+            "passport_number",
+            SYNTHETIC_PASSPORT_NUMBER,
+        )
+        nationality = self._profile_value(
+            profile.identity,
+            "nationality",
+            SYNTHETIC_NATIONALITY,
+        )
+        parent_a, parent_b = self._parent_names(profile)
         school_name = self._scenario_school_name(profile, scenario)
-        program_name = str(profile.education.get("program_name") or "Master of Science in Computer Science")
-        sevis_id = str(profile.education.get("sevis_id") or "N0034567890")
+        program_name = self._profile_value(
+            profile.education,
+            "program_name",
+            SYNTHETIC_PROGRAM_NAME,
+        )
+        sevis_id = self._profile_value(
+            profile.education,
+            "sevis_id",
+            SYNTHETIC_SEVIS_ID,
+        )
         scenario_label = DEBUG_FILL_SCENARIOS[scenario]
 
         if document_type == "relationship_proof_between_applicant_and_sponsors":
@@ -198,15 +230,15 @@ class DebugFillService:
                 text=(
                     "Household Register / Birth Relationship Certificate\n"
                     f"Applicant: {applicant_name}\n"
-                    "Father: LI WEIGUO\n"
-                    "Mother: ZHANG HUI\n"
-                    "Relationship: LI WEIGUO is father of applicant; ZHANG HUI is mother of applicant.\n"
+                    f"Parent 1: {parent_a}\n"
+                    f"Parent 2: {parent_b}\n"
+                    f"Relationship: {parent_a} and {parent_b} are parents of applicant.\n"
                     "Purpose: For F-1 student visa funding relationship verification.\n"
                 ),
                 fields={
                     "/identity/full_name": applicant_name,
                     "/funding/sponsor_relationship": "parents",
-                    "/family/parent_names": "LI WEIGUO; ZHANG HUI",
+                    "/family/parent_names": f"{parent_a}; {parent_b}",
                 },
                 scenario=scenario,
                 scenario_label=scenario_label,
@@ -220,12 +252,12 @@ class DebugFillService:
                     "Passport Bio Page\n"
                     f"Full name: {applicant_name}\n"
                     f"Passport number: {passport_number}\n"
-                    "Nationality: China\n"
+                    f"Nationality: {nationality}\n"
                 ),
                 fields={
                     "/identity/full_name": applicant_name,
                     "/identity/passport_number": passport_number,
-                    "/identity/nationality": "China",
+                    "/identity/nationality": nationality,
                 },
                 scenario=scenario,
                 scenario_label=scenario_label,
@@ -295,17 +327,19 @@ class DebugFillService:
                 text=(
                     "Parent Funding Proof\n"
                     "Primary source: parents\n"
-                    "Sponsor: LI WEIGUO and ZHANG HUI\n"
+                    f"Sponsor: {parent_a} and {parent_b}\n"
                     "Available funds: USD 68,000 equivalent.\n"
                     "Funding source: proceeds from family company equity transfer.\n"
-                    "Company equity ownership: LI WEIGUO holds 38% shares in Minghao Trading Co., Ltd.\n"
+                    f"Company equity ownership: {parent_a} holds 38% shares in {SYNTHETIC_COMPANY_NAME}.\n"
                     "Missing: equity transfer agreement, company registration record, and tax/payment trail.\n"
                     f"Applicant: {applicant_name}\n"
                 ),
                 fields={
                     "/funding/primary_source": "parents",
                     "/funding/source_detail": "family company equity transfer",
-                    "/funding/equity_ownership": "LI WEIGUO holds 38% shares in Minghao Trading Co., Ltd.",
+                    "/funding/equity_ownership": (
+                        f"{parent_a} holds 38% shares in {SYNTHETIC_COMPANY_NAME}."
+                    ),
                 },
                 scenario=scenario,
                 scenario_label=scenario_label,
@@ -317,7 +351,7 @@ class DebugFillService:
             text=(
                 "Parent Funding Proof\n"
                 "Primary source: parents\n"
-                "Sponsor: LI WEIGUO and ZHANG HUI\n"
+                f"Sponsor: {parent_a} and {parent_b}\n"
                 "Available funds: USD 68,000 equivalent.\n"
                 f"Applicant: {applicant_name}\n"
             ),
@@ -332,9 +366,52 @@ class DebugFillService:
         scenario: DebugFillScenario,
     ) -> str:
         if scenario == "school_mismatch":
-            return "University of Wisconsin-Madison"
-        school_name = str(profile.education.get("school_name") or "").strip()
-        return school_name or "New York University"
+            claimed_school = self._profile_value(
+                profile.education,
+                "school_name",
+                SYNTHETIC_SCHOOL_NAME,
+            )
+            if claimed_school == SYNTHETIC_CONFLICT_SCHOOL_NAME:
+                return SYNTHETIC_SCHOOL_NAME
+            return SYNTHETIC_CONFLICT_SCHOOL_NAME
+        return self._profile_value(
+            profile.education,
+            "school_name",
+            SYNTHETIC_SCHOOL_NAME,
+        )
+
+    def _parent_names(self, profile: ApplicantProfile) -> tuple[str, str]:
+        raw_parent_names = profile.family_specific.get("parent_names")
+        if isinstance(raw_parent_names, list):
+            parents = [
+                str(item).strip()
+                for item in raw_parent_names
+                if str(item).strip()
+            ]
+        elif isinstance(raw_parent_names, str):
+            parents = [
+                item.strip()
+                for item in raw_parent_names.replace(" and ", ";").split(";")
+                if item.strip()
+            ]
+        else:
+            parents = []
+        if len(parents) >= 2:
+            return parents[0], parents[1]
+        if len(parents) == 1:
+            return parents[0], SYNTHETIC_PARENT_NAMES[1]
+        return SYNTHETIC_PARENT_NAMES
+
+    def _profile_value(
+        self,
+        payload: dict,
+        key: str,
+        fallback: str,
+    ) -> str:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return fallback
 
     def _filled_summary(self, fill_document: DebugFillDocument) -> str:
         field_labels = ", ".join(fill_document.fields.keys())

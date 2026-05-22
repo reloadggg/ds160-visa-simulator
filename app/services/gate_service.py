@@ -41,3 +41,25 @@ class GateService:
             scenario_key, _required_documents = self.default_scenario_package(family)
         pack = self.registry.get(family)
         return pack["scenarios"][scenario_key]["required_initial_package"]
+
+    def required_package_detail(
+        self,
+        family: str,
+        scenario_key: str | None = None,
+    ) -> dict:
+        if scenario_key is None:
+            scenario_key, _required_documents = self.default_scenario_package(family)
+        pack = self.registry.get(family)
+        scenario = pack["scenarios"][scenario_key]
+        required_initial_package = list(scenario["required_initial_package"])
+        return {
+            "scenario_key": scenario_key,
+            "required_initial_package": required_initial_package,
+            "official_pre_interview_required": list(
+                scenario.get("official_pre_interview_required")
+                or required_initial_package
+            ),
+            "simulator_recommended_evidence": list(
+                scenario.get("simulator_recommended_evidence") or []
+            ),
+        }

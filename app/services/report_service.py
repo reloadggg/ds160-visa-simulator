@@ -92,6 +92,11 @@ class ReportService:
             advisory_context["risk_level"] = risk_level
             if missing_evidence:
                 advisory_context["missing_evidence_summary"] = ", ".join(missing_evidence)
+            if current_key_proof:
+                allowed_next_actions = [
+                    "upload_key_proof",
+                    "explain_missing_proof",
+                ]
         turn_decision = {
             "decision": effective_interviewer_state.get("decision", governor_decision),
             "current_key_question": current_key_question,
@@ -418,11 +423,11 @@ class ReportService:
         missing_evidence: list[str],
         interviewer_state_json: dict,
     ) -> str:
+        if phase_state == "gate_review" and self._gate_primary_document(gate_status):
+            return InterviewStateStatus.WAITING_KEY_PROOF.value
         public_status = interviewer_state_json.get("public_status")
         if public_status:
             return public_status
-        if phase_state == "gate_review":
-            return InterviewStateStatus.WAITING_KEY_PROOF.value
         if governor_decision == GovernorDecision.SIMULATED_REFUSAL.value:
             return InterviewStateStatus.SIMULATED_REFUSAL.value
         if governor_decision == GovernorDecision.HIGH_RISK_REVIEW.value:

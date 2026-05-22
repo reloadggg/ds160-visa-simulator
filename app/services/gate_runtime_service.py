@@ -109,6 +109,13 @@ class GateRuntimeService:
         remaining_required_documents = self._remaining_required_documents(
             gate_status.get("required_documents", [])
         )
+        primary_document_item = self._pick_primary_document(
+            gate_status.get("required_documents", [])
+        )
+        support_message = self._build_support_message(
+            primary_document_item,
+            remaining_required_documents=remaining_required_documents,
+        )
 
         if overall_status == GateOverallStatus.FAMILY_NOT_SELECTED:
             return {
@@ -127,10 +134,8 @@ class GateRuntimeService:
 
         if overall_status == GateOverallStatus.WAITING_FOR_PARSE:
             return {
-                "assistant_message": (
-                    "当前处于材料门控阶段。材料已提交，系统正在解析，"
-                    "暂时还不能进入正式 interview。"
-                ),
+                "assistant_message": support_message
+                or "当前处于材料门控阶段。材料已提交，系统正在解析，暂时还不能进入正式 interview。",
                 "governor_decision": "need_more_evidence",
                 "score_summary": {
                     "category_fit": 0,
@@ -144,10 +149,8 @@ class GateRuntimeService:
             }
 
         return {
-            "assistant_message": (
-                "当前处于材料门控阶段。请先补齐必需材料，"
-                "之后才能进入正式 interview。"
-            ),
+            "assistant_message": support_message
+            or "当前处于材料门控阶段。请先补齐必需材料，之后才能进入正式 interview。",
             "governor_decision": "need_more_evidence",
             "score_summary": {
                 "category_fit": 0,

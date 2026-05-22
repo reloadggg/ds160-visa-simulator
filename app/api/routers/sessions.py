@@ -58,8 +58,10 @@ def get_required_package(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    required = GateService().required_package(declared_family)
-    return {"required_initial_package": required}
+    return GateService().required_package_detail(
+        declared_family,
+        scenario_key=record.gate_status_json.get("scenario_key"),
+    )
 
 
 @router.post("/{session_id}/debug/fill-current-gap")
