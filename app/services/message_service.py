@@ -50,7 +50,7 @@ class MessageService:
                 commit=False,
             )
 
-            if record.gate_status_json.get("status") != GateOverallStatus.READY_FOR_INTERVIEW:
+            if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
                 response = self.gate_runtime.build_gate_response(record)
                 self._apply_gate_response_state(
                     record,
@@ -89,19 +89,6 @@ class MessageService:
             return {}
 
         try:
-            if record.gate_status_json.get("status") != GateOverallStatus.READY_FOR_INTERVIEW:
-                response = self.gate_runtime.build_gate_response(record)
-                self._apply_gate_response_state(
-                    record,
-                    response,
-                    user_input=reason,
-                    user_turn_id=None,
-                )
-                assistant_turn = self._append_assistant_turn(record, response)
-                self._sync_runtime_view_contract(record, response, assistant_turn)
-                self.session_repo.save(record)
-                return response
-
             interview_response = self.interviewer_runtime.refresh_after_material_change(
                 record,
                 reason=reason,
@@ -182,7 +169,7 @@ class MessageService:
         gate_status = record.gate_status_json.get("status")
         source = (
             "gate_runtime_service"
-            if gate_status != GateOverallStatus.READY_FOR_INTERVIEW
+            if gate_status == GateOverallStatus.FAMILY_NOT_SELECTED
             else "interviewer_runtime_service"
         )
         assistant_turn = self.session_turn_repo.append_assistant_turn(

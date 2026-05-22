@@ -491,39 +491,12 @@ class InterviewRuntimeService:
         action: InterviewNextAction,
         capability_tool_outputs: dict[str, Any] | None = None,
     ) -> InterviewNextAction:
-        document_review = self._document_review_payload(capability_tool_outputs)
-        review_requested_documents = self._document_review_requested_documents(
-            document_review
+        del governor_decision, score, capability_tool_outputs
+        requested_documents = (
+            self._coerce_requested_documents(action.requested_documents)
+            if action.decision == GovernorDecision.NEED_MORE_EVIDENCE.value
+            else []
         )
-        requested_documents = self._coerce_requested_documents(action.requested_documents)
-        if review_requested_documents:
-            return InterviewNextAction(
-                decision=GovernorDecision.NEED_MORE_EVIDENCE.value,
-                assistant_message=self._document_review_request_message(
-                    review_requested_documents[0]
-                ),
-                requested_documents=review_requested_documents,
-                focus_kind="required_document",
-                focus_document_type=review_requested_documents[0],
-                focus_risk_code=action.focus_risk_code,
-                reason="document_review_requested_key_proof",
-            )
-        if (
-            governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value
-            and action.decision == GovernorDecision.NEED_MORE_EVIDENCE.value
-            and not score.missing_evidence
-        ):
-            return InterviewNextAction(
-                decision=GovernorDecision.CONTINUE_INTERVIEW.value,
-                assistant_message=(
-                    "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。"
-                ),
-                requested_documents=[],
-                focus_kind="interview_question",
-                focus_document_type=None,
-                focus_risk_code=None,
-                reason="ignored_unanchored_document_request_after_gate_ready",
-            )
         focus_document_type = action.focus_document_type
         if requested_documents and action.focus_kind == "required_document":
             focus_document_type = requested_documents[0]
@@ -536,34 +509,6 @@ class InterviewRuntimeService:
             focus_risk_code=action.focus_risk_code,
             reason=action.reason,
         )
-
-    def _document_review_payload(
-        self,
-        capability_tool_outputs: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        if not isinstance(capability_tool_outputs, dict):
-            return {}
-        document_review = capability_tool_outputs.get("document_review")
-        if not isinstance(document_review, dict):
-            return {}
-        return document_review
-
-    def _document_review_requested_documents(
-        self,
-        document_review: dict[str, Any],
-    ) -> list[str]:
-        if document_review.get("recommended_next_step") != "request_documents":
-            return []
-        primary_document = self._runtime_text(document_review.get("primary_document"))
-        if primary_document is not None:
-            return [primary_document]
-        return self._coerce_requested_documents(
-            list(document_review.get("remaining_required_documents", []) or [])
-        )
-
-    def _document_review_request_message(self, document_type: str) -> str:
-        readable = document_type.replace("_", " ")
-        return f"材料核验显示当前最关键的证明是 {readable}。请先上传这份材料。"
 
     def _coerce_requested_documents(
         self,

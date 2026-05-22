@@ -311,7 +311,7 @@ def test_upload_prefers_interviewer_focus_for_main_flow_feedback(
                     "材料门控层当前最缺的关键证明是 ds160。"
                 ),
             }
-            assert result.requested_documents == ["ds160"]
+            assert result.requested_documents == ["ds2019"]
             assert result.gate_progress == {
                 "overall_status": "waiting_for_parse",
                 "ready_count": 0,

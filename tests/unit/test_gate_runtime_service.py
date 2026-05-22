@@ -100,7 +100,7 @@ def test_refresh_session_marks_uploaded_funding_proof_waiting_for_parse(
         with testing_session_local() as db:
             record = GateRuntimeService(db).refresh_session("sess-1")
 
-            assert record.phase_state == "gate_review"
+            assert record.phase_state == "interview"
             assert record.gate_status_json["status"] == "waiting_for_parse"
             funding_doc = next(
                 item
@@ -170,7 +170,7 @@ def test_refresh_session_ignores_uploaded_document_marked_outside_gate_flow(
         with testing_session_local() as db:
             record = GateRuntimeService(db).refresh_session("sess-1")
 
-            assert record.phase_state == "gate_review"
+            assert record.phase_state == "interview"
             assert record.gate_status_json["status"] == "pending_documents"
             funding_doc = next(
                 item
@@ -460,7 +460,7 @@ def test_refresh_session_keeps_pending_when_only_funding_proof_is_ready(
         with testing_session_local() as db:
             record = GateRuntimeService(db).refresh_session("sess-1")
 
-            assert record.phase_state == "gate_review"
+            assert record.phase_state == "interview"
             assert record.gate_status_json["status"] == "pending_documents"
     finally:
         Base.metadata.drop_all(bind=engine)
@@ -511,7 +511,7 @@ def test_refresh_session_ignores_parsed_document_marked_outside_gate_flow_in_met
         with testing_session_local() as db:
             record = GateRuntimeService(db).refresh_session("sess-1")
 
-            assert record.phase_state == "gate_review"
+            assert record.phase_state == "interview"
             assert record.gate_status_json["status"] == "pending_documents"
             passport_doc = next(
                 item

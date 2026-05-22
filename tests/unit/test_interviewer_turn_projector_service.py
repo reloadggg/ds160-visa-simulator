@@ -120,7 +120,7 @@ def test_project_builds_projection_for_continue_interview() -> None:
     }
 
 
-def test_project_uses_governor_requested_document_as_need_more_evidence_fallback() -> None:
+def test_project_does_not_use_governor_or_score_as_document_fallback() -> None:
     projector = InterviewerTurnProjectorService()
     score = _build_score(missing_evidence=["funding_proof"])
     record = _build_record("sess-projector-2")
@@ -141,19 +141,14 @@ def test_project_uses_governor_requested_document_as_need_more_evidence_fallback
         history_turns=[SimpleNamespace(role="user", turn_id="turn-user-2")],
     )
 
-    assert projection.response["requested_documents"] == ["passport_bio"]
+    assert projection.response["requested_documents"] == []
     assert projection.current_focus == {
         "owner": "interviewer_runtime_service",
         "kind": "required_document",
-        "document_type": "passport_bio",
+        "document_type": None,
     }
-    assert projection.interviewer_state["requested_documents"] == ["passport_bio"]
-    assert projection.turn_record["artifacts"] == [
-        {
-            "kind": "requested_document",
-            "document_type": "passport_bio",
-        }
-    ]
+    assert projection.interviewer_state["requested_documents"] == []
+    assert projection.turn_record["artifacts"] == []
 
 
 def test_project_uses_public_refusal_message_for_response_and_focus_reason() -> None:
@@ -250,7 +245,7 @@ def test_project_appends_capability_artifacts_from_trace_metadata() -> None:
     ]
 
 
-def test_select_remaining_required_documents_prefers_active_requested_document_over_gate() -> None:
+def test_select_remaining_required_documents_uses_only_active_requested_documents() -> None:
     projector = InterviewerTurnProjectorService()
     record = SessionRecord(
         session_id="sess-1",
@@ -271,3 +266,13 @@ def test_select_remaining_required_documents_prefers_active_requested_document_o
     )
 
     assert remaining == ["relationship_proof_between_applicant_and_sponsors"]
+    assert (
+        projector.select_remaining_required_documents(
+            record=record,
+            score=score,
+            requested_documents=[],
+            governor_requested_documents=["funding_proof"],
+            document_review={"remaining_required_documents": ["funding_proof"]},
+        )
+        == []
+    )

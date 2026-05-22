@@ -408,7 +408,7 @@ def test_run_turn_keeps_focus_under_single_owner_for_each_next_action(
                 else ["review_refusal_result"]
             ),
             "requested_documents": list(action.requested_documents),
-            "remaining_required_documents": list(score.missing_evidence),
+            "remaining_required_documents": list(action.requested_documents),
             "risk_codes": expected_risk_codes,
             "history_turn_count": 0,
             "document_review": {},
@@ -671,7 +671,7 @@ def test_is_evasive_answer_does_not_misclassify_generic_education_question_as_fu
     )
 
 
-def test_run_turn_selects_requested_document_in_owner_when_action_keeps_it_empty(
+def test_run_turn_does_not_backfill_score_missing_document_when_action_keeps_it_empty(
     monkeypatch,
 ) -> None:
     service = InterviewerRuntimeService(db=object())
@@ -729,15 +729,15 @@ def test_run_turn_selects_requested_document_in_owner_when_action_keeps_it_empty
     response = service.run_turn(record, "I will upload it later.")
 
     assert response["assistant_message"] == "Please provide the key supporting document for this point."
-    assert response["requested_documents"] == ["funding_proof"]
+    assert response["requested_documents"] == []
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
         "kind": "required_document",
-        "document_type": "funding_proof",
+        "document_type": None,
     }
 
 
-def test_run_turn_uses_governor_requested_document_when_action_and_score_are_empty(
+def test_run_turn_does_not_use_governor_requested_document_when_action_is_empty(
     monkeypatch,
 ) -> None:
     service = InterviewerRuntimeService(db=object())
@@ -795,12 +795,12 @@ def test_run_turn_uses_governor_requested_document_when_action_and_score_are_emp
     response = service.run_turn(record, "I can upload it next.")
 
     assert response["assistant_message"] == "Please provide the key supporting document for this point."
-    assert response["requested_documents"] == ["passport_bio"]
+    assert response["requested_documents"] == []
     assert response["score_summary"] == {}
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
         "kind": "required_document",
-        "document_type": "passport_bio",
+        "document_type": None,
     }
 
 
@@ -890,7 +890,7 @@ def test_decide_governor_no_longer_turns_confirmed_findings_into_hard_refusal() 
     assert governor["decision"] == "continue_interview"
 
 
-def test_run_turn_keeps_prior_focus_document_when_only_focus_can_name_the_key_proof(
+def test_run_turn_does_not_reuse_prior_focus_document_when_action_is_empty(
     monkeypatch,
 ) -> None:
     service = InterviewerRuntimeService(db=object())
@@ -952,11 +952,11 @@ def test_run_turn_keeps_prior_focus_document_when_only_focus_can_name_the_key_pr
     response = service.run_turn(record, "I still need more time.")
 
     assert response["assistant_message"] == "Please provide the key supporting document for this point."
-    assert response["requested_documents"] == ["funding_proof"]
+    assert response["requested_documents"] == []
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
         "kind": "required_document",
-        "document_type": "funding_proof",
+        "document_type": None,
     }
 
 

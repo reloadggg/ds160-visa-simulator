@@ -177,8 +177,12 @@ def test_golden_path_f1_parent_sponsored_progresses_after_helpful_upload(
     assert first_response.status_code == 200
     first_payload = first_response.json()
     assert first_payload["governor_decision"] == "need_more_evidence"
-    assert first_payload["requested_documents"] == ["ds160"]
-    assert "funding_proof" in first_payload["remaining_required_documents"]
+    assert first_payload["requested_documents"] == ["funding_proof"]
+    assert first_payload["remaining_required_documents"] == ["funding_proof"]
+    assert any(
+        item["document_type"] == "ds160"
+        for item in first_payload["gate_progress"]["documents"]
+    )
 
     upload_f1_gate_package(client, session_id)
 
@@ -250,8 +254,8 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
 
     assert first_response.status_code == 200
     assert first_response.json()["governor_decision"] == "need_more_evidence"
-    assert first_response.json()["requested_documents"] == ["ds160"]
-    assert "funding_proof" in first_response.json()["remaining_required_documents"]
+    assert first_response.json()["requested_documents"] == ["funding_proof"]
+    assert first_response.json()["remaining_required_documents"] == ["funding_proof"]
 
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
@@ -277,8 +281,8 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
     assert next_response.status_code == 200
     next_payload = next_response.json()
     assert next_payload["governor_decision"] == "need_more_evidence"
-    assert next_payload["requested_documents"] == ["ds160"]
-    assert "funding_proof" in next_payload["remaining_required_documents"]
+    assert next_payload["requested_documents"] == ["funding_proof"]
+    assert next_payload["remaining_required_documents"] == ["funding_proof"]
 
     user_report_response = client.get(f"/v1/sessions/{session_id}/reports/user")
 
@@ -286,7 +290,7 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
     user_report = user_report_response.json()
     assert user_report["governor_decision"] == "need_more_evidence"
     assert user_report["interview_status"] == "waiting_key_proof"
-    assert user_report["current_key_proof"] == "ds160"
+    assert user_report["current_key_proof"] == "funding_proof"
     assert "upload_key_proof" in user_report["allowed_next_actions"]
 
 
@@ -314,11 +318,13 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     first_payload = first_completion.json()
     session_id = first_payload["metadata"]["session_id"]
     assert first_payload["metadata"]["session_id"] == session_id
-    assert first_payload["metadata"]["phase_state"] == "gate_review"
+    assert first_payload["metadata"]["phase_state"] == "interview"
     assert first_payload["metadata"]["context_mode"] == "new_session"
     assert first_payload["metadata"]["governor_decision"] == "need_more_evidence"
-    assert first_payload["metadata"]["requested_documents"] == ["ds160"]
-    assert "funding_proof" in first_payload["metadata"]["remaining_required_documents"]
+    assert first_payload["metadata"]["requested_documents"] == ["funding_proof"]
+    assert first_payload["metadata"]["remaining_required_documents"] == [
+        "funding_proof"
+    ]
 
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
@@ -351,7 +357,7 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert second_completion.status_code == 200
     second_payload = second_completion.json()
     assert second_payload["metadata"]["session_id"] == session_id
-    assert second_payload["metadata"]["phase_state"] == "gate_review"
+    assert second_payload["metadata"]["phase_state"] == "interview"
     assert second_payload["metadata"]["context_mode"] == "existing_session"
     assert second_payload["metadata"]["governor_decision"] == "need_more_evidence"
 
@@ -375,7 +381,7 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert third_completion.status_code == 200
     third_payload = third_completion.json()
     assert third_payload["metadata"]["session_id"] == session_id
-    assert third_payload["metadata"]["phase_state"] == "gate_review"
+    assert third_payload["metadata"]["phase_state"] == "interview"
     assert third_payload["metadata"]["context_mode"] == "existing_session"
     assert third_payload["choices"][0]["message"]["role"] == "assistant"
     assert third_payload["choices"][0]["message"]["content"]
@@ -384,8 +390,8 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
 
     assert user_report_response.status_code == 200
     user_report = user_report_response.json()
-    assert user_report["interview_status"] == "waiting_key_proof"
-    assert user_report["current_key_proof"] == "ds160"
+    assert user_report["interview_status"] == "continue_interview"
+    assert user_report["current_key_proof"] is None
 
     with db_session_factory() as db:
         session_count = db.scalar(select(func.count()).select_from(SessionRecord))

@@ -36,7 +36,7 @@ def test_internal_report_returns_session_runtime_histories() -> None:
     assert payload["governor_history"] == governor_history
 
 
-def test_user_report_stays_in_gate_review_copy_until_ready() -> None:
+def test_user_report_does_not_block_on_gate_review_without_turn_focus() -> None:
     service = ReportService()
     gate_status = build_initial_gate_status(
         declared_family="f1",
@@ -54,15 +54,12 @@ def test_user_report_stays_in_gate_review_copy_until_ready() -> None:
         gate_status=gate_status,
     )
 
-    assert payload["outcome_label"] == "补件审核中"
-    assert (
-        payload["summary"]
-        == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
-    )
-    assert payload["recommended_improvements"] == ["等待解析完成后再继续。"]
+    assert payload["interview_status"] == "verify_key_issue"
+    assert payload["outcome_label"] == "需核验关键问题"
+    assert "关键问题" in payload["summary"]
 
 
-def test_user_report_prefers_gate_copy_when_gate_still_needs_documents() -> None:
+def test_user_report_prefers_interviewer_state_when_gate_still_needs_documents() -> None:
     service = ReportService()
     gate_status = build_initial_gate_status(
         declared_family="f1",
@@ -85,14 +82,14 @@ def test_user_report_prefers_gate_copy_when_gate_still_needs_documents() -> None
         },
     )
 
-    assert payload["interview_status"] == "waiting_key_proof"
-    assert payload["outcome_label"] == "补件审核中"
-    assert payload["current_key_proof"] == "funding_proof"
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["outcome_label"] == "正式问答进行中"
+    assert payload["current_key_proof"] is None
     assert (
         payload["summary"]
-        == "当前处于材料门控阶段。仍缺当前门控材料，暂不能进入正式 interview。"
+        == "当前已进入正式 interview 阶段，当前关键问题是：What is the purpose of your travel?"
     )
-    assert payload["recommended_improvements"] == ["补齐当前门控材料后再继续。"]
+    assert payload["recommended_improvements"] == ["继续回答后续问题，并保持叙事一致。"]
 
 
 def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -> None:
@@ -146,7 +143,7 @@ def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -
     assert payload["prompt_trace"]["model"] == "gpt-5.4"
 
 
-def test_user_report_uses_gate_primary_focus_during_gate_review_even_if_runtime_view_is_stale() -> None:
+def test_user_report_keeps_runtime_focus_during_gate_review() -> None:
     service = ReportService()
     gate_status = build_initial_gate_status(
         declared_family="f1",
@@ -180,11 +177,9 @@ def test_user_report_uses_gate_primary_focus_during_gate_review_even_if_runtime_
 
     assert payload["interview_status"] == "waiting_key_proof"
     assert payload["current_key_question"] is None
-    assert payload["current_key_proof"] == "ds160"
-    assert payload["missing_evidence"] == ["ds160"]
-    assert payload["advisory_context"]["missing_evidence"] == ["ds160"]
-    assert payload["advisory_context"]["missing_evidence_summary"] == "ds160"
-    assert payload["recommended_improvements"] == ["补齐当前门控材料后再继续。"]
+    assert payload["current_key_proof"] == "funding_proof"
+    assert payload["missing_evidence"] == ["funding_proof"]
+    assert payload["recommended_improvements"] == ["优先补充 funding_proof，再继续面谈。"]
 
 
 def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:

@@ -75,11 +75,11 @@ Interviewer Runtime + Governor + Capability Orchestrator
 
 1. 用户在前端发送回答或上传材料。
 2. FastAPI 接收请求，并由 `MessageService` 或 `FileService` 接管。
-3. `GateRuntimeService` 判断签证类型、必需材料和材料准备状态。
+3. `GateRuntimeService` 刷新签证家族和材料准备进度，但不接管面谈主线。
 4. `InterviewerRuntimeService` 结合历史、材料、风险分数和签证规则分析当前回合。
 5. `CapabilityOrchestrator` 按需触发材料评估、证据检索、一致性复核等能力。
-6. Governor 给出继续追问、要求补证、高风险复核或模拟拒签等决策。
-7. 系统返回下一句面谈问题，并同步更新 runtime view、trace、score 和报告上下文。
+6. LLM turn decision 生成下一步主动作；Governor 只负责高风险、拒签等边界护栏。
+7. 系统返回下一句面谈问题，并同步更新 runtime view、trace、score、gate progress 和报告上下文。
 
 ## 🧩 关键设计
 
@@ -89,7 +89,18 @@ Interviewer Runtime + Governor + Capability Orchestrator
 
 ### 🛂 Governor 护栏
 
-Governor 负责把“模型想问什么”和“签证场景应该怎么推进”分开。它会根据风险、缺证、材料状态和阶段状态决定是否继续追问、等待证明、进入高风险复核或模拟拒签。
+Governor 负责把“模型想问什么”和“签证场景不能越过的边界”分开。它保留高风险复核、模拟拒签和会话关闭等护栏职责，但不再根据材料门控状态覆盖面试官 Agent 的主回复。
+
+### 🚦 Gate 只做辅助进度
+
+Gate 的职责是选择签证家族、维护最低材料包进度，并在 API 响应中提供 `gate_progress`。除 `family_not_selected` 之外，材料缺失、材料解析中或最低字段未齐都不会阻断 `InterviewerRuntimeService`；面试官 Agent 仍会继续根据当前上下文判断是否追问、要求补材料或继续面谈。
+
+主线请求材料只来自 LLM turn decision 的显式输出：
+
+- `decision=need_more_evidence`
+- `requested_documents` 或 `focus_document_type` 明确指出当前关键材料
+
+Gate primary document、`score.missing_evidence`、document review 建议和 governor requested docs 都只能作为 advisory/support 信息，不能回填成主线 `requested_documents`、`phase_state` 或报告主状态。更完整的运行时合同见 [Runtime Contracts](docs/runtime-contracts.md)。
 
 ### 📄 材料理解与证据主线
 

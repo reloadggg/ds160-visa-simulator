@@ -328,10 +328,8 @@ class FileService:
             feedback_message=feedback_message,
             relevant=relevant,
             main_flow_feedback=main_flow_feedback,
-            requested_documents=post_upload_support["requested_documents"],
-            remaining_required_documents=post_upload_support[
-                "remaining_required_documents"
-            ],
+            requested_documents=self._interviewer_requested_documents(session_record),
+            remaining_required_documents=[],
             gate_progress=post_upload_support["gate_progress"],
         )
 
@@ -604,6 +602,12 @@ class FileService:
                 if isinstance(document_type, str) and document_type.strip():
                     return document_type.strip()
         return None
+
+    def _interviewer_requested_documents(self, session_record) -> list[str]:
+        document_type = self._interviewer_focus_document_type(session_record)
+        if document_type is None:
+            return []
+        return [document_type]
 
     def _main_flow_support_message(
         self,

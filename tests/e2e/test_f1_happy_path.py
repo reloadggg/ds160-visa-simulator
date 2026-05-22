@@ -54,11 +54,10 @@ def install_stub_build_question_action(monkeypatch: pytest.MonkeyPatch) -> None:
         recent_turns=None,
     ):
         del self, session_id, profile, governor_decision, trace_entries, recent_turns
-        requested_documents = list(score.missing_evidence[:1])
-        if requested_documents:
+        if score.missing_evidence:
             return SimpleNamespace(
-                assistant_message=f"Please upload {requested_documents[0]}.",
-                requested_documents=requested_documents,
+                assistant_message="Please provide the key supporting document for this point.",
+                requested_documents=[],
                 decision_hint="need_more_evidence",
             )
         return SimpleNamespace(
@@ -102,19 +101,21 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
     assert message_resp.status_code == 200
     assert report_resp.status_code == 200
     assert internal_resp.status_code == 200
-    assert message_resp.json()["score_summary"] == {
-        "category_fit": 0,
-        "document_readiness": 0,
-        "narrative_consistency": 0,
-        "confidence": 0,
-    }
-    assert message_resp.json()["requested_documents"] == ["ds160"]
+    assert message_resp.json()["score_summary"] == {}
+    assert message_resp.json()["requested_documents"] == []
+    assert message_resp.json()["remaining_required_documents"] == []
+    assert message_resp.json()["gate_progress"]["overall_status"] == "pending_documents"
     for document_type in expected_score["missing_evidence"]:
-        assert document_type in message_resp.json()["remaining_required_documents"]
+        assert any(
+            item["document_type"] == document_type
+            for item in message_resp.json()["gate_progress"]["documents"]
+        )
     assert message_resp.json()["governor_decision"] == expected_governor["decision"]
-    assert report_resp.json()["interview_status"] == "waiting_key_proof"
-    assert report_resp.json()["outcome_label"] == "补件审核中"
-    assert internal_resp.json()["profile_snapshot"].get("funding", {}) == {}
+    assert report_resp.json()["interview_status"] == "verify_key_issue"
+    assert report_resp.json()["outcome_label"] == "需核验关键问题"
+    assert internal_resp.json()["profile_snapshot"].get("funding", {}) == {
+        "primary_source": "parents"
+    }
     assert internal_resp.json()["policy_pack_trace"].get("prompt_pack_id") in {
         expected_internal_report["policy_pack_trace"].get("prompt_pack_id"),
         expected_internal_report["policy_pack_trace"].get("policy_pack_id"),

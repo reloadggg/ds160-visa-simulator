@@ -223,7 +223,8 @@ def test_upload_file_reports_helpful_feedback_for_current_key_proof(
 
     assert response.status_code == 202
     payload = response.json()
-    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["requested_documents"] == []
+    assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
     assert payload["main_flow_feedback"] == {
         "status": "helpful",
@@ -278,8 +279,8 @@ def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
 
     assert response.status_code == 202
     payload = response.json()
-    assert payload["requested_documents"] == ["ds160"]
-    assert payload["remaining_required_documents"] == ["ds160", "funding_proof"]
+    assert payload["requested_documents"] == []
+    assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
     assert payload["main_flow_feedback"] == {
         "status": "partial_helpful",
@@ -343,7 +344,8 @@ def test_upload_file_prefers_interviewer_focus_over_gate_primary_in_feedback(
 
     assert response.status_code == 202
     payload = response.json()
-    assert payload["requested_documents"] == ["ds160"]
+    assert payload["requested_documents"] == ["ds2019"]
+    assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
     assert payload["main_flow_feedback"] == {
         "status": "helpful",
@@ -444,7 +446,8 @@ def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus
 
     assert response.status_code == 202
     payload = response.json()
-    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["requested_documents"] == []
+    assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "pending_documents"
     assert payload["gate_progress"]["uploaded_count"] == 0
     assert payload["main_flow_feedback"] == {
@@ -507,7 +510,8 @@ def test_upload_file_maps_funding_alias_into_gate_flow(
 
     assert response.status_code == 202
     payload = response.json()
-    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["requested_documents"] == []
+    assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
     assert payload["main_flow_feedback"] == {
         "status": "helpful",

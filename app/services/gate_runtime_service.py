@@ -87,13 +87,11 @@ class GateRuntimeService:
 
         if all_required_ready:
             gate_status["status"] = GateOverallStatus.READY_FOR_INTERVIEW
-            record.phase_state = "interview"
         elif has_waiting_parse:
             gate_status["status"] = GateOverallStatus.WAITING_FOR_PARSE
-            record.phase_state = "gate_review"
         else:
             gate_status["status"] = GateOverallStatus.PENDING_DOCUMENTS
-            record.phase_state = "gate_review" if required_documents else "intake"
+        record.phase_state = "interview"
 
         gate_status["required_documents"] = required_documents
         record.gate_status_json = gate_status
@@ -101,56 +99,10 @@ class GateRuntimeService:
 
     def build_gate_response(self, record: SessionRecord) -> dict:
         gate_status = record.gate_status_json or {}
-        overall_status = gate_status.get("status", GateOverallStatus.PENDING_DOCUMENTS)
         gate_progress = self._build_gate_progress(gate_status)
-        requested_documents = self._primary_requested_documents(
-            gate_status.get("required_documents", [])
-        )
-        remaining_required_documents = self._remaining_required_documents(
-            gate_status.get("required_documents", [])
-        )
-        primary_document_item = self._pick_primary_document(
-            gate_status.get("required_documents", [])
-        )
-        support_message = self._build_support_message(
-            primary_document_item,
-            remaining_required_documents=remaining_required_documents,
-        )
-
-        if overall_status == GateOverallStatus.FAMILY_NOT_SELECTED:
-            return {
-                "assistant_message": "当前处于材料门控阶段，请先选择签证家族。",
-                "governor_decision": "need_more_evidence",
-                "score_summary": {
-                    "category_fit": 0,
-                    "document_readiness": 0,
-                    "narrative_consistency": 0,
-                    "confidence": 0,
-                },
-                "requested_documents": [],
-                "remaining_required_documents": [],
-                "gate_progress": gate_progress,
-            }
-
-        if overall_status == GateOverallStatus.WAITING_FOR_PARSE:
-            return {
-                "assistant_message": support_message
-                or "当前处于材料门控阶段。材料已提交，系统正在解析，暂时还不能进入正式 interview。",
-                "governor_decision": "need_more_evidence",
-                "score_summary": {
-                    "category_fit": 0,
-                    "document_readiness": 0,
-                    "narrative_consistency": 0,
-                    "confidence": 0,
-                },
-                "requested_documents": requested_documents,
-                "remaining_required_documents": remaining_required_documents,
-                "gate_progress": gate_progress,
-            }
 
         return {
-            "assistant_message": support_message
-            or "当前处于材料门控阶段。请先补齐当前门控材料，之后才能进入正式 interview。",
+            "assistant_message": "当前处于材料门控阶段，请先选择签证家族。",
             "governor_decision": "need_more_evidence",
             "score_summary": {
                 "category_fit": 0,
@@ -158,8 +110,8 @@ class GateRuntimeService:
                 "narrative_consistency": 0,
                 "confidence": 0,
             },
-            "requested_documents": requested_documents,
-            "remaining_required_documents": remaining_required_documents,
+            "requested_documents": [],
+            "remaining_required_documents": [],
             "gate_progress": gate_progress,
         }
 
@@ -197,16 +149,12 @@ class GateRuntimeService:
         support = self.build_gate_support(record)
         requested_documents = list(response.get("requested_documents", []))
         assistant_message = str(response.get("assistant_message", "")).strip()
-        if not assistant_message and not requested_documents:
-            assistant_message = support["support_message"] or ""
-            requested_documents = list(support["requested_documents"])
 
         merged = dict(response)
         merged["assistant_message"] = assistant_message
         merged["requested_documents"] = requested_documents
         merged["remaining_required_documents"] = list(
             response.get("remaining_required_documents", [])
-            or support["remaining_required_documents"]
         )
         merged["gate_progress"] = support["gate_progress"]
         return merged

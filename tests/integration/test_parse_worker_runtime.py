@@ -104,7 +104,7 @@ def test_parse_worker_runtime_automatically_processes_uploaded_documents(
     with db_session_factory() as db:
         waiting = db.get(SessionRecord, session_id)
         assert waiting is not None
-        assert waiting.phase_state == "gate_review"
+        assert waiting.phase_state == "interview"
         assert waiting.gate_status_json["status"] == "waiting_for_parse"
 
     deadline = time.monotonic() + 2.0

@@ -113,7 +113,7 @@ def test_session_export_returns_json_without_document_bytes(
     assert "binary-image-content" not in str(payload)
 
 
-def test_reports_api_returns_gate_review_copy_and_internal_histories(
+def test_reports_api_returns_advisory_report_and_internal_histories(
     client: TestClient,
     db_session_factory,
 ) -> None:
@@ -161,12 +161,8 @@ def test_reports_api_returns_gate_review_copy_and_internal_histories(
     internal_response = client.get(f"/v1/sessions/{session_id}/reports/internal")
 
     assert user_response.status_code == 200
-    assert user_response.json()["interview_status"] == "waiting_key_proof"
-    assert user_response.json()["outcome_label"] == "补件审核中"
-    assert (
-        user_response.json()["summary"]
-        == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
-    )
+    assert user_response.json()["interview_status"] == "verify_key_issue"
+    assert user_response.json()["outcome_label"] == "需核验关键问题"
 
     assert internal_response.status_code == 200
     internal_payload = internal_response.json()
@@ -259,7 +255,7 @@ def test_reports_api_returns_interview_copy(
     ]
 
 
-def test_reports_api_uses_gate_primary_focus_when_gate_review_state_outpaces_runtime_view(
+def test_reports_api_keeps_interviewer_focus_when_gate_review_state_outpaces_runtime_view(
     client: TestClient,
     db_session_factory,
 ) -> None:
@@ -303,11 +299,9 @@ def test_reports_api_uses_gate_primary_focus_when_gate_review_state_outpaces_run
     assert response.status_code == 200
     payload = response.json()
     assert payload["interview_status"] == "waiting_key_proof"
-    assert payload["current_key_proof"] == "ds160"
-    assert payload["missing_evidence"] == ["ds160"]
-    assert payload["advisory_context"]["missing_evidence"] == ["ds160"]
-    assert payload["advisory_context"]["missing_evidence_summary"] == "ds160"
-    assert payload["summary"] == "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
+    assert payload["current_key_proof"] == "funding_proof"
+    assert payload["missing_evidence"] == ["funding_proof"]
+    assert payload["recommended_improvements"] == ["优先补充 funding_proof，再继续面谈。"]
 
 
 def test_user_report_can_derive_runtime_view_state_from_ledger_when_state_is_empty(

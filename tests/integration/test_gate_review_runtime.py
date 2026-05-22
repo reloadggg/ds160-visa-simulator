@@ -84,7 +84,7 @@ def test_f1_gate_review_runtime_progresses_from_pending_to_ready(
     with db_session_factory() as db:
         waiting = db.get(SessionRecord, session_id)
         assert waiting is not None
-        assert waiting.phase_state == "gate_review"
+        assert waiting.phase_state == "interview"
         assert waiting.gate_status_json["status"] == "waiting_for_parse"
 
     with db_session_factory() as db:

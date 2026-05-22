@@ -350,27 +350,16 @@ class InterviewerTurnProjectorService:
         action: InterviewNextAction,
         governor_requested_documents: list[str],
     ) -> list[str]:
+        del record, score, governor_requested_documents
         explicit_requested_documents = self.normalize_requested_documents(
             action.requested_documents
         )
         if action.decision != GovernorDecision.NEED_MORE_EVIDENCE.value:
-            return explicit_requested_documents[:1]
+            return []
         if explicit_requested_documents:
             return explicit_requested_documents[:1]
         if action.focus_document_type and action.focus_document_type.strip():
             return [action.focus_document_type.strip()]
-        normalized_governor_documents = self.normalize_requested_documents(
-            governor_requested_documents
-        )
-        if normalized_governor_documents:
-            return normalized_governor_documents[:1]
-        current_focus = record.current_focus_json or {}
-        focus_document = current_focus.get("document_type")
-        if isinstance(focus_document, str) and focus_document.strip():
-            return [focus_document.strip()]
-        for document_type in score.missing_evidence:
-            if isinstance(document_type, str) and document_type.strip():
-                return [document_type.strip()]
         return []
 
     def normalize_requested_documents(self, document_types: list[str]) -> list[str]:
@@ -390,38 +379,8 @@ class InterviewerTurnProjectorService:
         governor_requested_documents: list[str],
         document_review: dict[str, Any],
     ) -> list[str]:
-        reviewer_documents = self.normalize_requested_documents(
-            list(document_review.get("remaining_required_documents", []) or [])
-        )
-        if reviewer_documents:
-            return reviewer_documents
-
-        current_focus = record.current_focus_json or {}
-        focus_document = current_focus.get("document_type")
-        focus_documents = (
-            [focus_document.strip()]
-            if isinstance(focus_document, str) and focus_document.strip()
-            else []
-        )
-
-        active_documents = self.normalize_requested_documents(
-            list(requested_documents)
-            + list(governor_requested_documents)
-            + focus_documents
-            + list(score.missing_evidence)
-        )
-        if active_documents:
-            return active_documents
-
-        gate_documents = [
-            item.get("document_type")
-            for item in (record.gate_status_json or {}).get("required_documents", [])
-            if isinstance(item, dict) and item.get("status") != "ready"
-        ]
-        normalized_gate_documents = self.normalize_requested_documents(gate_documents)
-        if normalized_gate_documents:
-            return normalized_gate_documents
-        return []
+        del record, score, governor_requested_documents, document_review
+        return self.normalize_requested_documents(list(requested_documents))
 
     def build_turn_record(
         self,

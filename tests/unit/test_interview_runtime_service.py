@@ -698,7 +698,7 @@ def test_finalize_question_action_aligns_focus_document_with_requested_document(
     assert finalized.focus_document_type == "relationship_proof_between_applicant_and_sponsors"
 
 
-def test_finalize_question_action_honors_document_review_request_over_generic_interview_question() -> None:
+def test_finalize_question_action_keeps_document_review_advisory_only() -> None:
     service = InterviewRuntimeService(db=object())
     action = InterviewNextAction(
         decision="continue_interview",
@@ -734,9 +734,9 @@ def test_finalize_question_action_honors_document_review_request_over_generic_in
         },
     )
 
-    assert finalized.decision == "need_more_evidence"
-    assert finalized.requested_documents == ["funding_proof"]
-    assert finalized.focus_kind == "required_document"
-    assert finalized.focus_document_type == "funding_proof"
-    assert "funding proof" in finalized.assistant_message
-    assert finalized.reason == "document_review_requested_key_proof"
+    assert finalized.decision == "continue_interview"
+    assert finalized.assistant_message == action.assistant_message
+    assert finalized.requested_documents == []
+    assert finalized.focus_kind == "interview_question"
+    assert finalized.focus_document_type is None
+    assert finalized.reason is None

@@ -37,7 +37,6 @@ class ReportService:
             interviewer_state_json=effective_interviewer_state,
             current_focus_json=current_focus_json,
         )
-        gate_overall_status = gate_status.get("status")
         interview_status = self._resolve_public_status(
             governor_decision=governor_decision,
             phase_state=phase_state,
@@ -45,18 +44,6 @@ class ReportService:
             missing_evidence=baseline_missing_evidence,
             interviewer_state_json=effective_interviewer_state,
         )
-        if (
-            phase_state == "gate_review"
-            and interview_status == InterviewStateStatus.WAITING_KEY_PROOF.value
-        ):
-            (
-                effective_interviewer_state,
-                current_focus_json,
-            ) = self._apply_gate_review_primary_focus(
-                interviewer_state_json=effective_interviewer_state,
-                current_focus_json=current_focus_json,
-                gate_status=gate_status,
-            )
         missing_evidence = self._resolve_missing_evidence(
             profile_json=profile_json,
             interviewer_state_json=effective_interviewer_state,
@@ -84,19 +71,6 @@ class ReportService:
         prompt_trace = dict(
             effective_interviewer_state.get("prompt_trace", {}) or {}
         )
-        if (
-            phase_state == "gate_review"
-            and interview_status == InterviewStateStatus.WAITING_KEY_PROOF.value
-        ):
-            advisory_context["missing_evidence"] = list(missing_evidence)
-            advisory_context["risk_level"] = risk_level
-            if missing_evidence:
-                advisory_context["missing_evidence_summary"] = ", ".join(missing_evidence)
-            if current_key_proof:
-                allowed_next_actions = [
-                    "upload_key_proof",
-                    "explain_missing_proof",
-                ]
         turn_decision = {
             "decision": effective_interviewer_state.get("decision", governor_decision),
             "current_key_question": current_key_question,
@@ -139,14 +113,6 @@ class ReportService:
                 else "当前已进入正式 interview 阶段，可继续回答后续问题。"
             )
             recommended_improvements = ["继续回答后续问题，并保持叙事一致。"]
-        elif phase_state == "gate_review":
-            outcome_label = "补件审核中"
-            if gate_overall_status == "waiting_for_parse":
-                summary = "当前处于材料门控阶段。材料已提交，仍在解析中，暂不能进入正式 interview。"
-                recommended_improvements = ["等待解析完成后再继续。"]
-            else:
-                summary = "当前处于材料门控阶段。仍缺当前门控材料，暂不能进入正式 interview。"
-                recommended_improvements = ["补齐当前门控材料后再继续。"]
         elif not missing_evidence:
             outcome_label = "可继续正式问答"
             summary = "当前已进入正式 interview 阶段，可继续回答后续问题。"
@@ -345,64 +311,7 @@ class ReportService:
         if focus_document_type and focus_document_type not in missing_evidence:
             missing_evidence.append(focus_document_type)
 
-        if not missing_evidence and profile_json.get("funding", {}).get("primary_source") == "parents":
-            evidence_refs = (
-                profile_json.get("field_provenance", {})
-                .get("/funding/primary_source", {})
-                .get("evidence_refs", [])
-            )
-            if not evidence_refs:
-                missing_evidence.append("funding_proof")
         return missing_evidence
-
-    def _apply_gate_review_primary_focus(
-        self,
-        *,
-        interviewer_state_json: dict[str, Any],
-        current_focus_json: dict[str, Any],
-        gate_status: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        primary_document = self._gate_primary_document(gate_status)
-        if not primary_document:
-            return interviewer_state_json, current_focus_json
-
-        payload = dict(interviewer_state_json or {})
-        payload["current_key_question"] = None
-        payload["current_key_proof"] = primary_document
-        payload["requested_documents"] = [primary_document]
-        if not payload.get("allowed_next_actions"):
-            payload["allowed_next_actions"] = [
-                "upload_key_proof",
-                "explain_missing_proof",
-            ]
-
-        next_focus = {
-            "owner": "gate_runtime_service",
-            "kind": "required_document",
-            "document_type": primary_document,
-        }
-        return payload, next_focus
-
-    def _gate_primary_document(self, gate_status: dict[str, Any]) -> str | None:
-        required_documents = gate_status.get("required_documents", [])
-        if not isinstance(required_documents, list):
-            return None
-
-        for item in required_documents:
-            if not isinstance(item, dict):
-                continue
-            document_type = item.get("document_type")
-            if isinstance(document_type, str) and item.get("status", "missing") == "missing":
-                return document_type
-
-        for item in required_documents:
-            if not isinstance(item, dict):
-                continue
-            document_type = item.get("document_type")
-            if isinstance(document_type, str) and not item.get("meets_minimum_fields", False):
-                return document_type
-
-        return None
 
     def _waiting_key_proof_summary(self, current_key_proof: str | None) -> str:
         if current_key_proof:
@@ -423,8 +332,7 @@ class ReportService:
         missing_evidence: list[str],
         interviewer_state_json: dict,
     ) -> str:
-        if phase_state == "gate_review" and self._gate_primary_document(gate_status):
-            return InterviewStateStatus.WAITING_KEY_PROOF.value
+        del phase_state, gate_status
         public_status = interviewer_state_json.get("public_status")
         if public_status:
             return public_status
@@ -435,7 +343,7 @@ class ReportService:
         if governor_decision == GovernorDecision.ROUTE_CORRECTION.value:
             return InterviewStateStatus.VERIFY_KEY_ISSUE.value
         if governor_decision == GovernorDecision.NEED_MORE_EVIDENCE.value:
-            if missing_evidence or gate_status.get("status") == "pending_documents":
+            if missing_evidence:
                 return InterviewStateStatus.WAITING_KEY_PROOF.value
             return InterviewStateStatus.VERIFY_KEY_ISSUE.value
         return InterviewStateStatus.CONTINUE_INTERVIEW.value

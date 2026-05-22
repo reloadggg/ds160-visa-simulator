@@ -19,6 +19,23 @@ chmod 600 deploy/certs/origin.key
 docker compose up -d --build
 ```
 
+## 服务器更新
+
+主线代码推送到 GitHub 后，服务器可以直接在部署目录拉取并重建：
+
+```bash
+cd /opt/ds160-agent2
+git pull --ff-only origin main
+docker compose up -d --build
+```
+
+更新后确认容器和健康检查：
+
+```bash
+docker compose ps
+curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
+```
+
 ## 本机验证
 
 ```bash

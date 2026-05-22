@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
+from types import SimpleNamespace
 
 from app.db.base import Base
 from app.db.models import SessionRecord
@@ -42,7 +43,19 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
-def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
+def test_chat_completions_maps_to_domain_flow(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
+            assistant_message="Please explain your funding plan.",
+            requested_documents=[],
+            decision_hint="continue_interview",
+        ),
+    )
+
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -70,7 +83,7 @@ def test_chat_completions_maps_to_domain_flow(client: TestClient) -> None:
         "runtime_view_state",
     }
     assert payload["metadata"]["session_id"].startswith("sess-")
-    assert payload["metadata"]["phase_state"] == "gate_review"
+    assert payload["metadata"]["phase_state"] == "interview"
     assert payload["metadata"]["context_mode"] == "new_session"
     assert isinstance(payload["metadata"]["runtime_view_state"], dict)
     assert payload["metadata"]["runtime_view_state"]["decision"]
