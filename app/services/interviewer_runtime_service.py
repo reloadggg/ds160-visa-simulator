@@ -40,7 +40,7 @@ class InterviewerRuntimeService:
         )
         score = self._reconcile_score_with_gate(record, score)
         profile_json = profile.model_dump(mode="json")
-        governor, action, capability_tool_outputs = self._decide_and_build_action(
+        boundary, action, capability_tool_outputs = self._decide_and_build_action(
             record,
             profile,
             score,
@@ -54,19 +54,18 @@ class InterviewerRuntimeService:
             message_text=message_text,
             action=action,
             score=score,
-            governor_decision=governor["decision"],
-            governor_requested_documents=governor.get("requested_documents", []),
+            governor_decision=boundary["decision"],
+            governor_requested_documents=boundary.get("requested_documents", []),
             capability_tool_outputs=capability_tool_outputs,
             trace_entries=trace_entries,
             history_turn_count=history_turn_count,
             history_turns=history_turns,
         )
-        final_decision = action.decision
 
         self._apply_turn_state(
             record,
             profile_json=profile_json,
-            final_decision=final_decision,
+            boundary_decision=boundary["decision"],
             projection=projection,
         )
         self.session_repo.append_runtime_history(
@@ -74,7 +73,69 @@ class InterviewerRuntimeService:
             runtime_trace=trace_entries,
             score_history=[self.interview_runtime._build_score_history_entry(score)],
             governor_history=[
-                self.interview_runtime._build_governor_history_entry(governor["decision"])
+                self.interview_runtime._build_governor_history_entry(boundary["decision"])
+            ],
+        )
+
+        return {
+            "assistant_message": projection.response["assistant_message"],
+            "governor_decision": projection.response["governor_decision"],
+            "score_summary": dict(projection.response["score_summary"]),
+            "requested_documents": list(projection.response["requested_documents"]),
+            "turn_decision": dict(projection.response["turn_decision"]),
+            "advisory_context": dict(projection.response["advisory_context"]),
+            "prompt_trace": dict(projection.response["prompt_trace"]),
+            "turn_record": projection.turn_record,
+        }
+
+    def refresh_after_material_change(
+        self,
+        record: SessionRecord,
+        *,
+        reason: str,
+    ) -> dict:
+        history_turns = self.session_turn_repo.list_session_turns(record.session_id)
+        history_turn_count = max(len(history_turns), 0)
+        trace_entries, profile, score, findings = self._analyze_material_change(
+            record,
+            reason=reason,
+        )
+        score = self._reconcile_score_with_gate(record, score)
+        profile_json = profile.model_dump(mode="json")
+        boundary, action, capability_tool_outputs = self._decide_and_build_action(
+            record,
+            profile,
+            score,
+            findings,
+            history_turns,
+            trace_entries,
+        )
+        action = self._coerce_action(action)
+        projection = self.turn_projector.project(
+            record=record,
+            message_text=reason,
+            action=action,
+            score=score,
+            governor_decision=boundary["decision"],
+            governor_requested_documents=boundary.get("requested_documents", []),
+            capability_tool_outputs=capability_tool_outputs,
+            trace_entries=trace_entries,
+            history_turn_count=history_turn_count,
+            history_turns=history_turns,
+        )
+
+        self._apply_turn_state(
+            record,
+            profile_json=profile_json,
+            boundary_decision=boundary["decision"],
+            projection=projection,
+        )
+        self.session_repo.append_runtime_history(
+            record,
+            runtime_trace=trace_entries,
+            score_history=[self.interview_runtime._build_score_history_entry(score)],
+            governor_history=[
+                self.interview_runtime._build_governor_history_entry(boundary["decision"])
             ],
         )
 
@@ -108,6 +169,24 @@ class InterviewerRuntimeService:
             raise ValueError("interview analysis must include profile and score")
         return trace_entries, profile, score, findings
 
+    def _analyze_material_change(
+        self,
+        record: SessionRecord,
+        *,
+        reason: str,
+    ) -> tuple[list[RuntimeTraceEntry], ApplicantProfile, ScoreState, list[Any]]:
+        analysis = self.interview_runtime.analyze_material_change(
+            record,
+            reason=reason,
+        )
+        trace_entries = self._extract_runtime_trace(analysis)
+        profile = self._extract_profile_model(analysis)
+        score = self._extract_score_model(analysis)
+        findings = self._extract_findings(analysis)
+        if profile is None or score is None:
+            raise ValueError("material change analysis must include profile and score")
+        return trace_entries, profile, score, findings
+
     def _decide_and_build_action(
         self,
         record: SessionRecord,
@@ -117,7 +196,7 @@ class InterviewerRuntimeService:
         history_turns: list[Any],
         trace_entries: list[RuntimeTraceEntry],
     ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
-        governor = self._decide_governor(
+        boundary = self._decide_governor(
             record,
             profile,
             score,
@@ -128,19 +207,14 @@ class InterviewerRuntimeService:
             record,
             profile,
             score,
-            governor["decision"],
+            boundary["decision"],
             history_turns,
             trace_entries,
         )
         action = self._coerce_action(action)
-        final_governor = {
-            **governor,
-            "decision": action.decision,
-            "requested_documents": list(
-                action.requested_documents or governor.get("requested_documents", [])
-            ),
-        }
-        return final_governor, action, dict(self.interview_runtime._last_capability_tool_outputs)
+        action = self._clear_ready_document_focus(record, action)
+        boundary = self._apply_boundary_transition(boundary, action)
+        return boundary, action, dict(self.interview_runtime._last_capability_tool_outputs)
 
 
     def _apply_turn_state(
@@ -148,11 +222,11 @@ class InterviewerRuntimeService:
         record: SessionRecord,
         *,
         profile_json: dict[str, Any],
-        final_decision: str,
+        boundary_decision: str,
         projection: InterviewerTurnProjection,
     ) -> None:
         record.profile_json = profile_json
-        record.current_governor_decision = final_decision
+        record.current_governor_decision = boundary_decision
         record.current_focus_json = projection.current_focus
         record.phase_state = projection.phase_state
         record.interviewer_state_json = projection.interviewer_state
@@ -221,20 +295,30 @@ class InterviewerRuntimeService:
         findings: list[Any] | None = None,
     ) -> dict[str, Any]:
         del profile, trace_entries, findings
-        current_decision = (
-            record.current_governor_decision
-            or GovernorDecision.CONTINUE_INTERVIEW.value
-        )
-        if (
-            current_decision == GovernorDecision.NEED_MORE_EVIDENCE.value
-            and not score.missing_evidence
-        ):
-            current_decision = GovernorDecision.CONTINUE_INTERVIEW.value
+        current_decision = self._boundary_decision_from_record(record)
         return {
             "decision": current_decision,
             "blocked_actions": [],
             "rationale_refs": [],
             "requested_documents": [],
+        }
+
+    def _boundary_decision_from_record(self, record: SessionRecord) -> str:
+        current_decision = record.current_governor_decision
+        if current_decision == GovernorDecision.SIMULATED_REFUSAL.value:
+            return GovernorDecision.SIMULATED_REFUSAL.value
+        return GovernorDecision.CONTINUE_INTERVIEW.value
+
+    def _apply_boundary_transition(
+        self,
+        boundary: dict[str, Any],
+        action: InterviewNextAction,
+    ) -> dict[str, Any]:
+        if action.decision != GovernorDecision.SIMULATED_REFUSAL.value:
+            return boundary
+        return {
+            **boundary,
+            "decision": GovernorDecision.SIMULATED_REFUSAL.value,
         }
 
     def _gate_is_ready(self, record: SessionRecord) -> bool:
@@ -276,6 +360,43 @@ class InterviewerRuntimeService:
                 "focus_risk_code": getattr(action, "focus_risk_code", None),
                 "reason": getattr(action, "reason", None),
             }
+        )
+
+    def _clear_ready_document_focus(
+        self,
+        record: SessionRecord,
+        action: InterviewNextAction,
+    ) -> InterviewNextAction:
+        if action.decision != GovernorDecision.NEED_MORE_EVIDENCE.value:
+            return action
+        ready_documents = self._ready_gate_documents(record)
+        if not ready_documents:
+            return action
+        if not action.requested_documents and not action.focus_document_type:
+            return action
+        requested_documents = [
+            document_type
+            for document_type in action.requested_documents
+            if normalize_document_type(document_type) not in ready_documents
+        ]
+        focus_document_type = action.focus_document_type
+        if normalize_document_type(focus_document_type) in ready_documents:
+            focus_document_type = None
+        if requested_documents or focus_document_type:
+            return action.model_copy(
+                update={
+                    "requested_documents": requested_documents,
+                    "focus_document_type": focus_document_type,
+                }
+            )
+        return InterviewNextAction(
+            decision=GovernorDecision.CONTINUE_INTERVIEW.value,
+            assistant_message="材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+            requested_documents=[],
+            focus_kind="interview_question",
+            focus_document_type=None,
+            focus_risk_code=None,
+            reason="cleared_ready_document_request_after_material_change",
         )
 
     def _extract_runtime_trace(self, analysis: Any) -> list[Any]:

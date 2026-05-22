@@ -92,6 +92,31 @@ class InterviewRuntimeService:
             findings=findings,
         )
 
+    def analyze_material_change(
+        self,
+        record: SessionRecord,
+        *,
+        reason: str,
+    ) -> InterviewTurnAnalysis:
+        profile = self._load_profile(record.session_id, record.profile_json)
+        trace_entries: list[RuntimeTraceEntry] = [
+            RuntimeTraceEntry(
+                node_name="material_changed",
+                summary=reason,
+            )
+        ]
+
+        self._resolve_evidence(profile, trace_entries)
+        findings = self._consistency_check(profile, trace_entries)
+        score = self._score_case(profile, findings, trace_entries)
+
+        return InterviewTurnAnalysis(
+            profile=profile,
+            trace_entries=trace_entries,
+            score=score,
+            findings=findings,
+        )
+
     def _receive_input(self) -> RuntimeTraceEntry:
         return RuntimeTraceEntry(
             node_name="receive_input",
@@ -323,11 +348,12 @@ class InterviewRuntimeService:
                 governor_decision,
                 score,
                 run_result.output,
+                capability_tool_outputs=capability_result.tool_outputs,
             )
             self._last_capability_trace_entries = [
                 RuntimeTraceEntry(
                     node_name="governor_decide",
-                    summary=f"decision={action.decision}",
+                    summary=f"decision={governor_decision}",
                 ),
                 *list(capability_result.trace_entries),
             ]
@@ -339,7 +365,7 @@ class InterviewRuntimeService:
                 retry_count=run_result.retry_count,
                 provider=run_result.provider or runtime.get("provider"),
                 model=run_result.model or runtime.get("model"),
-                boundary_decision=action.decision,
+                boundary_decision=governor_decision,
                 capability_tool_outputs=capability_result.tool_outputs,
             )
         except Exception as exc:
@@ -463,8 +489,25 @@ class InterviewRuntimeService:
         governor_decision: str,
         score: ScoreState,
         action: InterviewNextAction,
+        capability_tool_outputs: dict[str, Any] | None = None,
     ) -> InterviewNextAction:
+        document_review = self._document_review_payload(capability_tool_outputs)
+        review_requested_documents = self._document_review_requested_documents(
+            document_review
+        )
         requested_documents = self._coerce_requested_documents(action.requested_documents)
+        if review_requested_documents:
+            return InterviewNextAction(
+                decision=GovernorDecision.NEED_MORE_EVIDENCE.value,
+                assistant_message=self._document_review_request_message(
+                    review_requested_documents[0]
+                ),
+                requested_documents=review_requested_documents,
+                focus_kind="required_document",
+                focus_document_type=review_requested_documents[0],
+                focus_risk_code=action.focus_risk_code,
+                reason="document_review_requested_key_proof",
+            )
         if (
             governor_decision == GovernorDecision.CONTINUE_INTERVIEW.value
             and action.decision == GovernorDecision.NEED_MORE_EVIDENCE.value
@@ -493,6 +536,34 @@ class InterviewRuntimeService:
             focus_risk_code=action.focus_risk_code,
             reason=action.reason,
         )
+
+    def _document_review_payload(
+        self,
+        capability_tool_outputs: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(capability_tool_outputs, dict):
+            return {}
+        document_review = capability_tool_outputs.get("document_review")
+        if not isinstance(document_review, dict):
+            return {}
+        return document_review
+
+    def _document_review_requested_documents(
+        self,
+        document_review: dict[str, Any],
+    ) -> list[str]:
+        if document_review.get("recommended_next_step") != "request_documents":
+            return []
+        primary_document = self._runtime_text(document_review.get("primary_document"))
+        if primary_document is not None:
+            return [primary_document]
+        return self._coerce_requested_documents(
+            list(document_review.get("remaining_required_documents", []) or [])
+        )
+
+    def _document_review_request_message(self, document_type: str) -> str:
+        readable = document_type.replace("_", " ")
+        return f"材料核验显示当前最关键的证明是 {readable}。请先上传这份材料。"
 
     def _coerce_requested_documents(
         self,

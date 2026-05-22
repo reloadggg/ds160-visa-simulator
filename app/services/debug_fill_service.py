@@ -12,7 +12,9 @@ from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
 from app.repositories.session_repo import SessionRepository
 from app.services.gate_runtime_service import GateRuntimeService
+from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
+from app.services.runtime_errors import ModelRuntimeError
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,16 @@ class DebugFillService:
         ProfileRecomputeService(self.db).recompute_session(record.session_id, save=False)
         GateRuntimeService(self.db).refresh_record(record, save=False)
         self.db.commit()
+        main_flow_response: dict = {}
+        refresh_error: str | None = None
+        try:
+            main_flow_response = MessageService(self.db).refresh_after_material_change(
+                record.session_id,
+                reason=f"debug_fill:{fill_document.document_type}",
+            )
+        except ModelRuntimeError as exc:
+            refresh_error = exc.detail
+            self.db.rollback()
         self.db.refresh(record)
 
         return {
@@ -52,6 +64,19 @@ class DebugFillService:
             "filename": document.filename,
             "phase_state": record.phase_state,
             "gate_status": record.gate_status_json,
+            "assistant_message": main_flow_response.get("assistant_message"),
+            "governor_decision": main_flow_response.get("governor_decision"),
+            "requested_documents": list(
+                main_flow_response.get("requested_documents", []) or []
+            ),
+            "remaining_required_documents": list(
+                main_flow_response.get("remaining_required_documents", []) or []
+            ),
+            "turn_decision": dict(main_flow_response.get("turn_decision", {}) or {}),
+            "runtime_view_state": dict(
+                main_flow_response.get("runtime_view_state", {}) or {}
+            ),
+            "main_flow_refresh_error": refresh_error,
         }
 
     def _target_document_type(self, record) -> str:

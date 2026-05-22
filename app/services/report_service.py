@@ -98,6 +98,10 @@ class ReportService:
             "current_key_proof": current_key_proof,
             "current_risk_code": current_risk_code,
         }
+        public_governor_decision = self._public_governor_decision(
+            governor_decision=governor_decision,
+            effective_interviewer_state=effective_interviewer_state,
+        )
 
         outcome_label = "需补强关键证据"
         summary = self._waiting_key_proof_summary(current_key_proof)
@@ -146,7 +150,7 @@ class ReportService:
         return {
             "session_id": session_id,
             "visa_family": visa_family,
-            "governor_decision": governor_decision,
+            "governor_decision": public_governor_decision,
             "interview_status": interview_status,
             "outcome_label": outcome_label,
             "summary": summary,
@@ -280,6 +284,17 @@ class ReportService:
                 continue
             payload[key] = value
         return payload
+
+    def _public_governor_decision(
+        self,
+        *,
+        governor_decision: str,
+        effective_interviewer_state: dict[str, Any],
+    ) -> str:
+        decision = effective_interviewer_state.get("decision")
+        if isinstance(decision, str) and decision.strip():
+            return decision.strip()
+        return governor_decision
 
     def _legacy_event_payloads(
         self,

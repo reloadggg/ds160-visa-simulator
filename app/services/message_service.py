@@ -67,6 +67,38 @@ class MessageService:
             self.db.rollback()
             raise
 
+    def refresh_after_material_change(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+    ) -> dict:
+        record = self.session_repo.get(session_id)
+        if record is None:
+            raise SessionNotFoundError(session_id)
+        if self._is_refusal_closed(record):
+            return {}
+        record = self.gate_runtime.refresh_session(session_id, save=False)
+        if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
+            return {}
+
+        try:
+            interview_response = self.interviewer_runtime.refresh_after_material_change(
+                record,
+                reason=reason,
+            )
+            response = self.gate_runtime.merge_interview_response(
+                interview_response,
+                record,
+            )
+            assistant_turn = self._append_assistant_turn(record, response)
+            self._sync_runtime_view_contract(record, response, assistant_turn)
+            self.session_repo.save(record)
+            return response
+        except Exception:
+            self.db.rollback()
+            raise
+
     def _is_refusal_closed(self, record) -> bool:
         if record.current_governor_decision == "simulated_refusal":
             return True
@@ -150,6 +182,13 @@ class MessageService:
             response,
         )
         response["runtime_view_state"] = runtime_view_state
+        turn_decision_payload = response.get("turn_decision", {})
+        if (
+            isinstance(turn_decision_payload, dict)
+            and turn_decision_payload.get("governor_decision") is not None
+            and turn_decision_payload.get("decision") is not None
+        ):
+            response["governor_decision"] = turn_decision_payload["decision"]
 
         metadata = dict(assistant_turn.metadata_json or {})
         current_focus = dict(

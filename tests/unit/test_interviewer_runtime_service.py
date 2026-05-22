@@ -820,7 +820,7 @@ def test_decide_governor_defaults_to_continue_interview_hint() -> None:
     assert trace_entries == []
 
 
-def test_decide_governor_reuses_prior_turn_decision_as_hint() -> None:
+def test_decide_governor_does_not_reuse_prior_turn_decision_as_boundary() -> None:
     service = InterviewerRuntimeService(db=object())
     profile = ApplicantProfile.minimal("profile-sess-record-conflict")
     score = _build_score(risk_codes=["record_conflict"])
@@ -834,7 +834,7 @@ def test_decide_governor_reuses_prior_turn_decision_as_hint() -> None:
     governor = service._decide_governor(record, profile, score, trace_entries)
 
     assert governor == {
-        "decision": "high_risk_review",
+        "decision": "continue_interview",
         "blocked_actions": [],
         "rationale_refs": [],
         "requested_documents": [],
@@ -957,4 +957,127 @@ def test_run_turn_keeps_prior_focus_document_when_only_focus_can_name_the_key_pr
         "owner": "interviewer_runtime_service",
         "kind": "required_document",
         "document_type": "funding_proof",
+    }
+
+
+def test_run_turn_does_not_persist_turn_decision_as_boundary_decision(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-boundary-split")
+    score = _build_score(missing_evidence=["funding_proof"])
+    record = SessionRecord(
+        session_id="sess-boundary-split",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={},
+    )
+
+    monkeypatch.setattr(service.session_turn_repo, "list_session_turns", lambda session_id: [])
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[],
+        ),
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        lambda session_id, current_profile, current_score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Please upload funding proof.",
+            requested_documents=["funding_proof"],
+            decision_hint="need_more_evidence",
+        ),
+    )
+    captured_history: list[dict] = []
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: captured_history.append(kwargs) or current_record,
+    )
+
+    response = service.run_turn(record, "I will upload it later.")
+
+    assert response["governor_decision"] == "continue_interview"
+    assert response["turn_decision"]["decision"] == "need_more_evidence"
+    assert record.current_governor_decision == "continue_interview"
+    assert record.interviewer_state_json["decision"] == "need_more_evidence"
+    assert record.interviewer_state_json["governor_decision"] == "continue_interview"
+    assert captured_history[0]["governor_history"][0].decision == "continue_interview"
+
+
+def test_run_turn_clears_ready_document_request_before_persisting_state(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-ready-doc")
+    score = _build_score(missing_evidence=["funding_proof"])
+    record = SessionRecord(
+        session_id="sess-ready-doc",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "required_document",
+            "document_type": "funding_proof",
+        },
+        gate_status_json={
+            "status": "ready_for_interview",
+            "required_documents": [
+                {
+                    "document_type": "funding_proof",
+                    "status": "ready",
+                    "meets_minimum_fields": True,
+                }
+            ],
+        },
+    )
+
+    monkeypatch.setattr(service.session_turn_repo, "list_session_turns", lambda session_id: [])
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[],
+        ),
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        lambda session_id, current_profile, current_score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Please upload funding proof.",
+            requested_documents=["funding_proof"],
+            decision_hint="need_more_evidence",
+        ),
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+
+    response = service.run_turn(record, "I uploaded it.")
+
+    assert response["governor_decision"] == "continue_interview"
+    assert response["turn_decision"]["decision"] == "continue_interview"
+    assert response["requested_documents"] == []
+    assert record.current_focus_json == {
+        "owner": "interviewer_runtime_service",
+        "kind": "interview_question",
+        "question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
     }

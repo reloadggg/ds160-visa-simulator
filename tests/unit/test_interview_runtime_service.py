@@ -696,3 +696,47 @@ def test_finalize_question_action_aligns_focus_document_with_requested_document(
         "relationship_proof_between_applicant_and_sponsors"
     ]
     assert finalized.focus_document_type == "relationship_proof_between_applicant_and_sponsors"
+
+
+def test_finalize_question_action_honors_document_review_request_over_generic_interview_question() -> None:
+    service = InterviewRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+    score = ScoreState.minimal(profile_version=1, scoring_stage="interview_turn")
+    score.risk_flags = [
+        RiskFlag(
+            code="FUNDING_UNDOCUMENTED",
+            severity="medium",
+            status="supported",
+            evidence_refs=[],
+        )
+    ]
+
+    finalized = service._finalize_question_action(
+        "continue_interview",
+        score,
+        action,
+        capability_tool_outputs={
+            "document_review": {
+                "review_status": "needs_clarification",
+                "primary_document": "funding_proof",
+                "remaining_required_documents": [
+                    "funding_proof",
+                    "relationship_proof_between_applicant_and_sponsors",
+                    "admission_letter",
+                ],
+                "recommended_next_step": "request_documents",
+            }
+        },
+    )
+
+    assert finalized.decision == "need_more_evidence"
+    assert finalized.requested_documents == ["funding_proof"]
+    assert finalized.focus_kind == "required_document"
+    assert finalized.focus_document_type == "funding_proof"
+    assert "funding proof" in finalized.assistant_message
+    assert finalized.reason == "document_review_requested_key_proof"

@@ -12,6 +12,7 @@ from app.db.models import JobRecord, SessionRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
+from app.agents.schemas import InterviewNextAction
 from app.workers.parse_worker import ParseWorker
 from app.workers.parse_worker import stop_parse_worker_runtime
 
@@ -68,7 +69,24 @@ def client(
 def test_parse_worker_processes_uploaded_document_before_next_message(
     client: TestClient,
     db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message=(
+                "Please upload funding proof."
+                if score.missing_evidence
+                else "What is the purpose of your travel?"
+            ),
+            requested_documents=list(score.missing_evidence[:1]),
+            decision=(
+                "need_more_evidence"
+                if score.missing_evidence
+                else "continue_interview"
+            ),
+        ),
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -123,6 +141,13 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
         assert record is not None
         assert record.phase_state == "interview"
         assert record.gate_status_json["status"] == "ready_for_interview"
+        assert record.current_governor_decision == "continue_interview"
+        assert record.interviewer_state_json["decision"] == "continue_interview"
+        assert record.current_focus_json == {
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "What is the purpose of your travel?",
+        }
 
     post_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",

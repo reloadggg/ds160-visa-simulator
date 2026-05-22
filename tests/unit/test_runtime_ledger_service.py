@@ -316,3 +316,62 @@ def test_runtime_ledger_service_creates_capability_event_for_capability_trace_no
         "decide_capability",
         "resolve_capability",
     ]
+
+
+def test_runtime_ledger_does_not_promote_document_review_primary_to_active_focus(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'runtime-ledger-document-review.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        service = RuntimeLedgerService(db)
+        session_record = SessionRepository(db).create(
+            declared_family="f1",
+            gate_status_json={"status": "ready_for_interview"},
+        )
+        session_record.current_governor_decision = "continue_interview"
+        session_record.governor_history_json = [
+            {"decision": "continue_interview"},
+        ]
+        session_record.runtime_trace_json = [
+            {"node_name": "material_changed"},
+            {"node_name": "turn_decision", "turn_decision": "continue_interview"},
+        ]
+        db.add(session_record)
+        db.flush()
+
+        repo = SessionTurnRepository(db)
+        assistant_turn = repo.append_assistant_turn(
+            session_id=session_record.session_id,
+            content="What is the purpose of your travel?",
+            source="interviewer_runtime_service",
+            metadata_json={
+                "turn_record": {
+                    "decision": "continue_interview",
+                    "requested_documents": [],
+                    "remaining_required_documents": [],
+                    "focus": {
+                        "kind": "interview_question",
+                        "question": "What is the purpose of your travel?",
+                    },
+                    "document_review": {
+                        "primary_document": "funding_proof",
+                        "recommended_next_step": "request_documents",
+                    },
+                }
+            },
+        )
+
+        ledger = service.build_session_ledger(session_record.session_id)
+        latest_view_state = service.latest_view_state(ledger)
+
+    assert latest_view_state.source_turn_id == assistant_turn.turn_id
+    assert latest_view_state.decision == "continue_interview"
+    assert latest_view_state.public_status == "continue_interview"
+    assert latest_view_state.current_key_question == "What is the purpose of your travel?"
+    assert latest_view_state.current_key_proof is None
+    assert latest_view_state.requested_documents == []

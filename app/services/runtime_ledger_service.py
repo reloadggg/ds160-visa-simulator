@@ -149,7 +149,6 @@ class RuntimeLedgerService:
         current_key_question = self._string_or_none(focus.get("question"))
         current_key_proof = (
             self._string_or_none(focus.get("document_type"))
-            or self._string_or_none(document_review.get("primary_document"))
             or (requested_documents[0] if requested_documents else None)
         )
         advisory_risk_codes = advisory_context.get("risk_codes", [])

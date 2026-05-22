@@ -1604,27 +1604,27 @@ def test_message_turn_persists_current_focus_from_interviewer_runtime(
             ),
             {
                 "owner": "interviewer_runtime_service",
-                "kind": "required_document",
-                "document_type": "funding_proof",
+                "kind": "interview_question",
+                "question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
             },
             {
                 "owner": "interviewer_runtime_service",
-                "status": "waiting_key_proof",
-                "public_status": "waiting_key_proof",
-                "decision": "need_more_evidence",
-                "governor_decision": "need_more_evidence",
-                "next_action": "upload_key_proof",
-                "decision_hint": "need_more_evidence",
-                "current_key_question": None,
-                "current_key_proof": "funding_proof",
+                "status": "continue_interview",
+                "public_status": "continue_interview",
+                "decision": "continue_interview",
+                "governor_decision": "continue_interview",
+                "next_action": "answer_question",
+                "decision_hint": "continue_interview",
+                "current_key_question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+                "current_key_proof": None,
                 "current_risk_code": None,
                 "risk_level": "none",
                 "allowed_next_actions": [
-                    "upload_key_proof",
-                    "explain_missing_proof",
+                    "answer_question",
+                    "continue_interview",
                 ],
-                "requested_documents": ["funding_proof"],
-                "remaining_required_documents": ["funding_proof"],
+                "requested_documents": [],
+                "remaining_required_documents": [],
                 "risk_codes": [],
                 "history_turn_count": 0,
             },
@@ -1761,7 +1761,11 @@ def test_message_turn_persists_owner_state_for_non_continue_decisions(
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService._decide_governor",
         lambda self, record, profile, score, trace_entries, current_decision=decision, findings=None: {
-            "decision": current_decision,
+            "decision": (
+                "continue_interview"
+                if current_decision == "need_more_evidence"
+                else current_decision
+            ),
             "blocked_actions": [],
             "rationale_refs": [],
             "requested_documents": list(score.missing_evidence),
@@ -1778,7 +1782,10 @@ def test_message_turn_persists_owner_state_for_non_continue_decisions(
     )
 
     assert response.status_code == 200
-    assert response.json()["governor_decision"] == decision
+    expected_response_decision = (
+        "continue_interview" if decision == "need_more_evidence" else decision
+    )
+    assert response.json()["governor_decision"] == expected_response_decision
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)

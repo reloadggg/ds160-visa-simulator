@@ -10,13 +10,13 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 FROM node:22-slim AS web-deps
 WORKDIR /app/web
-RUN corepack enable
-COPY web/package.json web/pnpm-lock.yaml ./
+RUN corepack enable && corepack prepare pnpm@10.33.1 --activate
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 FROM node:22-slim AS web-builder
 WORKDIR /app/web
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.33.1 --activate
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NEXT_PUBLIC_API_BASE_URL=/api \
     NEXT_PUBLIC_MOCK=false

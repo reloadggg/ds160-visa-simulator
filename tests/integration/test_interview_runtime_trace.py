@@ -6,9 +6,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
 
+from app.agents.schemas import InterviewNextAction
 from app.db.base import Base
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.db.session import get_db
+from app.domain.runtime import RuntimeTraceEntry
 from app.main import app
 from app.workers.parse_worker import ParseWorker
 
@@ -84,7 +86,49 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
 def test_interview_runtime_trace_and_histories_append_per_turn(
     client: TestClient,
     db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def fake_build_question_action(
+        self,
+        session_id,
+        profile,
+        score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ):
+        trace_entries.extend(
+            [
+                RuntimeTraceEntry(
+                    node_name="governor_decide",
+                    summary=f"decision={governor_decision}",
+                ),
+                RuntimeTraceEntry(
+                    node_name="decide_capability",
+                    summary="planned=none",
+                ),
+                RuntimeTraceEntry(
+                    node_name="resolve_capability",
+                    summary="resolved=none",
+                ),
+                RuntimeTraceEntry(
+                    node_name="turn_decision",
+                    summary="decision=continue_interview",
+                    turn_decision="continue_interview",
+                    metadata={"boundary_decision": governor_decision},
+                ),
+            ]
+        )
+        return InterviewNextAction(
+            assistant_message="What is the purpose of your travel?",
+            requested_documents=[],
+            decision="continue_interview",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        fake_build_question_action,
+    )
     session_id = _prepare_ready_for_interview_session(client, db_session_factory)
 
     first = client.post(
@@ -112,16 +156,37 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
     assert second.json()["assistant_message"]
     assert first.json()["governor_decision"] == first.json()["turn_decision"]["decision"]
     assert second.json()["governor_decision"] == second.json()["turn_decision"]["decision"]
-    assert [(turn.turn_index, turn.role) for turn in turns] == [
-        (1, "user"),
-        (2, "assistant"),
-        (3, "user"),
-        (4, "assistant"),
+    assert [(turn.turn_index, turn.role) for turn in turns[-4:]] == [
+        (turns[-4].turn_index, "user"),
+        (turns[-3].turn_index, "assistant"),
+        (turns[-2].turn_index, "user"),
+        (turns[-1].turn_index, "assistant"),
     ]
-    assert len(record.runtime_trace_json) == 18
-    assert len(record.score_history_json) == 2
-    assert len(record.governor_history_json) == 2
-    assert [entry["node_name"] for entry in record.runtime_trace_json[:9]] == [
+    material_refresh_turns = [
+        turn
+        for turn in turns
+        if (turn.metadata_json or {}).get("turn_record", {}).get("user_input", "").startswith(
+            "document_parsed:"
+        )
+    ]
+    assert material_refresh_turns
+    assert len(record.runtime_trace_json) >= 18
+    assert len(record.score_history_json) >= 2
+    assert len(record.governor_history_json) >= 2
+    trace_groups = _trace_groups(record.runtime_trace_json)
+    user_turn_groups = [
+        group
+        for group in trace_groups
+        if group and group[0].get("node_name") == "receive_input"
+    ]
+    material_change_groups = [
+        group
+        for group in trace_groups
+        if group and group[0].get("node_name") == "material_changed"
+    ]
+    assert material_change_groups
+    assert len(user_turn_groups) >= 2
+    expected_user_turn_nodes = [
         "receive_input",
         "extract_claims",
         "resolve_evidence",
@@ -132,17 +197,8 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
         "resolve_capability",
         "turn_decision",
     ]
-    assert [entry["node_name"] for entry in record.runtime_trace_json[9:]] == [
-        "receive_input",
-        "extract_claims",
-        "resolve_evidence",
-        "consistency_check",
-        "score_case",
-        "governor_decide",
-        "decide_capability",
-        "resolve_capability",
-        "turn_decision",
-    ]
+    assert [entry["node_name"] for entry in user_turn_groups[-2]] == expected_user_turn_nodes
+    assert [entry["node_name"] for entry in user_turn_groups[-1]] == expected_user_turn_nodes
     assert record.score_history_json[0]["scoring_stage"] == "interview_turn"
     assert {
         "category_fit",
@@ -157,3 +213,16 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
         "decision",
         "summary",
     } <= set(record.governor_history_json[0].keys())
+
+
+def _trace_groups(runtime_trace_json: list[dict]) -> list[list[dict]]:
+    groups: list[list[dict]] = []
+    current_group: list[dict] = []
+    for entry in runtime_trace_json:
+        current_group.append(entry)
+        if entry.get("node_name") == "turn_decision":
+            groups.append(current_group)
+            current_group = []
+    if current_group:
+        groups.append(current_group)
+    return groups

@@ -10,6 +10,7 @@ from app.db.evidence_models import EvidenceItemRecord
 from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.main import app
+from app.agents.schemas import InterviewNextAction
 
 
 @pytest.fixture()
@@ -244,7 +245,16 @@ def test_required_package_rejects_invalid_stored_family(
 def test_debug_fill_current_gap_creates_relationship_proof(
     client: TestClient,
     db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="What is the purpose of your travel?",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -264,10 +274,20 @@ def test_debug_fill_current_gap_creates_relationship_proof(
     payload = response.json()
     assert payload["filled_document_type"] == "relationship_proof_between_applicant_and_sponsors"
     assert payload["document_id"].startswith("doc-")
+    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert payload["governor_decision"] == "continue_interview"
+    assert payload["turn_decision"]["decision"] == "continue_interview"
+    assert payload["runtime_view_state"]["decision"] == "continue_interview"
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
         assert record is not None
+        assert record.current_governor_decision == "continue_interview"
+        assert record.current_focus_json == {
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "What is the purpose of your travel?",
+        }
         assert record.profile_json["funding"]["sponsor_relationship"] == "parents"
         assert record.profile_json["family_specific"]["parent_names"] == "LI WEIGUO; ZHANG HUI"
 

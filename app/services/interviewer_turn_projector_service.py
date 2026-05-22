@@ -69,6 +69,7 @@ class InterviewerTurnProjectorService:
         response = self.action_to_response(
             action=action,
             score=score,
+            governor_decision=governor_decision,
             requested_documents=requested_documents,
             remaining_required_documents=remaining_required_documents,
             document_review=document_review,
@@ -203,9 +204,7 @@ class InterviewerTurnProjectorService:
     ) -> dict[str, Any]:
         risk_codes = self.advisory_review.extract_risk_codes(score)
         current_key_question = current_focus.get("question")
-        current_key_proof = self.current_key_proof(current_focus) or self._string_or_none(
-            document_review.get("primary_document")
-        )
+        current_key_proof = self.current_key_proof(current_focus)
         current_risk_code = current_focus.get("risk_code") or (risk_codes[0] if risk_codes else None)
         state_status = self.derive_interview_state_status(
             turn_decision=decision,
@@ -317,6 +316,7 @@ class InterviewerTurnProjectorService:
         *,
         action: InterviewNextAction,
         score: ScoreState,
+        governor_decision: str,
         requested_documents: list[str],
         remaining_required_documents: list[str],
         document_review: dict[str, Any],
@@ -328,12 +328,15 @@ class InterviewerTurnProjectorService:
             assistant_message = self.public_refusal_message(score)
         return {
             "assistant_message": assistant_message,
-            "governor_decision": action.decision,
+            "governor_decision": governor_decision,
             "score_summary": {},
             "requested_documents": list(requested_documents),
             "remaining_required_documents": list(remaining_required_documents),
             "decision_hint": action.decision_hint or action.decision,
-            "turn_decision": action.model_dump(mode="json"),
+            "turn_decision": {
+                **action.model_dump(mode="json"),
+                "governor_decision": governor_decision,
+            },
             "document_review": dict(document_review),
             "advisory_context": advisory_context.model_dump(mode="json"),
             "prompt_trace": prompt_trace.model_dump(mode="json", exclude_none=True),

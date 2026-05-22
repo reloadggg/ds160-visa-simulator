@@ -3,18 +3,37 @@ services:
     build: .
     image: ds160-agent2:latest
     container_name: ds160-agent2
-    ports:
-      - "${WEB_PORT:-3000}:3000"
+    env_file:
+      - .env
+    expose:
+      - "3000"
+      - "8000"
     environment:
       APP_AUTH_PASSWORD: ${APP_AUTH_PASSWORD:-}
       APP_AUTH_TOKEN_TTL_SECONDS: ${APP_AUTH_TOKEN_TTL_SECONDS:-86400}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 3000
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://ds160.efastt.store}
       DATABASE_URL: sqlite:////data/app.sqlite3
       PARSE_WORKER_INLINE: ${PARSE_WORKER_INLINE:-1}
     volumes:
       - ds160-agent2-data:/data
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: ds160-nginx
+    depends_on:
+      - ds160-agent2
+    ports:
+      - "${NGINX_PUBLIC_PORT:-18000}:18000"
+    volumes:
+      - ./deploy/nginx/ds160.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
     restart: unless-stopped
 
 volumes:

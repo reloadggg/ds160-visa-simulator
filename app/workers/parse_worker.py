@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from app.repositories.document_repo import DocumentRepository
 from app.services.document_pipeline import DocumentPipelineService
 from app.services.gate_runtime_service import GateRuntimeService
+from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
+from app.services.runtime_errors import ModelRuntimeError
 
 logger = logging.getLogger(__name__)
 DEFAULT_PARSE_WORKER_POLL_INTERVAL_SECONDS = 0.25
@@ -44,6 +46,16 @@ class ParseWorker:
                 completed_job.status = "completed"
             GateRuntimeService(self.db).refresh_session(session_id, save=False)
             self.db.commit()
+            try:
+                MessageService(self.db).refresh_after_material_change(
+                    session_id,
+                    reason=f"document_parsed:{document_id}",
+                )
+            except ModelRuntimeError:
+                logger.warning(
+                    "material change refresh skipped because turn model is unavailable",
+                    extra={"session_id": session_id, "document_id": document_id},
+                )
             return True
         except Exception:
             self.db.rollback()
