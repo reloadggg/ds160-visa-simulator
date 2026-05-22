@@ -308,11 +308,21 @@ export interface InterviewReviewResponse {
 
 export interface DebugFillResponse {
   session_id: string
+  fill_scenario?: string
+  fill_scenario_label?: string
   filled_document_type: string
+  filled_summary?: string
   document_id: string
   filename: string
   phase_state?: string
   gate_status?: BackendSessionGateStatus | null
+  assistant_message?: string | null
+  governor_decision?: string | null
+  requested_documents?: string[]
+  remaining_required_documents?: string[]
+  turn_decision?: Record<string, unknown>
+  runtime_view_state?: Record<string, unknown>
+  main_flow_refresh_error?: string | null
 }
 
 export interface UploadedMaterial {

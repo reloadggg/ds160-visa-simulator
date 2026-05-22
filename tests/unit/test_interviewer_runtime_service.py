@@ -1081,3 +1081,102 @@ def test_run_turn_clears_ready_document_request_before_persisting_state(
         "kind": "interview_question",
         "question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
     }
+
+
+def test_run_turn_converges_after_repeated_claim_document_conflict(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-conflict")
+    score = _build_score(risk_codes=["school_mismatch"])
+    record = SessionRecord(
+        session_id="sess-conflict",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "你最终入读哪一所学校？",
+        },
+        gate_status_json={
+            "status": "ready_for_interview",
+            "required_documents": [],
+        },
+    )
+    claim_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "申请人口头称纽约大学，但 I-20 和录取信显示 Wisconsin。",
+        "field_paths": ["/education/school_name"],
+        "document_ids": ["doc-i20", "doc-admission"],
+        "evidence_refs": ["evi-i20", "evi-admission"],
+    }
+    prior_turns = [
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={"document_review": {"claim_conflicts": [claim_conflict]}},
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="我读纽约大学"),
+        SimpleNamespace(
+            role="assistant",
+            metadata_json={"turn_record": {"document_review": {"claim_conflicts": [claim_conflict]}}},
+        ),
+        SimpleNamespace(role="user", metadata_json={}, content="我还是读纽约大学"),
+    ]
+
+    monkeypatch.setattr(
+        service.session_turn_repo,
+        "list_session_turns",
+        lambda session_id: prior_turns,
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[],
+            findings=[],
+        ),
+    )
+
+    def fake_build_question_action(
+        session_id,
+        current_profile,
+        current_score,
+        governor_decision,
+        trace_entries,
+        recent_turns=None,
+    ) -> InterviewNextAction:
+        service.interview_runtime._last_capability_tool_outputs = {
+            "document_review": {"claim_conflicts": [claim_conflict]},
+        }
+        return InterviewNextAction(
+            assistant_message="你最终入读哪一所学校？",
+            requested_documents=[],
+            decision="continue_interview",
+        )
+
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        fake_build_question_action,
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+
+    response = service.run_turn(record, "我读纽约大学")
+
+    assert response["governor_decision"] == "simulated_refusal"
+    assert response["turn_decision"]["decision"] == "simulated_refusal"
+    assert record.phase_state == "session_closed"
+    assert record.interviewer_state_json["status"] == "simulated_refusal"
+    assert record.current_focus_json["kind"] == "refusal"

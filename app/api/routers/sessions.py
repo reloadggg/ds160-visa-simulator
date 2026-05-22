@@ -16,6 +16,10 @@ class CreateSessionRequest(BaseModel):
     declared_family: str | None = None
 
 
+class DebugFillCurrentGapRequest(BaseModel):
+    scenario: str = "normal"
+
+
 @router.post("", status_code=201)
 def create_session(
     payload: CreateSessionRequest,
@@ -61,9 +65,13 @@ def get_required_package(
 @router.post("/{session_id}/debug/fill-current-gap")
 def debug_fill_current_gap(
     session_id: str,
+    payload: DebugFillCurrentGapRequest | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        return DebugFillService(db).fill_current_gap(session_id)
+        scenario = payload.scenario if payload is not None else "normal"
+        return DebugFillService(db).fill_current_gap(session_id, scenario=scenario)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

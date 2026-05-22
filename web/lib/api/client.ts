@@ -349,10 +349,17 @@ export async function generateInterviewReview(sessionId: string): Promise<Interv
   return mapInterviewReviewResponse(await handleResponse<InterviewReviewResponse>(response))
 }
 
-export async function debugFillCurrentGap(sessionId: string): Promise<DebugFillResponse> {
+export async function debugFillCurrentGap(
+  sessionId: string,
+  scenario = "normal",
+): Promise<DebugFillResponse> {
   const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/fill-current-gap`), {
     method: "POST",
-    headers: getAuthHeaders(),
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ scenario }),
   })
   return handleResponse<DebugFillResponse>(response)
 }

@@ -6,8 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.evidence_models import EvidenceItemRecord
-from app.db.models import SessionRecord
+from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
+from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
 from app.agents.schemas import InterviewNextAction
@@ -297,3 +297,191 @@ def test_debug_fill_current_gap_creates_relationship_proof(
         "/funding/sponsor_relationship",
         "/family/parent_names",
     }
+
+
+def test_debug_fill_current_gap_supports_normal_school_data(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Please explain why you chose this university.",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.profile_json = {
+            "profile_id": f"profile-{session_id}",
+            "profile_version": 1,
+            "identity": {"full_name": "LI, MINGHAO"},
+            "visa_intent": {"declared_family": "f1"},
+            "education": {
+                "school_name": "New York University",
+                "program_name": "Master of Science in Computer Science",
+                "sevis_id": "N0034567890",
+            },
+            "funding": {},
+            "ds160_view": {},
+            "field_states": {},
+            "field_provenance": {},
+        }
+        record.current_focus_json = {
+            "kind": "required_document",
+            "document_type": "i20",
+        }
+        db.add(record)
+        db.commit()
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "normal"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fill_scenario"] == "normal"
+    assert payload["filled_document_type"] == "i20"
+    assert "正常材料" in payload["fill_scenario_label"]
+    assert payload["assistant_message"] == "Please explain why you chose this university."
+
+    with db_session_factory() as db:
+        document = db.query(DocumentRecord).filter_by(session_id=session_id).one()
+        evidence = db.query(EvidenceItemRecord).filter_by(
+            session_id=session_id,
+            field_path="/education/school_name",
+        ).one()
+
+    assert "School name: New York University" in document.raw_text
+    assert evidence.value == "New York University"
+
+
+def test_debug_fill_current_gap_supports_sponsor_equity_gap(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Please explain the source of your parents' funds.",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "sponsor_equity_gap"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fill_scenario"] == "sponsor_equity_gap"
+    assert payload["filled_document_type"] == "funding_proof"
+    assert "股权" in payload["fill_scenario_label"]
+
+    with db_session_factory() as db:
+        evidence = db.query(EvidenceItemRecord).filter_by(
+            session_id=session_id,
+            field_path="/funding/equity_ownership",
+        ).one()
+
+    assert "38% shares" in evidence.value
+
+
+def test_debug_fill_current_gap_normalizes_chinese_remaining_document_text(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Please continue.",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.interviewer_state_json = {
+            "remaining_required_documents": [
+                "如申请人坚持最终入读纽约大学，请提供与纽约大学对应的最新 I-20 或录取材料"
+            ]
+        }
+        db.add(record)
+        db.commit()
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "normal"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["filled_document_type"] == "i20"
+
+
+def test_debug_fill_current_gap_rejects_unknown_scenario(
+    client: TestClient,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "not-a-scenario"},
+    )
+
+    assert response.status_code == 422
+    assert "unsupported debug fill scenario" in response.json()["detail"]
+
+
+def test_debug_fill_current_gap_persists_assistant_refresh_turn(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="Now explain your study plan.",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "normal"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assistant_message"] == "Now explain your study plan."
+
+    with db_session_factory() as db:
+        chunk_count = db.query(DocumentChunkRecord).filter_by(session_id=session_id).count()
+        persisted_messages = db.query(SessionTurnRecord).filter_by(
+            session_id=session_id,
+        ).all()
+
+    assert chunk_count >= 1
+    assert any(
+        turn.role == "assistant" and turn.content == "Now explain your study plan."
+        for turn in persisted_messages
+    )

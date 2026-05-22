@@ -2074,7 +2074,7 @@ export function useSessionWorkbench() {
     }
   }, [interviewReview, sessionId, visaType])
 
-  const handleDebugFillCurrentGap = useCallback(async () => {
+  const runDebugFillCurrentGap = useCallback(async (scenario = "normal") => {
     if (!sessionId) {
       setSettingsFeedback("当前没有可填充的会话。")
       return
@@ -2089,22 +2089,56 @@ export function useSessionWorkbench() {
     }
 
     try {
-      const result = await debugFillCurrentGap(sessionId)
+      const result = await debugFillCurrentGap(sessionId, scenario)
       setSession((prev) => prev ? {
         ...prev,
         phase_state: result.phase_state,
+        current_governor_decision: result.governor_decision ?? prev.current_governor_decision,
         gate_status: mapSessionGateStatus(result.gate_status) ?? prev.gate_status,
       } : prev)
+      const fillLabel = result.fill_scenario_label ?? "调试补全"
+      const fillSummary = result.filled_summary
+        ?? `${fillLabel}：已生成 ${toDocumentLabel(result.filled_document_type)}，文档 ID：${result.document_id}。`
       appendMessage({
         role: "system",
-        content: `调试模式已生成 ${toDocumentLabel(result.filled_document_type)}，文档 ID：${result.document_id}。`,
+        content: fillSummary,
       })
+      if (result.assistant_message) {
+        appendMessage({
+          role: "officer",
+          content: humanizeBackendText(result.assistant_message),
+        })
+      }
       await refreshReports(sessionId)
-      setSettingsFeedback("已填充当前缺口，可继续面试。")
+      if (result.main_flow_refresh_error) {
+        setSettingsFeedback(`已补资料，但下一步刷新失败：${result.main_flow_refresh_error}`)
+      } else {
+        setSettingsFeedback("已补资料，并已自动触发下一步。")
+      }
     } catch (error) {
       setSettingsFeedback(getErrorMessage(error, "调试填充失败，请稍后重试。"))
     }
   }, [appendMessage, getErrorMessage, mockMode, refreshReports, sessionId])
+
+  const handleDebugFillCurrentGap = useCallback(
+    () => runDebugFillCurrentGap("normal"),
+    [runDebugFillCurrentGap],
+  )
+
+  const handleDebugFillNormalData = useCallback(
+    () => runDebugFillCurrentGap("normal"),
+    [runDebugFillCurrentGap],
+  )
+
+  const handleDebugFillSchoolMismatch = useCallback(
+    () => runDebugFillCurrentGap("school_mismatch"),
+    [runDebugFillCurrentGap],
+  )
+
+  const handleDebugFillSponsorEquityGap = useCallback(
+    () => runDebugFillCurrentGap("sponsor_equity_gap"),
+    [runDebugFillCurrentGap],
+  )
 
   const handleClearHistory = useCallback(() => {
     removeHistoryEntries()
@@ -2207,6 +2241,9 @@ export function useSessionWorkbench() {
     handleExportConversationImage,
     handleExportReviewImage,
     handleDebugFillCurrentGap,
+    handleDebugFillNormalData,
+    handleDebugFillSchoolMismatch,
+    handleDebugFillSponsorEquityGap,
     handleClearHistory,
     handleRestoreSession,
   }

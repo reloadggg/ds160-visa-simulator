@@ -83,6 +83,9 @@ function Workbench() {
     handleExportConversationImage,
     handleExportReviewImage,
     handleDebugFillCurrentGap,
+    handleDebugFillNormalData,
+    handleDebugFillSchoolMismatch,
+    handleDebugFillSponsorEquityGap,
     handleClearHistory,
     handleRestoreSession,
   } = useSessionWorkbench()
@@ -108,6 +111,9 @@ function Workbench() {
           onEndSession={handleEndSession}
           onReset={handleReset}
           onDebugFillCurrentGap={handleDebugFillCurrentGap}
+          onDebugFillNormalData={handleDebugFillNormalData}
+          onDebugFillSchoolMismatch={handleDebugFillSchoolMismatch}
+          onDebugFillSponsorEquityGap={handleDebugFillSponsorEquityGap}
           onExportConversationImage={handleExportConversationImage}
         />
       )
@@ -228,6 +234,9 @@ function Workbench() {
                 onExportSession={handleExportSession}
                 onExportConversationImage={handleExportConversationImage}
                 onDebugFillCurrentGap={handleDebugFillCurrentGap}
+                onDebugFillNormalData={handleDebugFillNormalData}
+                onDebugFillSchoolMismatch={handleDebugFillSchoolMismatch}
+                onDebugFillSponsorEquityGap={handleDebugFillSponsorEquityGap}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
               />

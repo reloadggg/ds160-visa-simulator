@@ -213,6 +213,17 @@ class InterviewerRuntimeService:
         )
         action = self._coerce_action(action)
         action = self._clear_ready_document_focus(record, action)
+        pre_convergence_action = action
+        action = self._converge_repeated_claim_conflict(
+            action,
+            score=score,
+            capability_tool_outputs=dict(
+                self.interview_runtime._last_capability_tool_outputs
+            ),
+            history_turns=history_turns,
+        )
+        if action != pre_convergence_action:
+            self._sync_last_turn_decision_trace(trace_entries, action)
         boundary = self._apply_boundary_transition(boundary, action)
         return boundary, action, dict(self.interview_runtime._last_capability_tool_outputs)
 
@@ -398,6 +409,106 @@ class InterviewerRuntimeService:
             focus_risk_code=None,
             reason="cleared_ready_document_request_after_material_change",
         )
+
+    def _converge_repeated_claim_conflict(
+        self,
+        action: InterviewNextAction,
+        *,
+        score: ScoreState,
+        capability_tool_outputs: dict[str, Any],
+        history_turns: list[Any],
+    ) -> InterviewNextAction:
+        if action.decision == GovernorDecision.SIMULATED_REFUSAL.value:
+            return action
+        if self._repeated_claim_conflict_count(history_turns) < 2:
+            return action
+        conflict = self._primary_high_claim_conflict(capability_tool_outputs)
+        if conflict is None:
+            return action
+        risk_code = self._first_score_risk_code(score) or "record_conflict"
+        summary = self._runtime_text(conflict.get("summary")) or (
+            "你的连续回答仍与已提交材料存在核心冲突。"
+        )
+        return InterviewNextAction(
+            decision=GovernorDecision.SIMULATED_REFUSAL.value,
+            assistant_message=(
+                f"{summary} 你已经多次坚持与材料不一致的说法，"
+                "当前模拟结果为拒签，本次面签到此结束。"
+            ),
+            requested_documents=[],
+            focus_kind="refusal",
+            focus_document_type=None,
+            focus_risk_code=risk_code,
+            reason="repeated_claim_document_conflict",
+        )
+
+    def _repeated_claim_conflict_count(self, history_turns: list[Any]) -> int:
+        count = 0
+        for turn in reversed(history_turns):
+            if getattr(turn, "role", None) != "assistant":
+                continue
+            metadata = getattr(turn, "metadata_json", {}) or {}
+            document_review = metadata.get("document_review")
+            if not isinstance(document_review, dict):
+                turn_record = metadata.get("turn_record")
+                if isinstance(turn_record, dict):
+                    document_review = turn_record.get("document_review")
+            if self._primary_high_claim_conflict({"document_review": document_review}):
+                count += 1
+        return count
+
+    def _primary_high_claim_conflict(
+        self,
+        capability_tool_outputs: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        document_review = capability_tool_outputs.get("document_review")
+        if not isinstance(document_review, dict):
+            return None
+        for conflict in document_review.get("claim_conflicts", []) or []:
+            if not isinstance(conflict, dict):
+                continue
+            if conflict.get("severity") != "high":
+                continue
+            if conflict.get("conflict_type") != "claim_vs_document":
+                continue
+            return conflict
+        return None
+
+    def _first_score_risk_code(self, score: ScoreState) -> str | None:
+        for risk_flag in score.risk_flags:
+            code = self._runtime_text(risk_flag.code)
+            if code:
+                return code
+        return None
+
+    def _sync_last_turn_decision_trace(
+        self,
+        trace_entries: list[RuntimeTraceEntry],
+        action: InterviewNextAction,
+    ) -> None:
+        for entry in reversed(trace_entries):
+            if entry.node_name != "turn_decision":
+                continue
+            entry.summary = f"decision={action.decision}"
+            entry.turn_decision = action.decision
+            metadata = dict(entry.metadata or {})
+            metadata.update(
+                {
+                    "requested_documents": list(action.requested_documents),
+                    "focus_kind": action.focus_kind,
+                    "focus_document_type": action.focus_document_type,
+                    "decision_source": "runtime_convergence_guard",
+                    "convergence_reason": action.reason,
+                }
+            )
+            entry.metadata = metadata
+            return
+
+    def _runtime_text(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
 
     def _extract_runtime_trace(self, analysis: Any) -> list[Any]:
         return list(self._analysis_value(analysis, "runtime_trace", [])) or list(

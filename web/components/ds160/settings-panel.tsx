@@ -69,6 +69,9 @@ interface SettingsPanelProps {
   onExportSession: () => void
   onExportConversationImage: () => void
   onDebugFillCurrentGap: () => void
+  onDebugFillNormalData?: () => void
+  onDebugFillSchoolMismatch?: () => void
+  onDebugFillSponsorEquityGap?: () => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
 }
@@ -95,6 +98,9 @@ export function SettingsPanel({
   onExportSession,
   onExportConversationImage,
   onDebugFillCurrentGap,
+  onDebugFillNormalData,
+  onDebugFillSchoolMismatch,
+  onDebugFillSponsorEquityGap,
   onResetCurrentSession,
   onClearHistory,
 }: SettingsPanelProps) {
@@ -520,15 +526,35 @@ export function SettingsPanel({
               <Camera className="h-4 w-4" />
               导出完整会话长截图
             </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-start border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-              onClick={onDebugFillCurrentGap}
-              disabled={!sessionId}
-            >
-              <FlaskConical className="h-4 w-4" />
-              调试：一键补充当前缺口材料
-            </Button>
+            <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-2">
+              <Button
+                variant="outline"
+                className="w-full justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
+                onClick={onDebugFillNormalData ?? onDebugFillCurrentGap}
+                disabled={!sessionId}
+              >
+                <FlaskConical className="h-4 w-4" />
+                调试：补全正常材料
+              </Button>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Button
+                  variant="outline"
+                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
+                  onClick={onDebugFillSchoolMismatch ?? onDebugFillCurrentGap}
+                  disabled={!sessionId}
+                >
+                  缺陷：学校冲突
+                </Button>
+                <Button
+                  variant="outline"
+                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
+                  onClick={onDebugFillSponsorEquityGap ?? onDebugFillCurrentGap}
+                  disabled={!sessionId}
+                >
+                  缺陷：股权资金链
+                </Button>
+              </div>
+            </div>
             <Button
               variant="outline"
               className="w-full justify-start"

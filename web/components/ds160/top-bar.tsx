@@ -9,6 +9,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Pause, StopCircle, Bell, ChevronDown, RotateCcw, FlaskConical, Camera, MoreHorizontal } from "lucide-react"
@@ -27,6 +30,9 @@ interface TopBarProps {
   onEndSession: () => void
   onReset: () => void
   onDebugFillCurrentGap?: () => void
+  onDebugFillNormalData?: () => void
+  onDebugFillSchoolMismatch?: () => void
+  onDebugFillSponsorEquityGap?: () => void
   onExportConversationImage?: () => void
 }
 
@@ -43,6 +49,9 @@ export function TopBar({
   onEndSession,
   onReset,
   onDebugFillCurrentGap,
+  onDebugFillNormalData,
+  onDebugFillSchoolMismatch,
+  onDebugFillSponsorEquityGap,
   onExportConversationImage,
 }: TopBarProps) {
   const displayName = userName.trim() || "User"
@@ -148,7 +157,26 @@ export function TopBar({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </div>
-            {onDebugFillCurrentGap ? (
+            {onDebugFillNormalData || onDebugFillSchoolMismatch || onDebugFillSponsorEquityGap ? (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <FlaskConical className="h-4 w-4" />
+                  一键补资料
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-56">
+                  <DropdownMenuItem onClick={onDebugFillNormalData}>
+                    补全正常材料
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={onDebugFillSchoolMismatch}>
+                    缺陷：学校冲突
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onDebugFillSponsorEquityGap}>
+                    缺陷：股权资金链
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ) : onDebugFillCurrentGap ? (
               <DropdownMenuItem onClick={onDebugFillCurrentGap}>
                 <FlaskConical className="h-4 w-4" />
                 一键补资料
