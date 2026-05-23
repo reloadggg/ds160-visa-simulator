@@ -2,6 +2,7 @@
 name = "ds160-visa-simulator"
 version = "0.1.0"
 description = "Backend-first DS-160 visa simulator v1"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116.0,<0.117.0",
