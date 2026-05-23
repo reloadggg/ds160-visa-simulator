@@ -99,6 +99,7 @@ class DS160ContextEngine:
     ) -> TurnHistorySummary:
         prior_decisions: list[str] = []
         prior_requested_documents: list[str] = []
+        prior_question_topics: list[str] = []
         user_turn_count = 0
         assistant_turn_count = 0
 
@@ -110,6 +111,9 @@ class DS160ContextEngine:
             if role != "assistant":
                 continue
             assistant_turn_count += 1
+            question_topic = self._question_topic(str(self._turn_attr(turn, "content") or ""))
+            if question_topic and question_topic not in prior_question_topics:
+                prior_question_topics.append(question_topic)
             metadata = self._turn_metadata(turn)
             turn_record = metadata.get("turn_record", {})
             runtime_view_state = metadata.get("runtime_view_state", {})
@@ -138,6 +142,7 @@ class DS160ContextEngine:
             summarized_assistant_turn_count=assistant_turn_count,
             prior_decisions=prior_decisions,
             prior_requested_documents=prior_requested_documents,
+            prior_question_topics=prior_question_topics,
         )
 
     def _turn_metadata(self, turn: Any) -> dict[str, Any]:
@@ -153,6 +158,20 @@ class DS160ContextEngine:
         if isinstance(turn, dict):
             return turn.get(key)
         return getattr(turn, key, None)
+
+    def _question_topic(self, content: str) -> str | None:
+        normalized = content.lower()
+        if any(marker in normalized for marker in ("学费", "生活费", "资金", "资助", "fund", "sponsor", "pay", "tuition")):
+            return "funding"
+        if any(marker in normalized for marker in ("毕业后", "回国", "工作", "岗位", "任教", "career", "job", "return home")):
+            return "post_study_plan"
+        if any(marker in normalized for marker in ("为什么选择", "why this", "why choose", "choose this school", "选这个学校")):
+            return "school_choice"
+        if any(marker in normalized for marker in ("学校", "录取", "项目", "专业", "i-20", "program", "major", "school admitted")):
+            return "program_school"
+        if any(marker in normalized for marker in ("本科", "成绩", "语言", "academic", "gpa", "toefl", "ielts")):
+            return "academic_preparation"
+        return None
 
     def _string_or_none(self, value: Any) -> str | None:
         if not isinstance(value, str):

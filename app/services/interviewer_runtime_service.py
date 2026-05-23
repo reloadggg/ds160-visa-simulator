@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -47,6 +48,7 @@ class InterviewerRuntimeService:
             findings,
             history_turns,
             trace_entries,
+            latest_user_message=message_text,
         )
         action = self._coerce_action(action)
         projection = self.turn_projector.project(
@@ -109,6 +111,7 @@ class InterviewerRuntimeService:
             findings,
             history_turns,
             trace_entries,
+            latest_user_message=reason,
         )
         action = self._coerce_action(action)
         projection = self.turn_projector.project(
@@ -195,6 +198,7 @@ class InterviewerRuntimeService:
         findings: list[Any],
         history_turns: list[Any],
         trace_entries: list[RuntimeTraceEntry],
+        latest_user_message: str = "",
     ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
         boundary = self._decide_governor(
             record,
@@ -213,6 +217,19 @@ class InterviewerRuntimeService:
         )
         action = self._coerce_action(action)
         action = self._clear_ready_document_focus(record, action)
+        pre_style_action = action
+        action = self._polish_window_interview_action(
+            record,
+            action,
+            history_turns=history_turns,
+            latest_user_message=latest_user_message,
+        )
+        if action != pre_style_action:
+            self._sync_last_turn_decision_trace(
+                trace_entries,
+                action,
+                decision_source="runtime_window_style_guard",
+            )
         pre_convergence_action = action
         action = self._converge_repeated_claim_conflict(
             action,
@@ -223,7 +240,11 @@ class InterviewerRuntimeService:
             history_turns=history_turns,
         )
         if action != pre_convergence_action:
-            self._sync_last_turn_decision_trace(trace_entries, action)
+            self._sync_last_turn_decision_trace(
+                trace_entries,
+                action,
+                decision_source="runtime_convergence_guard",
+            )
         boundary = self._apply_boundary_transition(boundary, action)
         action = self._align_action_with_document_review(
             action,
@@ -477,13 +498,196 @@ class InterviewerRuntimeService:
             )
         return InterviewNextAction(
             decision=GovernorDecision.CONTINUE_INTERVIEW.value,
-            assistant_message="材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+            assistant_message="这份材料我看到了。你这次赴美学习什么项目？",
             requested_documents=[],
             focus_kind="interview_question",
             focus_document_type=None,
             focus_risk_code=None,
             reason="cleared_ready_document_request_after_material_change",
         )
+
+    def _polish_window_interview_action(
+        self,
+        record: SessionRecord,
+        action: InterviewNextAction,
+        *,
+        history_turns: list[Any],
+        latest_user_message: str,
+    ) -> InterviewNextAction:
+        if action.focus_kind != "interview_question":
+            return action
+        if action.decision != GovernorDecision.CONTINUE_INTERVIEW.value:
+            return action
+
+        message = self._strip_coaching_phrases(action.assistant_message)
+        if self._should_advance_from_repeated_f1_project_detail(
+            record=record,
+            action_message=message,
+            latest_user_message=latest_user_message,
+        ):
+            message = self._next_f1_window_checkpoint(history_turns)
+
+        if message == action.assistant_message:
+            return action
+        return action.model_copy(
+            update={
+                "assistant_message": message,
+                "reason": action.reason or "window_interview_style_guard",
+            }
+        )
+
+    def _strip_coaching_phrases(self, message: str) -> str:
+        normalized = message.strip()
+        replacements = (
+            "我听到了。",
+            "我听到了，",
+            "我明白。",
+            "我明白，",
+            "我理解。",
+            "我理解，",
+            "我知道了。",
+            "我知道了，",
+            "好，我记下了。",
+            "好，我记下了，",
+            "好。那",
+            "好，那",
+            "那么，",
+            "具体一点，",
+            "再具体一点，",
+            "请具体一点，",
+        )
+        changed = True
+        while changed:
+            changed = False
+            for phrase in replacements:
+                if normalized.startswith(phrase):
+                    normalized = normalized[len(phrase) :].strip()
+                    changed = True
+        normalized = re.sub(r"^(?:具体一点|再具体一点|请具体一点)[，,。.\s]*", "", normalized)
+        return normalized or message.strip()
+
+    def _should_advance_from_repeated_f1_project_detail(
+        self,
+        *,
+        record: SessionRecord,
+        action_message: str,
+        latest_user_message: str,
+    ) -> bool:
+        if record.declared_family != "f1":
+            return False
+        if not self._is_vague_project_answer(latest_user_message):
+            return False
+        if not self._is_narrow_project_detail_question(action_message):
+            return False
+        current_question = self._runtime_text((record.current_focus_json or {}).get("question")) or ""
+        if not self._is_narrow_project_detail_question(current_question):
+            return False
+        return self._question_topic(action_message) == self._question_topic(current_question)
+
+    def _is_vague_project_answer(self, message_text: str) -> bool:
+        normalized = message_text.strip().lower()
+        if not normalized:
+            return False
+        vague_markers = (
+            "很厉害",
+            "很强",
+            "很好",
+            "不错",
+            "有名",
+            "排名",
+            "专业好",
+            "专业很",
+            "学校好",
+            "学校很",
+            "相关的",
+            "相关工作",
+            "差不多",
+            "应该",
+            "good",
+            "great",
+            "strong",
+            "famous",
+            "ranking",
+            "related",
+        )
+        concrete_markers = (
+            "课程",
+            "课题",
+            "实验室",
+            "导师",
+            "研究",
+            "数据",
+            "算法",
+            "机器学习",
+            "统计",
+            "论文",
+            "实习",
+            "岗位",
+            "教师",
+            "讲师",
+            "course",
+            "research",
+            "lab",
+            "professor",
+            "algorithm",
+            "machine learning",
+            "internship",
+            "lecturer",
+        )
+        has_vague_marker = any(marker in normalized for marker in vague_markers)
+        has_concrete_marker = any(marker in normalized for marker in concrete_markers)
+        return has_vague_marker and not has_concrete_marker
+
+    def _is_narrow_project_detail_question(self, question: str) -> bool:
+        normalized = question.lower()
+        narrow_markers = (
+            "哪门课",
+            "哪一门课",
+            "哪项训练",
+            "哪一项训练",
+            "哪一部分",
+            "哪部分",
+            "什么课程",
+            "什么训练",
+            "which course",
+            "what course",
+            "which training",
+        )
+        project_markers = ("项目", "专业", "program", "major")
+        career_markers = ("回国", "毕业", "任教", "工作", "career", "teach", "job")
+        return (
+            any(marker in normalized for marker in narrow_markers)
+            and any(marker in normalized for marker in project_markers)
+            and any(marker in normalized for marker in career_markers)
+        )
+
+    def _question_topic(self, question: str) -> str | None:
+        normalized = question.lower()
+        if any(marker in normalized for marker in ("学费", "生活费", "资金", "资助", "fund", "sponsor")):
+            return "funding"
+        if any(marker in normalized for marker in ("回国", "毕业", "工作", "岗位", "任教", "career", "job")):
+            return "post_study_plan"
+        if any(marker in normalized for marker in ("学校", "项目", "专业", "i-20", "program", "major")):
+            return "program"
+        return None
+
+    def _next_f1_window_checkpoint(self, history_turns: list[Any]) -> str:
+        transcript = " ".join(
+            str(getattr(turn, "content", "") or "")
+            for turn in history_turns
+            if getattr(turn, "role", None) == "assistant"
+        )
+        if not self._contains_any(transcript, ("本科", "成绩", "语言", "academic", "gpa", "toefl", "ielts")):
+            return "这个回答太笼统。你本科读的是什么专业？"
+        if not self._contains_any(transcript, ("毕业后", "回国", "工作", "岗位", "任教", "career", "job")):
+            return "这个回答太笼统。毕业后你准备做什么工作？"
+        if not self._contains_any(transcript, ("学费", "生活费", "资金", "资助", "fund", "sponsor")):
+            return "第一年的学费和生活费由谁支付？"
+        return "这个回答太笼统。你回国后准备申请什么岗位？"
+
+    def _contains_any(self, value: str, markers: tuple[str, ...]) -> bool:
+        normalized = value.lower()
+        return any(marker in normalized for marker in markers)
 
     def _converge_repeated_claim_conflict(
         self,
@@ -601,6 +805,8 @@ class InterviewerRuntimeService:
         self,
         trace_entries: list[RuntimeTraceEntry],
         action: InterviewNextAction,
+        *,
+        decision_source: str,
     ) -> None:
         for entry in reversed(trace_entries):
             if entry.node_name != "turn_decision":
@@ -613,7 +819,7 @@ class InterviewerRuntimeService:
                     "requested_documents": list(action.requested_documents),
                     "focus_kind": action.focus_kind,
                     "focus_document_type": action.focus_document_type,
-                    "decision_source": "runtime_convergence_guard",
+                    "decision_source": decision_source,
                     "convergence_reason": action.reason,
                 }
             )

@@ -88,7 +88,7 @@ def test_prompt_registry_applies_family_override(tmp_path: Path) -> None:
     assert "BASE OUTPUT" in instructions
     assert "BASE CASE SLOT" in instructions
     assert "F1 QUESTION" in instructions
-    assert "BASE QUESTION" not in instructions
+    assert "BASE QUESTION" in instructions
 
 
 def test_f1_prompt_instructs_refusal_when_required_funding_proof_unavailable() -> None:
@@ -102,3 +102,18 @@ def test_f1_prompt_instructs_refusal_when_required_funding_proof_unavailable() -
     assert "只进入复核" in instructions
     assert "simulated_refusal" in instructions
     assert "I-20 第一年度费用无法由已提供资金覆盖" in instructions
+
+
+def test_f1_adjudication_prompt_keeps_base_contract_and_family_addendum() -> None:
+    instructions = InterviewerPromptRegistry().build_instructions(
+        "adjudication_agent",
+        declared_family="f1",
+    )
+
+    assert "你必须综合 dynamic_turn_context、tool_outputs、当前用户消息一起判断" in instructions
+    assert "requested_documents 最多 1 个" in instructions
+    assert "document_review 是内部审阅意见，不是对用户话术" in instructions
+    assert "当前是 F-1 面谈语境" in instructions
+    assert "毕业后你打算回国做什么工作？" in instructions
+    assert "我听到了" in instructions
+    assert "具体一点" in instructions

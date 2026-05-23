@@ -50,7 +50,7 @@ adjudication_agent:
   interview_turn:
     provider: openai_compatible
     model: gpt-5.4
-    reasoning_effort: xhigh
+    reasoning_effort: high
     prompt_template_id: adjudication-agent-v1
     prompt_pack_id: ds160.interviewer
     prompt_version: v2

@@ -521,7 +521,73 @@ def test_build_dynamic_turn_context_compresses_older_turns_into_history_summary(
         "summarized_assistant_turn_count": 1,
         "prior_decisions": ["need_more_evidence"],
         "prior_requested_documents": ["funding_proof"],
+        "prior_question_topics": ["funding"],
     }
+
+
+def test_build_dynamic_turn_context_preserves_old_question_topics_after_compression(
+    monkeypatch,
+) -> None:
+    service = InterviewRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-topic-history")
+    score = ScoreState.minimal(profile_version=1, scoring_stage="interview_turn")
+    record = SessionRecord(
+        session_id="sess-topic-history",
+        declared_family="f1",
+        phase_state="interview",
+        current_governor_decision="continue_interview",
+        gate_status_json={},
+    )
+    read_model = SessionReadModel(
+        session_id="sess-topic-history",
+        phase_state="interview",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        runtime_ledger=SessionLedger(
+            session_id="sess-topic-history",
+            phase_state="interview",
+        ),
+        runtime_view_state=RuntimeViewState(
+            source_turn_id=None,
+            decision="continue_interview",
+            governor_decision="continue_interview",
+        ),
+    )
+    monkeypatch.setattr(service.session_repo, "get", lambda session_id: record)
+    monkeypatch.setattr(service.document_repo, "list_session_documents", lambda session_id: [])
+    monkeypatch.setattr(
+        service.session_read_model,
+        "build_from_record",
+        lambda current_record, turns=None: read_model,
+    )
+    recent_turns = [
+        SimpleNamespace(
+            role="assistant",
+            content="这个项目和你的回国工作有什么关系？",
+            metadata_json={"turn_record": {"decision": "continue_interview"}},
+        ),
+        SimpleNamespace(role="user", content="这个学校的专业很厉害。"),
+        SimpleNamespace(role="assistant", content="毕业后你打算回国做什么工作？"),
+        SimpleNamespace(role="user", content="回国做计算机相关。"),
+        SimpleNamespace(role="assistant", content="第一年的学费和生活费由谁支付？"),
+        SimpleNamespace(role="user", content="父亲支付。"),
+        SimpleNamespace(role="assistant", content="你本科读的是什么专业？"),
+        SimpleNamespace(role="user", content="计算机。"),
+    ]
+
+    payload = service._build_dynamic_turn_context(
+        session_id="sess-topic-history",
+        profile=profile,
+        score=score,
+        governor_decision="continue_interview",
+        recent_turns=recent_turns,
+        latest_user_message="计算机。",
+        declared_family="f1",
+    )
+
+    assert payload["history_summary"]["prior_question_topics"] == [
+        "post_study_plan"
+    ]
 
 
 def test_build_dynamic_turn_context_includes_uploaded_document_feedback_in_evidence_digest(
@@ -702,7 +768,7 @@ def test_finalize_question_action_keeps_document_review_advisory_only() -> None:
     service = InterviewRuntimeService(db=object())
     action = InterviewNextAction(
         decision="continue_interview",
-        assistant_message="材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+        assistant_message="这份材料我看到了。你这次赴美学习什么项目？",
         requested_documents=[],
         focus_kind="interview_question",
     )

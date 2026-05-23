@@ -242,7 +242,7 @@ def test_model_factory_builds_prompt_instructions_from_registry(
 
     assert "BASE ROLE" in runtime["instructions"]
     assert "F1 QUESTION" in runtime["instructions"]
-    assert "BASE QUESTION" not in runtime["instructions"]
+    assert "BASE QUESTION" in runtime["instructions"]
 
 
 def test_question_agent_runner_uses_registry_instructions_instead_of_hardcoded_text(

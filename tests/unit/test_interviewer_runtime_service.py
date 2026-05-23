@@ -671,6 +671,107 @@ def test_is_evasive_answer_does_not_misclassify_generic_education_question_as_fu
     )
 
 
+def test_window_style_guard_removes_coaching_phrase_from_interview_question() -> None:
+    service = InterviewerRuntimeService(db=object())
+    record = SessionRecord(
+        session_id="sess-window-style",
+        declared_family="f1",
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "毕业后你打算回国做什么工作？",
+        },
+    )
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="我听到了。具体一点，回国后你想做什么岗位？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    polished = service._polish_window_interview_action(
+        record,
+        action,
+        history_turns=[],
+        latest_user_message="我读计算机相关的",
+    )
+
+    assert polished.assistant_message == "回国后你想做什么岗位？"
+    assert "我听到了" not in polished.assistant_message
+    assert "具体一点" not in polished.assistant_message
+    assert polished.decision == "continue_interview"
+    assert polished.reason == "window_interview_style_guard"
+
+
+def test_window_style_guard_advances_repeated_f1_project_detail_question() -> None:
+    service = InterviewerRuntimeService(db=object())
+    record = SessionRecord(
+        session_id="sess-project-loop",
+        declared_family="f1",
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "这个项目里哪一部分最能帮助你回国进高校任教？",
+        },
+    )
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="我听到了。具体一点，这个项目的哪门课或哪项训练最适合你以后任教？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    polished = service._polish_window_interview_action(
+        record,
+        action,
+        history_turns=[
+            SimpleNamespace(
+                role="assistant",
+                content="第一年的学费和生活费由谁支付？",
+            ),
+            SimpleNamespace(
+                role="assistant",
+                content="毕业后你打算回国做什么工作？",
+            ),
+        ],
+        latest_user_message="这个学校的专业很厉害啊",
+    )
+
+    assert polished.assistant_message == "这个回答太笼统。你本科读的是什么专业？"
+    assert "哪门课" not in polished.assistant_message
+    assert "哪项训练" not in polished.assistant_message
+    assert "我听到了" not in polished.assistant_message
+    assert polished.decision == "continue_interview"
+
+
+def test_window_style_guard_does_not_override_specific_project_answer() -> None:
+    service = InterviewerRuntimeService(db=object())
+    record = SessionRecord(
+        session_id="sess-specific-project",
+        declared_family="f1",
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "这个项目里哪一部分最能帮助你回国进高校任教？",
+        },
+    )
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="你计划重点学习哪门课程？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    polished = service._polish_window_interview_action(
+        record,
+        action,
+        history_turns=[],
+        latest_user_message="我想重点学机器学习和统计建模，回国后教数据分析课程。",
+    )
+
+    assert polished == action
+
+
 def test_run_turn_does_not_backfill_score_missing_document_when_action_keeps_it_empty(
     monkeypatch,
 ) -> None:
@@ -1079,7 +1180,7 @@ def test_run_turn_clears_ready_document_request_before_persisting_state(
     assert record.current_focus_json == {
         "owner": "interviewer_runtime_service",
         "kind": "interview_question",
-        "question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+        "question": "这份材料我看到了。你这次赴美学习什么项目？",
     }
 
 

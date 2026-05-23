@@ -196,7 +196,44 @@ class InterviewerPromptRegistry:
                 isinstance(value, dict)
                 and isinstance(merged.get(key), dict)
             ):
-                merged[key] = self._deep_merge(merged[key], value)
+                append_strings = key in {
+                    "family_policy",
+                    "module_policies",
+                    "stable_policy",
+                }
+                merged[key] = self._deep_merge_mapping(
+                    merged[key],
+                    value,
+                    append_strings=append_strings,
+                )
+                continue
+            merged[key] = deepcopy(value)
+        return merged
+
+    def _deep_merge_mapping(
+        self,
+        base: dict[str, Any],
+        override: dict[str, Any],
+        *,
+        append_strings: bool,
+    ) -> dict[str, Any]:
+        merged = deepcopy(base)
+        for key, value in override.items():
+            current_value = merged.get(key)
+            if isinstance(value, dict) and isinstance(current_value, dict):
+                merged[key] = self._deep_merge_mapping(
+                    current_value,
+                    value,
+                    append_strings=append_strings,
+                )
+                continue
+            if append_strings and isinstance(value, str) and isinstance(current_value, str):
+                base_text = current_value.strip()
+                override_text = value.strip()
+                if base_text and override_text:
+                    merged[key] = f"{base_text}\n\n{override_text}"
+                else:
+                    merged[key] = override_text or base_text
                 continue
             merged[key] = deepcopy(value)
         return merged

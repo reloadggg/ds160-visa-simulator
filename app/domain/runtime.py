@@ -141,6 +141,7 @@ class TurnHistorySummary(BaseModel):
     summarized_assistant_turn_count: int = 0
     prior_decisions: list[str] = Field(default_factory=list)
     prior_requested_documents: list[str] = Field(default_factory=list)
+    prior_question_topics: list[str] = Field(default_factory=list)
 
 
 class ContextCompressionSnapshot(BaseModel):

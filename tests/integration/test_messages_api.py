@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -60,6 +61,23 @@ def assert_interviewer_state_matches_new_contract(
         ),
         "document_review": expected_state.get("document_review", {}),
     }
+
+
+def parse_sse_events(body: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    for raw_event in body.split("\n\n"):
+        if not raw_event.strip():
+            continue
+        event_name = None
+        event_data = None
+        for line in raw_event.splitlines():
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            if line.startswith("data:"):
+                event_data = json.loads(line.removeprefix("data:").strip())
+        if event_name is not None and isinstance(event_data, dict):
+            events.append((event_name, event_data))
+    return events
 
 
 @pytest.fixture()
@@ -442,6 +460,101 @@ def test_messages_stream_requires_streaming_switch(
 
     assert response.status_code == 403
     assert "未启用用户模型流式输出" in response.json()["detail"]
+
+
+def test_messages_stream_emits_final_payload_contract(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    monkeypatch.setattr(settings_module.settings, "allow_user_model_streaming", True)
+
+    def fake_run_turn(self, record, message_text: str) -> dict:
+        del self
+        turn_record = {
+            "turn_id": "turn-stream-stub",
+            "session_id": record.session_id,
+            "user_input": message_text,
+            "decision": "continue_interview",
+            "assistant_message": "Who will pay your first year expenses?",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "focus": {
+                "owner": "interviewer_runtime_service",
+                "kind": "interview_question",
+                "question": "Who will pay your first year expenses?",
+            },
+            "trace_refs": ["turn_decision"],
+            "advisory_summary": {
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+            "document_review": {},
+        }
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        record.current_focus_json = dict(turn_record["focus"])
+        record.interviewer_state_json = {
+            "decision": "continue_interview",
+            "current_focus": dict(turn_record["focus"]),
+            "document_review": {},
+        }
+        return {
+            "assistant_message": turn_record["assistant_message"],
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "runtime_view_state": {
+                "decision": "continue_interview",
+                "current_focus": {
+                    "kind": "interview_question",
+                    "question": "Who will pay your first year expenses?",
+                },
+            },
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.interviewer",
+                "prompt_version": "v2",
+            },
+            "turn_record": turn_record,
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    with client.stream(
+        "POST",
+        f"/v1/sessions/{session_id}/messages/stream",
+        json={
+            "role": "user",
+            "content": "My father will pay.",
+            "model_config": {
+                "base_url": "https://models.example.test",
+                "api_key": "user-key",
+                "model": "user-model",
+            },
+        },
+    ) as response:
+        body = response.read().decode()
+
+    assert response.status_code == 200
+    assert "event: accepted" in body
+    assert "event: analyzing" in body
+    assert "event: final" in body
+    events = parse_sse_events(body)
+    assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
+    final_payload = events[-1][1]
+    assert final_payload["assistant_message"] == "Who will pay your first year expenses?"
+    assert final_payload["turn_decision"]["decision"] == "continue_interview"
+    assert final_payload["runtime_view_state"]
+    assert final_payload["prompt_trace"]
+    assert final_payload["requested_documents"] == []
 
 
 def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
@@ -1579,7 +1692,7 @@ def test_message_turn_persists_current_focus_from_interviewer_runtime(
             {
                 "owner": "interviewer_runtime_service",
                 "kind": "interview_question",
-                "question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+                "question": "这份材料我看到了。你这次赴美学习什么项目？",
             },
             {
                 "owner": "interviewer_runtime_service",
@@ -1589,7 +1702,7 @@ def test_message_turn_persists_current_focus_from_interviewer_runtime(
                 "governor_decision": "continue_interview",
                 "next_action": "answer_question",
                 "decision_hint": "continue_interview",
-                "current_key_question": "材料核验已更新，我们继续面谈：请你说明这次赴美学习的主要目的。",
+                "current_key_question": "这份材料我看到了。你这次赴美学习什么项目？",
                 "current_key_proof": None,
                 "current_risk_code": None,
                 "risk_level": "none",

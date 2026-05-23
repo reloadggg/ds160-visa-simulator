@@ -163,10 +163,10 @@ function buildRequestedDocumentsMessage(
 
   const documentList = formatRequestedDocuments(requestedDocumentLabels)
   if (governorDecision === "need_more_evidence") {
-    return `系统建议优先补充以下材料：${documentList}。你可以上传材料，或先继续解释相关细节。`
+    return `请补充：${documentList}。`
   }
 
-  return `后端当前仍关注这些材料：${documentList}。`
+  return `还需要核对：${documentList}。`
 }
 
 function buildOfficerUploadFollowUp(
@@ -188,18 +188,18 @@ function buildOfficerUploadFollowUp(
   const focusLabels = remainingLabels.length ? remainingLabels : fallbackLabels
 
   if (uploadedLabels.length && !focusLabels.length) {
-    return `我收到了你上传的${formatRequestedDocuments(uploadedLabels)}。这些材料已经记录到本轮评估里，我们继续面签问题：请你简单说明这次赴美的主要目的，以及这些材料和你的申请之间的关系。`
+    return `我收到了你上传的${formatRequestedDocuments(uploadedLabels)}。你这次赴美学习什么项目？`
   }
 
   if (uploadedLabels.length && focusLabels.length) {
-    return `我收到了你上传的${formatRequestedDocuments(uploadedLabels)}。系统会继续核对材料内容；目前还需要重点确认${formatRequestedDocuments(focusLabels)}。请你补充说明这些材料分别证明什么，或继续上传剩余材料。`
+    return `我收到了你上传的${formatRequestedDocuments(uploadedLabels)}。请补充${formatRequestedDocuments(focusLabels)}。`
   }
 
   if (focusLabels.length) {
-    return `材料已收到。当前还需要重点确认${formatRequestedDocuments(focusLabels)}。请你说明刚才上传的文件对应哪一类材料，或继续补充剩余证明。`
+    return `材料已收到。请补充${formatRequestedDocuments(focusLabels)}。`
   }
 
-  return "材料已收到。请你继续说明这份材料想证明的申请事实，签证官会结合你的回答继续追问。"
+  return "材料已收到。你这次赴美学习什么项目？"
 }
 
 function buildGateProgressMessage(overallStatus?: string): string | null {
@@ -1786,7 +1786,7 @@ export function useSessionWorkbench() {
                     runtimeModelConfig,
                     (event) => {
                       if (event.event === "analyzing") {
-                        setSettingsFeedback("模型请求处理中，等待后端完成本轮评估。")
+                        setSettingsFeedback("正在生成本轮回复。")
                       }
                     },
                   )
