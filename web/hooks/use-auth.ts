@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
-import { login as apiLogin, logout as apiLogout } from "@/lib/api/client"
+import { getAuthStatus, login as apiLogin, logout as apiLogout } from "@/lib/api/client"
 
-const AUTH_TOKEN_KEY = "auth_token"
 const AUTH_USER_KEY = "auth_user"
 const DEFAULT_AVATAR_URL = "/default-user-avatar.svg"
 
@@ -70,18 +69,40 @@ function clearStoredUserProfile(): void {
 export function useAuth() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [userProfile, setUserProfile] = useState<AuthUserProfile | null>(null)
 
   useEffect(() => {
-    const token = localStorage.getItem(AUTH_TOKEN_KEY)
-    if (token) {
-      queueMicrotask(() => {
+    let cancelled = false
+
+    const restoreAuthStatus = async () => {
+      try {
+        const status = await getAuthStatus()
+        if (cancelled) {
+          return
+        }
+        if (!status.authenticated) {
+          clearStoredUserProfile()
+          setUserProfile(null)
+          setIsAuthenticated(false)
+          return
+        }
         const profile = readStoredUserProfile() ?? buildUserProfile()
         writeStoredUserProfile(profile)
         setUserProfile(profile)
         setIsAuthenticated(true)
-      })
+      } catch {
+        if (!cancelled) {
+          clearStoredUserProfile()
+          setUserProfile(null)
+          setIsAuthenticated(false)
+        }
+      } finally {
+        if (!cancelled) {
+          setIsCheckingAuth(false)
+        }
+      }
     }
 
     const handleUnauthorized = () => {
@@ -91,8 +112,10 @@ export function useAuth() {
       setError("会话已过期，请重新登录")
     }
 
+    void restoreAuthStatus()
     window.addEventListener("auth:unauthorized", handleUnauthorized)
     return () => {
+      cancelled = true
       window.removeEventListener("auth:unauthorized", handleUnauthorized)
     }
   }, [])
@@ -116,8 +139,8 @@ export function useAuth() {
     }
   }, [])
 
-  const logout = useCallback(() => {
-    apiLogout()
+  const logout = useCallback(async () => {
+    await apiLogout()
     clearStoredUserProfile()
     setUserProfile(null)
     setIsAuthenticated(false)
@@ -125,6 +148,7 @@ export function useAuth() {
 
   return {
     isAuthenticated,
+    isCheckingAuth,
     isLoggingIn,
     error,
     userProfile,

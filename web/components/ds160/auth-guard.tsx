@@ -15,7 +15,7 @@ interface AuthGuardProps {
 const previewPoints = ["真实面签节奏", "材料与风险联动", "Agent 2.0 测试环境"]
 
 export function AuthGuard({ children }: AuthGuardProps) {
-  const { isAuthenticated, isLoggingIn, error, login } = useAuth()
+  const { isAuthenticated, isCheckingAuth, isLoggingIn, error, login } = useAuth()
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -30,6 +30,17 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
   if (isAuthenticated) {
     return <>{children}</>
+  }
+
+  if (isCheckingAuth) {
+    return (
+      <main className="flex min-h-[100dvh] items-center justify-center bg-[#f6f7fb] text-slate-950">
+        <div className="flex items-center gap-3 text-sm font-medium text-slate-600">
+          <LockKeyhole className="h-4 w-4" />
+          正在验证访问状态...
+        </div>
+      </main>
+    )
   }
 
   return (

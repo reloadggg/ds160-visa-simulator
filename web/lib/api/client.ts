@@ -10,6 +10,7 @@ import {
 } from "./mappers"
 import type {
   AuthResponse,
+  AuthStatusResponse,
   BackendFileUploadResponse,
   BackendInternalReport,
   BackendMessageResponse,
@@ -33,8 +34,6 @@ import type {
   UserReport,
   VisaFamily,
 } from "./types"
-
-const AUTH_TOKEN_KEY = "auth_token"
 
 class ApiError extends Error {
   constructor(
@@ -66,19 +65,19 @@ function extractErrorMessage(data: unknown, fallback: string): string {
 
 function getAuthHeaders(contentType?: string): HeadersInit {
   const headers: Record<string, string> = {}
-  
+
   if (contentType) {
     headers["Content-Type"] = contentType
   }
 
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem(AUTH_TOKEN_KEY)
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`
-    }
-  }
-
   return headers
+}
+
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    credentials: "include",
+  })
 }
 
 function toBackendModelConfig(config?: UserModelRuntimeConfig | null) {
@@ -95,7 +94,6 @@ function toBackendModelConfig(config?: UserModelRuntimeConfig | null) {
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     if (response.status === 401 && typeof window !== "undefined") {
-      localStorage.removeItem(AUTH_TOKEN_KEY)
       window.dispatchEvent(new CustomEvent("auth:unauthorized"))
     }
 
@@ -120,7 +118,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export async function login(password: string): Promise<AuthResponse> {
-  const response = await fetch(buildApiUrl("/v1/auth/login"), {
+  const response = await apiFetch(buildApiUrl("/v1/auth/login"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -128,22 +126,23 @@ export async function login(password: string): Promise<AuthResponse> {
     body: JSON.stringify({ password }),
   })
 
-  const authData = await handleResponse<AuthResponse>(response)
-  if (typeof window !== "undefined") {
-    localStorage.setItem(AUTH_TOKEN_KEY, authData.access_token)
-  }
-  return authData
+  return handleResponse<AuthResponse>(response)
 }
 
-export function logout() {
-  if (typeof window !== "undefined") {
-    localStorage.removeItem(AUTH_TOKEN_KEY)
-    window.dispatchEvent(new CustomEvent("auth:unauthorized"))
-  }
+export async function getAuthStatus(): Promise<AuthStatusResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/auth/me"))
+  return handleResponse<AuthStatusResponse>(response)
+}
+
+export async function logout(): Promise<void> {
+  await apiFetch(buildApiUrl("/v1/auth/logout"), {
+    method: "POST",
+    headers: getAuthHeaders(),
+  }).catch(() => undefined)
 }
 
 export async function createSession(visaFamily: VisaFamily): Promise<Session> {
-  const response = await fetch(buildApiUrl("/v1/sessions"), {
+  const response = await apiFetch(buildApiUrl("/v1/sessions"), {
     method: "POST",
     headers: getAuthHeaders("application/json"),
     body: JSON.stringify({
@@ -155,7 +154,7 @@ export async function createSession(visaFamily: VisaFamily): Promise<Session> {
 }
 
 export async function getRequiredPackage(sessionId: string): Promise<RequiredPackage> {
-  const response = await fetch(
+  const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/required-package`),
     { headers: getAuthHeaders() }
   )
@@ -167,7 +166,7 @@ export async function sendMessage(
   content: string,
   modelConfig?: UserModelRuntimeConfig | null,
 ): Promise<MessageResponse> {
-  const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
     method: "POST",
     headers: getAuthHeaders("application/json"),
     body: JSON.stringify({
@@ -186,7 +185,7 @@ export async function sendMessageStream(
   modelConfig: UserModelRuntimeConfig | null,
   onEvent: (event: MessageStreamEvent) => void,
 ): Promise<MessageResponse> {
-  const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/messages/stream`), {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages/stream`), {
     method: "POST",
     headers: getAuthHeaders("application/json"),
     body: JSON.stringify({
@@ -270,7 +269,7 @@ export async function listUserModels(
   baseUrl: string,
   apiKey: string,
 ): Promise<ModelListResponse> {
-  const response = await fetch(buildApiUrl("/v1/model-config/models"), {
+  const response = await apiFetch(buildApiUrl("/v1/model-config/models"), {
     method: "POST",
     headers: getAuthHeaders("application/json"),
     body: JSON.stringify({
@@ -283,7 +282,7 @@ export async function listUserModels(
 }
 
 export async function getRagStatus(): Promise<RagStatus> {
-  const response = await fetch(buildApiUrl("/v1/rag/status"), {
+  const response = await apiFetch(buildApiUrl("/v1/rag/status"), {
     headers: getAuthHeaders(),
   })
 
@@ -308,7 +307,7 @@ export async function uploadRagFile(
     }
   })
 
-  const response = await fetch(buildApiUrl("/v1/rag/files"), {
+  const response = await apiFetch(buildApiUrl("/v1/rag/files"), {
     method: "POST",
     headers: getAuthHeaders(),
     body: formData,
@@ -318,7 +317,7 @@ export async function uploadRagFile(
 }
 
 export async function getUserReport(sessionId: string): Promise<UserReport> {
-  const response = await fetch(
+  const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/reports/user`),
     { headers: getAuthHeaders() }
   )
@@ -326,7 +325,7 @@ export async function getUserReport(sessionId: string): Promise<UserReport> {
 }
 
 export async function getInternalReport(sessionId: string): Promise<InternalReport> {
-  const response = await fetch(
+  const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/reports/internal`),
     { headers: getAuthHeaders() }
   )
@@ -334,7 +333,7 @@ export async function getInternalReport(sessionId: string): Promise<InternalRepo
 }
 
 export async function exportSession(sessionId: string): Promise<SessionExportPayload> {
-  const response = await fetch(
+  const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/reports/export`),
     { headers: getAuthHeaders() }
   )
@@ -342,7 +341,7 @@ export async function exportSession(sessionId: string): Promise<SessionExportPay
 }
 
 export async function generateInterviewReview(sessionId: string): Promise<InterviewReviewResponse> {
-  const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/reports/review`), {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/reports/review`), {
     method: "POST",
     headers: getAuthHeaders(),
   })
@@ -353,7 +352,7 @@ export async function debugFillCurrentGap(
   sessionId: string,
   scenario = "normal",
 ): Promise<DebugFillResponse> {
-  const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/fill-current-gap`), {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/fill-current-gap`), {
     method: "POST",
     headers: {
       ...getAuthHeaders(),
@@ -375,7 +374,7 @@ export async function uploadFile(
     formData.append("context_text", contextText)
   }
 
-  const response = await fetch(buildApiUrl(`/v1/sessions/${sessionId}/files`), {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/files`), {
     method: "POST",
     headers: getAuthHeaders(),
     body: formData,
@@ -387,18 +386,7 @@ export async function uploadFile(
 }
 
 export function getFileContentUrl(sessionId: string, documentId: string): string {
-  const url = buildApiUrl(`/v1/sessions/${sessionId}/files/${documentId}/content`)
-  if (typeof window === "undefined") {
-    return url
-  }
-
-  const token = localStorage.getItem(AUTH_TOKEN_KEY)
-  if (!token) {
-    return url
-  }
-
-  const separator = url.includes("?") ? "&" : "?"
-  return `${url}${separator}access_token=${encodeURIComponent(token)}`
+  return buildApiUrl(`/v1/sessions/${sessionId}/files/${documentId}/content`)
 }
 
 export { ApiError }

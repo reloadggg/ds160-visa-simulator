@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, Index, Integer, LargeBinary, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, JSON, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -64,3 +66,15 @@ class JobRecord(Base):
     kind: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="queued")
     payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AuthSessionRecord(Base):
+    __tablename__ = "auth_sessions"
+
+    session_id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    user_agent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -11,6 +11,10 @@ from app.db.models import DocumentRecord, JobRecord, SessionRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
+from app.core import settings as settings_module
+
+
+ORIGIN = "http://testserver"
 
 
 def build_pdf_bytes(*pages: str) -> bytes:
@@ -49,9 +53,11 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.auth_session_factory = db_session_factory
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+    app.state.auth_session_factory = None
 
 
 def seed_session(db_session_factory, session_id: str) -> None:
@@ -577,3 +583,46 @@ def test_get_file_content_rejects_cross_session_document(
     response = client.get("/v1/sessions/sess-other/files/doc-owner-1/content")
 
     assert response.status_code == 404
+
+
+def test_get_file_content_uses_cookie_auth_when_enabled(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "app_auth_password", "test-password")
+    monkeypatch.setattr(settings_module.settings, "app_auth_cookie_secure", False)
+    monkeypatch.setattr(settings_module.settings, "app_auth_csrf_protection", True)
+    session_id = "sess-auth-content"
+    seed_session(db_session_factory, session_id)
+
+    with db_session_factory() as db:
+        db.add(
+            DocumentRecord(
+                document_id="doc-auth-content",
+                session_id=session_id,
+                filename="passport.png",
+                status="parsed",
+                raw_bytes=b"png-bytes",
+                raw_text="OCR text",
+                artifact_json={"content_type": "image/png"},
+            )
+        )
+        db.commit()
+
+    assert (
+        client.get(f"/v1/sessions/{session_id}/files/doc-auth-content/content").status_code
+        == 401
+    )
+
+    login_response = client.post(
+        "/v1/auth/login",
+        json={"password": "test-password"},
+        headers={"Origin": ORIGIN},
+    )
+    assert login_response.status_code == 200
+
+    response = client.get(f"/v1/sessions/{session_id}/files/doc-auth-content/content")
+
+    assert response.status_code == 200
+    assert response.content == b"png-bytes"

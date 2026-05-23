@@ -369,13 +369,17 @@ export interface ComposerCommand {
 }
 
 export interface AuthResponse {
-  access_token: string
-  token_type: string
+  authenticated: boolean
   expires_in: number
 }
 
 export interface LoginPayload {
   password: string
+}
+
+export interface AuthStatusResponse {
+  authenticated: boolean
+  expires_at?: string | null
 }
 
 export interface BackendSession {

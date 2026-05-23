@@ -18,7 +18,17 @@ class Settings(BaseSettings):
     openai_timeout_seconds: float = 60.0
     run_live_llm_tests: bool = False
     app_auth_password: str | None = None
-    app_auth_token_ttl_seconds: int = 60 * 60 * 24
+    app_auth_session_ttl_seconds: int = 60 * 60 * 24
+    app_auth_idle_timeout_seconds: int = 60 * 60 * 8
+    app_auth_cookie_name: str = "ds160_session"
+    app_auth_cookie_secure: bool = True
+    app_auth_cookie_samesite: str = "lax"
+    app_auth_cookie_domain: str | None = None
+    app_auth_login_rate_limit_attempts: int = 5
+    app_auth_login_rate_limit_window_seconds: int = 60
+    app_auth_csrf_protection: bool = True
+    app_auth_protect_docs: bool = True
+    app_compat_api_key: str | None = None
     allow_debug_fill: bool = False
     allow_user_model_config: bool = False
     allow_user_model_streaming: bool = False
@@ -71,6 +81,10 @@ class Settings(BaseSettings):
     @property
     def app_auth_enabled(self) -> bool:
         return bool(self.app_auth_password)
+
+    @property
+    def app_auth_docs_public(self) -> bool:
+        return not self.app_auth_protect_docs
 
     @property
     def siliconflow_embedding_dimensions_supported(self) -> bool:

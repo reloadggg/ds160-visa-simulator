@@ -185,7 +185,12 @@ OPENAI_API_KEY=your-api-key
 
 ```env
 APP_AUTH_PASSWORD=
-APP_AUTH_TOKEN_TTL_SECONDS=86400
+APP_AUTH_SESSION_TTL_SECONDS=86400
+APP_AUTH_IDLE_TIMEOUT_SECONDS=28800
+APP_AUTH_COOKIE_SECURE=true
+APP_AUTH_COOKIE_SAMESITE=lax
+APP_AUTH_PROTECT_DOCS=true
+APP_COMPAT_API_KEY=
 MULTIMODAL_EXTRACTION_ENABLED=true
 DATABASE_URL=sqlite:///./app.sqlite3
 CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
@@ -266,19 +271,26 @@ docker compose up -d --build
 
 ## 🔐 访问保护
 
-服务器测试阶段可以通过一个简单共享密码保护主要业务接口。
+服务器测试阶段可以通过一个共享入口密码保护主要业务接口。登录后后端会创建服务端会话，并通过 `HttpOnly` Cookie 访问业务 API；前端不再保存长期 Bearer token。
 
 - `APP_AUTH_PASSWORD` 为空时关闭鉴权，方便本地开发
 - 设置 `APP_AUTH_PASSWORD` 后，前端会先调用 `POST /v1/auth/login`
-- 登录成功后使用 `Authorization: Bearer <token>` 访问受保护接口
+- 登录成功后浏览器通过 `HttpOnly; Secure; SameSite` Cookie 访问受保护接口
+- `POST /v1/auth/logout` 会撤销当前服务端会话并清理 Cookie
+- 生产环境默认保护 `/docs`、`/redoc`、`/openapi.json`，可通过 `APP_AUTH_PROTECT_DOCS=false` 调整
+- `POST /v1/chat/completions` 如需被外部机器客户端直连，应单独配置 `APP_COMPAT_API_KEY` 并使用 `Authorization: Bearer <token>`
 
-这只是测试阶段的进入保护，不是完整用户系统。当前不包含用户注册、权限分级、多租户隔离或数据库用户表。
+这只是测试阶段的进入保护，不是完整用户系统。当前不包含用户注册、权限分级或多租户隔离。
 
 ## 📡 主要 API
 
+完整请求/响应、认证方式、错误码和示例见 [API Reference](docs/API.md)。
+
 | 接口 | 作用 |
 | --- | --- |
-| `POST /v1/auth/login` | 简单进入鉴权 |
+| `POST /v1/auth/login` | 建立服务端登录会话 |
+| `GET /v1/auth/me` | 查询当前登录状态 |
+| `POST /v1/auth/logout` | 撤销当前登录会话 |
 | `POST /v1/sessions` | 创建签证模拟会话 |
 | `POST /v1/sessions/{session_id}/messages` | 提交一轮面谈回答 |
 | `POST /v1/sessions/{session_id}/messages/stream` | 事件式 SSE 面谈回答 |
@@ -289,6 +301,8 @@ docker compose up -d --build
 | `GET /v1/sessions/{session_id}/reports/user` | 获取用户报告 |
 | `GET /v1/sessions/{session_id}/reports/internal` | 获取内部调试报告 |
 | `POST /v1/chat/completions` | OpenAI-compatible 对话入口 |
+
+前端生产镜像通过 `/api` 代理访问后端，所以浏览器侧路径通常是 `/api/v1/...`；后端本身仍暴露 `/v1/...`。
 
 ## 🧪 测试
 
@@ -332,13 +346,3 @@ uv run pytest tests/integration/live -q -m live_llm
 - `*_raw_materials_pack.zip`：临时资料包
 
 需要共享知识库时，优先使用受控 artifact、对象存储或重新执行导入流程，不要把 Chroma 二进制索引混进代码提交。
-
-## 📦 当前状态
-
-项目仍处于快速迭代阶段，当前更适合作为私有仓库中的产品原型和技术验证项目。后续适合继续补充：
-
-- 更完整的签证类型策略包
-- 更正式的 RAG 受控导入命令和知识库版本发布流程
-- 更稳定的材料结构化抽取评估集
-- 更细的用户账户和数据隔离
-- 更正式的部署与监控文档
