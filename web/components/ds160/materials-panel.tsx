@@ -32,6 +32,16 @@ function formatDateTime(value: string): string {
 }
 
 function MaterialPreview({ material }: { material: UploadedMaterial }) {
+  if (material.raw_text) {
+    return (
+      <div className="h-full w-full overflow-hidden rounded-xl bg-slate-950 p-4 text-left">
+        <pre className="max-h-full overflow-hidden whitespace-pre-wrap break-words text-xs leading-5 text-slate-100">
+          {material.raw_text}
+        </pre>
+      </div>
+    )
+  }
+
   if (material.kind === "image" && material.preview_url) {
     return (
       // Blob URL previews are generated locally and are not suitable for next/image optimization.
@@ -53,6 +63,75 @@ function MaterialPreview({ material }: { material: UploadedMaterial }) {
       ) : (
         <FileImage className="h-10 w-10 text-muted-foreground" />
       )}
+    </div>
+  )
+}
+
+function FieldTable({ fields }: { fields?: Record<string, string> }) {
+  const entries = Object.entries(fields ?? {})
+  if (!entries.length) {
+    return null
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">结构化字段</div>
+      <div className="max-h-52 overflow-y-auto rounded-xl border border-border">
+        {entries.map(([fieldPath, value]) => (
+          <div
+            key={fieldPath}
+            className="grid gap-1 border-b border-border px-3 py-2 last:border-b-0 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]"
+          >
+            <div className="break-all text-xs font-medium text-muted-foreground">
+              {fieldPath}
+            </div>
+            <div className="break-words text-xs leading-5 text-foreground">
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RawTextBlock({ rawText }: { rawText?: string | null }) {
+  if (!rawText) {
+    return null
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">材料正文</div>
+      <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-border bg-muted/20 p-3 text-xs leading-6 text-foreground">
+        {rawText}
+      </pre>
+    </div>
+  )
+}
+
+function ExpectedFindings({ material }: { material: UploadedMaterial }) {
+  if (!material.expected_findings?.length || !material.synthetic_bundle_id) {
+    return null
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">调试 oracle</div>
+      <div className="space-y-2">
+        {material.expected_findings.map((finding, index) => (
+          <div
+            key={`${finding.kind}-${finding.field_path ?? index}`}
+            className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"
+          >
+            <div className="font-medium">{finding.kind}</div>
+            <div className="mt-1 break-words">{finding.description}</div>
+            {finding.field_path ? (
+              <div className="mt-1 break-all text-amber-800">{finding.field_path}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -100,6 +179,11 @@ function MaterialGrid({
                           <Badge variant="outline">
                             {material.kind === "pdf" ? "PDF" : material.kind === "image" ? "图片" : "文件"}
                           </Badge>
+                          {material.synthetic_bundle_id ? (
+                            <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">
+                              Synthetic
+                            </Badge>
+                          ) : null}
                           <span className="break-words text-xs leading-5 text-muted-foreground">
                             {formatDateTime(material.uploaded_at)}
                           </span>
@@ -132,6 +216,10 @@ function MaterialGrid({
                             当前仍需关注：{material.current_focus_document_label}
                           </div>
                         )}
+
+                        <FieldTable fields={material.fields} />
+                        <RawTextBlock rawText={material.raw_text} />
+                        <ExpectedFindings material={material} />
                       </div>
 
                       <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -167,6 +255,11 @@ function MaterialGrid({
                 {material.kind === "pdf" ? "PDF" : material.kind === "image" ? "图片" : "文件"}
               </Badge>
             </div>
+            {material.synthetic_bundle_id ? (
+              <Badge className="w-fit bg-amber-100 text-amber-800 hover:bg-amber-100">
+                调试材料包
+              </Badge>
+            ) : null}
             <div className="rounded-xl bg-muted/30 px-3 py-2">
               <div className="break-words text-xs leading-5 text-muted-foreground">识别结果</div>
               <div className="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">
@@ -176,6 +269,11 @@ function MaterialGrid({
             {material.current_focus_document_label ? (
               <div className="break-words text-xs leading-5 text-muted-foreground">
                 当前主线仍关注：{material.current_focus_document_label}
+              </div>
+            ) : null}
+            {material.raw_text ? (
+              <div className="line-clamp-3 break-words rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+                {material.raw_text}
               </div>
             ) : null}
             <div className="pt-1">

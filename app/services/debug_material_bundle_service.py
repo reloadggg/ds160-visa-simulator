@@ -1,0 +1,884 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from typing import Any, Literal
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from app.db.models import DocumentRecord, SessionTurnRecord
+from app.domain.contracts import (
+    ApplicantProfile,
+    FieldProvenanceRecord,
+    FieldState,
+    FieldStateRecord,
+)
+from app.domain.evidence import DocumentChunk, DocumentSourceType, EvidenceItem
+from app.repositories.document_repo import DocumentRepository
+from app.repositories.evidence_repo import EvidenceRepository
+from app.repositories.session_repo import SessionRepository
+from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.gate_runtime_service import GateRuntimeService
+from app.services.message_service import MessageService
+from app.services.profile_recompute_service import ProfileRecomputeService
+from app.services.runtime_errors import ModelRuntimeError
+
+
+DebugMaterialBundleScenario = Literal[
+    "normal_f1_bundle",
+    "school_mismatch_bundle",
+    "identity_mismatch_bundle",
+    "funding_shortfall_bundle",
+    "sponsor_chain_gap_bundle",
+    "claim_vs_document_bundle",
+]
+
+
+@dataclass(frozen=True)
+class ExpectedFinding:
+    kind: str
+    description: str
+    field_path: str | None = None
+    document_types: list[str] = field(default_factory=list)
+    severity: str = "medium"
+    visible_to_model: bool = False
+
+
+@dataclass(frozen=True)
+class SyntheticTurnSpec:
+    role: Literal["user"]
+    content: str
+    field_claims: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SyntheticDocumentSpec:
+    document_type: str
+    filename: str
+    text: str
+    fields: dict[str, str]
+    counts_toward_gate: bool = True
+
+
+@dataclass(frozen=True)
+class DebugMaterialBundleSpec:
+    scenario: DebugMaterialBundleScenario
+    scenario_label: str
+    documents: list[SyntheticDocumentSpec]
+    expected_findings: list[ExpectedFinding] = field(default_factory=list)
+    synthetic_turns: list[SyntheticTurnSpec] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DebugMaterialBundleEvent:
+    event: str
+    data: dict[str, Any]
+
+
+SYNTHETIC_APPLICANT_NAME = "TEST APPLICANT"
+SYNTHETIC_PASSPORT_NUMBER = "X00000000"
+SYNTHETIC_CONFLICT_PASSPORT_NUMBER = "Y11111111"
+SYNTHETIC_NATIONALITY = "EXAMPLELAND"
+SYNTHETIC_SEVIS_ID = "N0000000000"
+SYNTHETIC_SCHOOL_NAME = "Example University"
+SYNTHETIC_CONFLICT_SCHOOL_NAME = "Alternate Example University"
+SYNTHETIC_PROGRAM_NAME = "Master of Example Analytics"
+SYNTHETIC_PARENT_NAMES = ("PARENT SPONSOR A", "PARENT SPONSOR B")
+SYNTHETIC_COMPANY_NAME = "Example Family Business LLC"
+
+DEBUG_MATERIAL_BUNDLE_SCENARIOS: dict[str, str] = {
+    "normal_f1_bundle": "自洽 F-1 基准材料包",
+    "school_mismatch_bundle": "学校材料冲突包",
+    "identity_mismatch_bundle": "身份号码冲突包",
+    "funding_shortfall_bundle": "资金金额不足包",
+    "sponsor_chain_gap_bundle": "父母股权资金链缺口包",
+    "claim_vs_document_bundle": "口头声明与材料冲突包",
+}
+
+DOCUMENT_TYPE_LABELS: dict[str, str] = {
+    "ds160": "DS-160 确认页",
+    "passport_bio": "护照首页",
+    "i20": "I-20",
+    "admission_letter": "录取信",
+    "funding_proof": "资金证明",
+    "relationship_proof_between_applicant_and_sponsors": "亲属关系证明",
+}
+
+ORACLE_TEXT_MARKERS = (
+    "Issue:",
+    "Missing:",
+    "Expected:",
+    "Defect:",
+    "This conflicts with",
+)
+
+_CLAIM_FIELD_BINDINGS: dict[str, tuple[str, str]] = {
+    "/funding/primary_source": ("funding", "primary_source"),
+    "/education/school_name": ("education", "school_name"),
+    "/identity/passport_number": ("identity", "passport_number"),
+}
+
+
+class DebugMaterialBundleService:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.sessions = SessionRepository(db)
+        self.documents = DocumentRepository(db)
+        self.evidence = EvidenceRepository(db)
+        self.turns = SessionTurnRepository(db)
+
+    def create_bundle(
+        self,
+        session_id: str,
+        *,
+        scenario: str,
+        include_synthetic_user_turns: bool = True,
+    ) -> dict[str, Any]:
+        final_payload: dict[str, Any] | None = None
+        for event in self.create_bundle_events(
+            session_id,
+            scenario=scenario,
+            include_synthetic_user_turns=include_synthetic_user_turns,
+            include_accepted=False,
+        ):
+            if event.event == "final":
+                final_payload = event.data
+        if final_payload is None:
+            raise RuntimeError("debug material bundle did not produce a final payload")
+        return final_payload
+
+    def create_bundle_events(
+        self,
+        session_id: str,
+        *,
+        scenario: str,
+        include_synthetic_user_turns: bool = True,
+        include_accepted: bool = True,
+    ) -> Iterator[DebugMaterialBundleEvent]:
+        if include_accepted:
+            yield DebugMaterialBundleEvent("accepted", {"session_id": session_id})
+
+        record = self.sessions.get(session_id)
+        if record is None:
+            raise LookupError(f"Session not found: {session_id}")
+
+        bundle_spec = self._build_bundle_spec(
+            self._normalize_scenario(scenario),
+            include_synthetic_user_turns=include_synthetic_user_turns,
+        )
+        bundle_id = f"dbg-bundle-{uuid4().hex[:12]}"
+        yield DebugMaterialBundleEvent(
+            "debug_bundle_started",
+            {
+                "session_id": record.session_id,
+                "bundle_id": bundle_id,
+                "scenario": bundle_spec.scenario,
+                "scenario_label": bundle_spec.scenario_label,
+                "document_count": len(bundle_spec.documents),
+            },
+        )
+
+        created_documents: list[dict[str, Any]] = []
+        for document_spec in bundle_spec.documents:
+            document, document_payload, evidence_count = self._create_parsed_document(
+                record.session_id,
+                bundle_id=bundle_id,
+                bundle_spec=bundle_spec,
+                document_spec=document_spec,
+            )
+            created_documents.append(document_payload)
+            yield DebugMaterialBundleEvent(
+                "document_created",
+                {
+                    "bundle_id": bundle_id,
+                    "document_id": document.document_id,
+                    "filename": document.filename,
+                    "document_type": document_spec.document_type,
+                    "document_type_label": self._document_type_label(
+                        document_spec.document_type
+                    ),
+                },
+            )
+            yield DebugMaterialBundleEvent(
+                "evidence_written",
+                {
+                    "bundle_id": bundle_id,
+                    "document_id": document.document_id,
+                    "evidence_count": evidence_count,
+                    "fields": dict(document_spec.fields),
+                },
+            )
+
+        synthetic_turn_payloads = self._write_synthetic_turns(
+            record,
+            bundle_id=bundle_id,
+            bundle_spec=bundle_spec,
+        )
+
+        ProfileRecomputeService(self.db).recompute_session(record.session_id, save=False)
+        yield DebugMaterialBundleEvent(
+            "profile_recomputed",
+            {"session_id": record.session_id, "bundle_id": bundle_id},
+        )
+
+        GateRuntimeService(self.db).refresh_record(record, save=False)
+        yield DebugMaterialBundleEvent(
+            "gate_refreshed",
+            {
+                "session_id": record.session_id,
+                "bundle_id": bundle_id,
+                "gate_status": record.gate_status_json,
+            },
+        )
+
+        self.db.commit()
+        yield DebugMaterialBundleEvent(
+            "document_review_started",
+            {"session_id": record.session_id, "bundle_id": bundle_id},
+        )
+
+        main_flow_response: dict[str, Any] = {}
+        refresh_error: str | None = None
+        try:
+            main_flow_response = MessageService(self.db).refresh_after_material_change(
+                record.session_id,
+                reason=f"debug_material_bundle:{bundle_spec.scenario}",
+            )
+        except ModelRuntimeError as exc:
+            refresh_error = exc.detail
+            self.db.rollback()
+
+        self.db.refresh(record)
+        yield DebugMaterialBundleEvent(
+            "governor_decided",
+            {
+                "session_id": record.session_id,
+                "bundle_id": bundle_id,
+                "governor_decision": main_flow_response.get("governor_decision"),
+                "turn_decision": dict(
+                    main_flow_response.get("turn_decision", {}) or {}
+                ),
+            },
+        )
+
+        final_payload = {
+            "session_id": record.session_id,
+            "bundle_id": bundle_id,
+            "scenario": bundle_spec.scenario,
+            "scenario_label": bundle_spec.scenario_label,
+            "documents": created_documents,
+            "synthetic_turns": synthetic_turn_payloads,
+            "expected_findings": [
+                finding.__dict__ for finding in bundle_spec.expected_findings
+            ],
+            "assistant_message": main_flow_response.get("assistant_message"),
+            "governor_decision": main_flow_response.get("governor_decision"),
+            "requested_documents": list(
+                main_flow_response.get("requested_documents", []) or []
+            ),
+            "remaining_required_documents": list(
+                main_flow_response.get("remaining_required_documents", []) or []
+            ),
+            "turn_decision": dict(main_flow_response.get("turn_decision", {}) or {}),
+            "document_review": dict(
+                main_flow_response.get("document_review", {}) or {}
+            ),
+            "runtime_view_state": dict(
+                main_flow_response.get("runtime_view_state", {}) or {}
+            ),
+            "phase_state": record.phase_state,
+            "gate_status": record.gate_status_json,
+            "main_flow_refresh_error": refresh_error,
+        }
+        yield DebugMaterialBundleEvent("final", final_payload)
+
+    def available_scenarios(self) -> list[dict[str, str]]:
+        return [
+            {"value": value, "label": label}
+            for value, label in DEBUG_MATERIAL_BUNDLE_SCENARIOS.items()
+        ]
+
+    def _normalize_scenario(self, scenario: str) -> DebugMaterialBundleScenario:
+        normalized = scenario.strip().lower()
+        if normalized in DEBUG_MATERIAL_BUNDLE_SCENARIOS:
+            return normalized  # type: ignore[return-value]
+        raise ValueError(f"unsupported debug material bundle scenario: {scenario}")
+
+    def _build_bundle_spec(
+        self,
+        scenario: DebugMaterialBundleScenario,
+        *,
+        include_synthetic_user_turns: bool,
+    ) -> DebugMaterialBundleSpec:
+        base_documents = self._normal_documents()
+        synthetic_turns: list[SyntheticTurnSpec] = []
+        expected_findings: list[ExpectedFinding] = []
+
+        if scenario == "normal_f1_bundle":
+            return DebugMaterialBundleSpec(
+                scenario=scenario,
+                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+                documents=base_documents,
+            )
+
+        if scenario == "school_mismatch_bundle":
+            documents = [
+                *self._identity_documents(),
+                self._i20_document(school_name=SYNTHETIC_SCHOOL_NAME),
+                self._admission_letter_document(
+                    school_name=SYNTHETIC_CONFLICT_SCHOOL_NAME
+                ),
+                self._normal_funding_document(),
+                self._relationship_document(),
+            ]
+            expected_findings.append(
+                ExpectedFinding(
+                    kind="cross_document_conflict",
+                    field_path="/education/school_name",
+                    document_types=["i20", "admission_letter"],
+                    description=(
+                        "I-20 and admission letter contain different school names."
+                    ),
+                    severity="high",
+                )
+            )
+            if include_synthetic_user_turns:
+                synthetic_turns.append(
+                    SyntheticTurnSpec(
+                        role="user",
+                        content=(
+                            "I will study at Example University in the Master of "
+                            "Example Analytics program."
+                        ),
+                        field_claims={
+                            "/education/school_name": SYNTHETIC_SCHOOL_NAME
+                        },
+                    )
+                )
+            return DebugMaterialBundleSpec(
+                scenario=scenario,
+                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+                documents=documents,
+                expected_findings=expected_findings,
+                synthetic_turns=synthetic_turns,
+            )
+
+        if scenario == "identity_mismatch_bundle":
+            documents = [
+                self._ds160_document(passport_number=SYNTHETIC_PASSPORT_NUMBER),
+                self._passport_document(
+                    passport_number=SYNTHETIC_CONFLICT_PASSPORT_NUMBER
+                ),
+                *self._study_documents(),
+                self._normal_funding_document(),
+                self._relationship_document(),
+            ]
+            expected_findings.append(
+                ExpectedFinding(
+                    kind="cross_document_conflict",
+                    field_path="/identity/passport_number",
+                    document_types=["ds160", "passport_bio"],
+                    description=(
+                        "DS-160 confirmation and passport bio page contain "
+                        "different passport numbers."
+                    ),
+                    severity="high",
+                )
+            )
+            return DebugMaterialBundleSpec(
+                scenario=scenario,
+                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+                documents=documents,
+                expected_findings=expected_findings,
+            )
+
+        if scenario == "funding_shortfall_bundle":
+            documents = [
+                *self._identity_documents(),
+                self._i20_document(first_year_cost_usd="68000"),
+                self._admission_letter_document(),
+                self._funding_document(available_funds_usd="9800"),
+                self._relationship_document(),
+            ]
+            expected_findings.append(
+                ExpectedFinding(
+                    kind="funding_shortfall",
+                    field_path="/funding/available_funds",
+                    document_types=["i20", "funding_proof"],
+                    description=(
+                        "Available funds are below the first-year cost listed "
+                        "on the I-20."
+                    ),
+                    severity="high",
+                )
+            )
+            return DebugMaterialBundleSpec(
+                scenario=scenario,
+                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+                documents=documents,
+                expected_findings=expected_findings,
+            )
+
+        if scenario == "sponsor_chain_gap_bundle":
+            documents = [
+                *self._identity_documents(),
+                *self._study_documents(),
+                self._equity_funding_document(),
+                self._relationship_document(),
+            ]
+            expected_findings.append(
+                ExpectedFinding(
+                    kind="funding_source_chain_gap",
+                    field_path="/funding/source_detail",
+                    document_types=["funding_proof"],
+                    description=(
+                        "Funding source relies on equity transfer proceeds, "
+                        "but no separate registration, transfer, tax, or "
+                        "payment trail documents are present."
+                    ),
+                    severity="medium",
+                )
+            )
+            return DebugMaterialBundleSpec(
+                scenario=scenario,
+                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+                documents=documents,
+                expected_findings=expected_findings,
+            )
+
+        documents = base_documents
+        if include_synthetic_user_turns:
+            synthetic_turns.append(
+                SyntheticTurnSpec(
+                    role="user",
+                    content=(
+                        "I am self-funded and will pay the tuition and living "
+                        "expenses with my own savings."
+                    ),
+                    field_claims={"/funding/primary_source": "self"},
+                )
+            )
+        expected_findings.append(
+            ExpectedFinding(
+                kind="claim_vs_document_conflict",
+                field_path="/funding/primary_source",
+                document_types=["funding_proof"],
+                description=(
+                    "The user says the case is self-funded, while funding "
+                    "documents show parent sponsorship."
+                ),
+                severity="high",
+            )
+        )
+        return DebugMaterialBundleSpec(
+            scenario=scenario,
+            scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+            documents=documents,
+            expected_findings=expected_findings,
+            synthetic_turns=synthetic_turns,
+        )
+
+    def _normal_documents(self) -> list[SyntheticDocumentSpec]:
+        return [
+            *self._identity_documents(),
+            *self._study_documents(),
+            self._normal_funding_document(),
+            self._relationship_document(),
+        ]
+
+    def _identity_documents(self) -> list[SyntheticDocumentSpec]:
+        return [self._ds160_document(), self._passport_document()]
+
+    def _study_documents(self) -> list[SyntheticDocumentSpec]:
+        return [self._i20_document(), self._admission_letter_document()]
+
+    def _ds160_document(
+        self,
+        *,
+        passport_number: str = SYNTHETIC_PASSPORT_NUMBER,
+    ) -> SyntheticDocumentSpec:
+        text = (
+            "DS-160 Confirmation Page\n"
+            f"Full name: {SYNTHETIC_APPLICANT_NAME}\n"
+            f"Passport number: {passport_number}\n"
+            "Travel purpose: STUDENT (F1)\n"
+            "Application location: U.S. Consulate Example Post\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="ds160",
+            filename="debug_ds160_confirmation.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
+                "/identity/passport_number": passport_number,
+                "/visa_intent/travel_purpose": "STUDENT (F1)",
+            },
+        )
+
+    def _passport_document(
+        self,
+        *,
+        passport_number: str = SYNTHETIC_PASSPORT_NUMBER,
+    ) -> SyntheticDocumentSpec:
+        text = (
+            "Passport Bio Page\n"
+            f"Full name: {SYNTHETIC_APPLICANT_NAME}\n"
+            f"Passport number: {passport_number}\n"
+            f"Nationality: {SYNTHETIC_NATIONALITY}\n"
+            "Date of birth: 2001-01-15\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="passport_bio",
+            filename="debug_passport_bio.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
+                "/identity/passport_number": passport_number,
+                "/identity/nationality": SYNTHETIC_NATIONALITY,
+            },
+        )
+
+    def _i20_document(
+        self,
+        *,
+        school_name: str = SYNTHETIC_SCHOOL_NAME,
+        first_year_cost_usd: str = "68000",
+    ) -> SyntheticDocumentSpec:
+        text = (
+            "Form I-20\n"
+            f"SEVIS ID: {SYNTHETIC_SEVIS_ID}\n"
+            f"School name: {school_name}\n"
+            f"Program: {SYNTHETIC_PROGRAM_NAME}\n"
+            "Education level: Master's\n"
+            f"First year cost: USD {first_year_cost_usd}\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="i20",
+            filename="debug_i20.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/education/sevis_id": SYNTHETIC_SEVIS_ID,
+                "/education/school_name": school_name,
+                "/education/program_name": SYNTHETIC_PROGRAM_NAME,
+                "/education/first_year_cost": first_year_cost_usd,
+            },
+        )
+
+    def _admission_letter_document(
+        self,
+        *,
+        school_name: str = SYNTHETIC_SCHOOL_NAME,
+    ) -> SyntheticDocumentSpec:
+        text = (
+            "Admission Letter\n"
+            f"Student: {SYNTHETIC_APPLICANT_NAME}\n"
+            f"School name: {school_name}\n"
+            f"Program: {SYNTHETIC_PROGRAM_NAME}\n"
+            "Term: Fall 2026\n"
+            "Admission status: admitted as a full-time student\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="admission_letter",
+            filename="debug_admission_letter.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
+                "/education/school_name": school_name,
+                "/education/program_name": SYNTHETIC_PROGRAM_NAME,
+            },
+        )
+
+    def _normal_funding_document(self) -> SyntheticDocumentSpec:
+        return self._funding_document(available_funds_usd="82000")
+
+    def _funding_document(self, *, available_funds_usd: str) -> SyntheticDocumentSpec:
+        parent_a, parent_b = SYNTHETIC_PARENT_NAMES
+        text = (
+            "Parent Funding Certificate\n"
+            "Primary source: parents\n"
+            f"Sponsor: {parent_a} and {parent_b}\n"
+            f"Available funds: USD {available_funds_usd}\n"
+            "Account type: demand deposit and fixed deposit\n"
+            f"Applicant: {SYNTHETIC_APPLICANT_NAME}\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="funding_proof",
+            filename="debug_parent_funding_certificate.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/funding/primary_source": "parents",
+                "/funding/available_funds": available_funds_usd,
+                "/funding/sponsor_relationship": "parents",
+            },
+        )
+
+    def _equity_funding_document(self) -> SyntheticDocumentSpec:
+        parent_a, parent_b = SYNTHETIC_PARENT_NAMES
+        text = (
+            "Parent Funding Certificate\n"
+            "Primary source: parents\n"
+            f"Sponsor: {parent_a} and {parent_b}\n"
+            "Available funds: USD 82000\n"
+            "Funding source: family company equity transfer proceeds\n"
+            f"Company equity ownership: {parent_a} holds 38% shares in "
+            f"{SYNTHETIC_COMPANY_NAME}\n"
+            "Transfer received date: 2026-04-12\n"
+            f"Applicant: {SYNTHETIC_APPLICANT_NAME}\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="funding_proof",
+            filename="debug_parent_equity_funding_certificate.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/funding/primary_source": "parents",
+                "/funding/available_funds": "82000",
+                "/funding/sponsor_relationship": "parents",
+                "/funding/source_detail": "family company equity transfer proceeds",
+                "/funding/equity_ownership": (
+                    f"{parent_a} holds 38% shares in {SYNTHETIC_COMPANY_NAME}."
+                ),
+            },
+        )
+
+    def _relationship_document(self) -> SyntheticDocumentSpec:
+        parent_a, parent_b = SYNTHETIC_PARENT_NAMES
+        text = (
+            "Household Register / Birth Relationship Certificate\n"
+            f"Applicant: {SYNTHETIC_APPLICANT_NAME}\n"
+            f"Parent 1: {parent_a}\n"
+            f"Parent 2: {parent_b}\n"
+            f"Relationship: {parent_a} and {parent_b} are parents of applicant.\n"
+            "Purpose: F-1 student visa funding relationship verification\n"
+        )
+        return SyntheticDocumentSpec(
+            document_type="relationship_proof_between_applicant_and_sponsors",
+            filename="debug_relationship_proof.txt",
+            text=self._safe_material_text(text),
+            fields={
+                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
+                "/funding/sponsor_relationship": "parents",
+                "/family/parent_names": f"{parent_a}; {parent_b}",
+            },
+        )
+
+    def _create_parsed_document(
+        self,
+        session_id: str,
+        *,
+        bundle_id: str,
+        bundle_spec: DebugMaterialBundleSpec,
+        document_spec: SyntheticDocumentSpec,
+    ) -> tuple[DocumentRecord, dict[str, Any], int]:
+        document_assessment = {
+            "document_type": document_spec.document_type,
+            "document_type_candidates": [document_spec.document_type],
+            "relevance": "high",
+            "supported_claims": list(document_spec.fields.keys()),
+            "confidence": 1.0,
+            "relevant": True,
+            "counts_toward_gate": document_spec.counts_toward_gate,
+        }
+        artifact_json = {
+            "document_id": "pending",
+            "session_id": session_id,
+            "filename": document_spec.filename,
+            "content_type": "text/plain; charset=utf-8",
+            "source_type": DocumentSourceType.TEXT.value,
+            "parser_name": "debug_material_bundle",
+            "status": "parsed",
+            "page_count": 1,
+            "metadata": {
+                "debug_fill": True,
+                "debug_material_bundle": True,
+                "synthetic_bundle_id": bundle_id,
+                "debug_bundle_scenario": bundle_spec.scenario,
+                "debug_bundle_scenario_label": bundle_spec.scenario_label,
+                "document_type": document_spec.document_type,
+                "visible_to_model": True,
+                "counts_toward_gate": document_spec.counts_toward_gate,
+                "relevant": True,
+                "document_assessment": document_assessment,
+            },
+        }
+        document = self.documents.create_document(
+            session_id=session_id,
+            filename=document_spec.filename,
+            raw_bytes=document_spec.text.encode("utf-8"),
+            raw_text=document_spec.text,
+            artifact_json=artifact_json,
+        )
+        document.status = "parsed"
+        artifact = dict(document.artifact_json or {})
+        artifact["document_id"] = document.document_id
+        document.artifact_json = artifact
+
+        chunk = DocumentChunk(
+            chunk_id=f"chunk-{uuid4().hex[:12]}",
+            document_id=document.document_id,
+            session_id=session_id,
+            ordinal=0,
+            page_number=1,
+            text=document_spec.text,
+            metadata={
+                "debug_fill": True,
+                "debug_material_bundle": True,
+                "synthetic_bundle_id": bundle_id,
+                "debug_bundle_scenario": bundle_spec.scenario,
+            },
+        )
+        evidence_items = [
+            EvidenceItem(
+                evidence_id=f"evi-{uuid4().hex[:12]}",
+                session_id=session_id,
+                document_id=document.document_id,
+                chunk_id=chunk.chunk_id,
+                evidence_type=document_spec.document_type,
+                field_path=field_path,
+                value=value,
+                excerpt=self._field_excerpt(document_spec.text, field_path, value),
+                confidence=1.0,
+                metadata={
+                    "debug_fill": True,
+                    "debug_material_bundle": True,
+                    "synthetic_bundle_id": bundle_id,
+                    "debug_bundle_scenario": bundle_spec.scenario,
+                },
+            )
+            for field_path, value in document_spec.fields.items()
+        ]
+        self.evidence.replace_document_result(
+            document.document_id,
+            [chunk],
+            evidence_items,
+        )
+        self.db.add(document)
+        self.db.flush()
+        return (
+            document,
+            {
+                "document_id": document.document_id,
+                "filename": document.filename,
+                "document_type": document_spec.document_type,
+                "document_type_label": self._document_type_label(
+                    document_spec.document_type
+                ),
+                "raw_text": document_spec.text,
+                "fields": dict(document_spec.fields),
+                "content_url": (
+                    f"/v1/sessions/{session_id}/files/{document.document_id}/content"
+                ),
+            },
+            len(evidence_items),
+        )
+
+    def _write_synthetic_turns(
+        self,
+        record,
+        *,
+        bundle_id: str,
+        bundle_spec: DebugMaterialBundleSpec,
+    ) -> list[dict[str, Any]]:
+        if not bundle_spec.synthetic_turns:
+            return []
+
+        profile = self._profile(record)
+        profile.profile_version += 1
+        profile.visa_intent["declared_family"] = record.declared_family
+        turn_history = profile.ds160_view.setdefault("turn_history", [])
+        if not isinstance(turn_history, list):
+            turn_history = []
+            profile.ds160_view["turn_history"] = turn_history
+        field_claim_history = profile.ds160_view.setdefault("field_claim_history", {})
+        if not isinstance(field_claim_history, dict):
+            field_claim_history = {}
+            profile.ds160_view["field_claim_history"] = field_claim_history
+
+        payloads: list[dict[str, Any]] = []
+        for turn_spec in bundle_spec.synthetic_turns:
+            turn_record = self.turns.append_user_turn(
+                session_id=record.session_id,
+                content=turn_spec.content,
+                source="debug_material_bundle",
+                metadata_json={
+                    "debug_material_bundle": True,
+                    "synthetic_bundle_id": bundle_id,
+                    "debug_bundle_scenario": bundle_spec.scenario,
+                    "synthetic": True,
+                },
+                commit=False,
+            )
+            history_entry = {
+                "turn_id": turn_record.turn_id,
+                "turn_index": turn_record.turn_index,
+                "role": turn_record.role,
+                "content": turn_record.content,
+                "source": turn_record.source,
+            }
+            turn_history.append(history_entry)
+            for field_path, value in turn_spec.field_claims.items():
+                self._apply_claim(profile, field_path, value, turn_record)
+                field_history = field_claim_history.setdefault(field_path, [])
+                if isinstance(field_history, list):
+                    field_history.append(
+                        {
+                            "value": value,
+                            "content": turn_spec.content,
+                            "turn_id": turn_record.turn_id,
+                            "turn_index": turn_record.turn_index,
+                            "source": turn_record.source,
+                        }
+                    )
+            payloads.append(
+                {
+                    "role": turn_spec.role,
+                    "content": turn_spec.content,
+                    "turn_id": turn_record.turn_id,
+                    "field_claims": dict(turn_spec.field_claims),
+                }
+            )
+
+        profile.ds160_view["turn_history"] = turn_history[-8:]
+        record.profile_json = profile.model_dump(mode="json")
+        self.db.add(record)
+        self.db.flush()
+        return payloads
+
+    def _apply_claim(
+        self,
+        profile: ApplicantProfile,
+        field_path: str,
+        value: str,
+        turn_record: SessionTurnRecord,
+    ) -> None:
+        binding = _CLAIM_FIELD_BINDINGS.get(field_path)
+        if binding is None:
+            return
+        section, key = binding
+        getattr(profile, section)[key] = value
+        profile.field_states[field_path] = FieldStateRecord(state=FieldState.CLAIMED)
+        profile.field_provenance[field_path] = FieldProvenanceRecord()
+        profile.ds160_view["latest_user_message"] = turn_record.content
+        profile.ds160_view["last_user_message"] = turn_record.content
+
+    def _profile(self, record) -> ApplicantProfile:
+        if record.profile_json:
+            return ApplicantProfile.model_validate(record.profile_json)
+        return ApplicantProfile.minimal(profile_id=f"profile-{record.session_id}")
+
+    def _field_excerpt(self, text: str, field_path: str, value: str) -> str:
+        field_name = field_path.rsplit("/", 1)[-1].replace("_", " ")
+        for line in text.splitlines():
+            normalized_line = line.casefold()
+            if value.casefold() in normalized_line or field_name in normalized_line:
+                return line[:240]
+        return text[:240]
+
+    def _safe_material_text(self, text: str) -> str:
+        for marker in ORACLE_TEXT_MARKERS:
+            if marker in text:
+                raise ValueError(f"synthetic material contains oracle marker: {marker}")
+        return text
+
+    def _document_type_label(self, document_type: str) -> str:
+        return DOCUMENT_TYPE_LABELS.get(document_type, "材料待确认")

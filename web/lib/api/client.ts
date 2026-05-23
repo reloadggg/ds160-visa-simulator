@@ -17,6 +17,9 @@ import type {
   BackendRequiredPackage,
   BackendSession,
   BackendUserReport,
+  DebugMaterialBundleResponse,
+  DebugMaterialBundleScenario,
+  DebugMaterialBundleStreamEvent,
   DebugFillResponse,
   FileUploadResponse,
   InternalReport,
@@ -241,7 +244,7 @@ export async function sendMessageStream(
   return mapMessageResponse(finalPayload)
 }
 
-function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
+function parseRawSseEvent(rawEvent: string): { event: string; data: unknown } | null {
   const eventLine = rawEvent
     .split("\n")
     .find((line) => line.startsWith("event:"))
@@ -253,6 +256,15 @@ function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
   }
   const event = eventLine.slice("event:".length).trim()
   const data = JSON.parse(dataLine.slice("data:".length).trim()) as unknown
+  return { event, data }
+}
+
+function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
+  const parsed = parseRawSseEvent(rawEvent)
+  if (!parsed) {
+    return null
+  }
+  const { event, data } = parsed
   if (event === "accepted" || event === "analyzing") {
     return { event, data: data as Record<string, unknown> }
   }
@@ -261,6 +273,29 @@ function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
   }
   if (event === "error") {
     return { event, data: data as { status?: number; detail?: string } }
+  }
+  return null
+}
+
+function parseDebugMaterialBundleSseEvent(rawEvent: string): DebugMaterialBundleStreamEvent | null {
+  const parsed = parseRawSseEvent(rawEvent)
+  if (!parsed) {
+    return null
+  }
+  const { event, data } = parsed
+  if (
+    event === "accepted" ||
+    event === "debug_bundle_started" ||
+    event === "document_created" ||
+    event === "evidence_written" ||
+    event === "profile_recomputed" ||
+    event === "gate_refreshed" ||
+    event === "document_review_started" ||
+    event === "governor_decided" ||
+    event === "final" ||
+    event === "error"
+  ) {
+    return { event, data } as DebugMaterialBundleStreamEvent
   }
   return null
 }
@@ -361,6 +396,87 @@ export async function debugFillCurrentGap(
     body: JSON.stringify({ scenario }),
   })
   return handleResponse<DebugFillResponse>(response)
+}
+
+export async function createDebugMaterialBundle(
+  sessionId: string,
+  scenario: DebugMaterialBundleScenario | string,
+  includeSyntheticUserTurns = true,
+): Promise<DebugMaterialBundleResponse> {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles`), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify({
+      scenario,
+      include_synthetic_user_turns: includeSyntheticUserTurns,
+    }),
+  })
+  return handleResponse<DebugMaterialBundleResponse>(response)
+}
+
+export async function createDebugMaterialBundleStream(
+  sessionId: string,
+  scenario: DebugMaterialBundleScenario | string,
+  includeSyntheticUserTurns: boolean,
+  onEvent: (event: DebugMaterialBundleStreamEvent) => void,
+): Promise<DebugMaterialBundleResponse> {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles/stream`), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify({
+      scenario,
+      include_synthetic_user_turns: includeSyntheticUserTurns,
+    }),
+  })
+
+  if (!response.ok) {
+    return handleResponse<DebugMaterialBundleResponse>(response)
+  }
+  if (!response.body) {
+    return createDebugMaterialBundle(sessionId, scenario, includeSyntheticUserTurns)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let finalPayload: DebugMaterialBundleResponse | null = null
+
+  const processChunk = (chunk: string) => {
+    buffer += chunk
+    const events = buffer.split("\n\n")
+    buffer = events.pop() ?? ""
+    for (const rawEvent of events) {
+      const parsed = parseDebugMaterialBundleSseEvent(rawEvent)
+      if (!parsed) {
+        continue
+      }
+      onEvent(parsed)
+      if (parsed.event === "final") {
+        finalPayload = parsed.data
+      }
+      if (parsed.event === "error") {
+        throw new ApiError(
+          parsed.data.detail ?? "调试材料包生成失败。",
+          parsed.data.status ?? 500,
+          parsed.data,
+        )
+      }
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+    processChunk(decoder.decode(value, { stream: true }))
+  }
+  processChunk(decoder.decode())
+
+  if (!finalPayload) {
+    throw new ApiError("流式材料包响应没有返回最终结果。", 502)
+  }
+  return finalPayload
 }
 
 export async function uploadFile(

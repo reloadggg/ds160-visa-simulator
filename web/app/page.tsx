@@ -58,6 +58,8 @@ function Workbench() {
     sessionHistory,
     composerCommand,
     settingsFeedback,
+    isDebugBundleGenerating,
+    debugBundleProgress,
     userModelConfig,
     availableModels,
     isLoadingModels,
@@ -85,7 +87,10 @@ function Workbench() {
     handleDebugFillCurrentGap,
     handleDebugFillNormalData,
     handleDebugFillSchoolMismatch,
+    handleDebugFillIdentityMismatch,
+    handleDebugFillFundingShortfall,
     handleDebugFillSponsorEquityGap,
+    handleDebugFillClaimVsDocument,
     handleClearHistory,
     handleRestoreSession,
   } = useSessionWorkbench()
@@ -113,7 +118,10 @@ function Workbench() {
           onDebugFillCurrentGap={handleDebugFillCurrentGap}
           onDebugFillNormalData={handleDebugFillNormalData}
           onDebugFillSchoolMismatch={handleDebugFillSchoolMismatch}
+          onDebugFillIdentityMismatch={handleDebugFillIdentityMismatch}
+          onDebugFillFundingShortfall={handleDebugFillFundingShortfall}
           onDebugFillSponsorEquityGap={handleDebugFillSponsorEquityGap}
+          onDebugFillClaimVsDocument={handleDebugFillClaimVsDocument}
           onExportConversationImage={handleExportConversationImage}
         />
       )
@@ -218,6 +226,8 @@ function Workbench() {
                 sessionId={sessionId}
                 historyCount={sessionHistory.length}
                 feedback={settingsFeedback}
+                isDebugBundleGenerating={isDebugBundleGenerating}
+                debugBundleProgress={debugBundleProgress}
                 userModelConfig={userModelConfig}
                 availableModels={availableModels}
                 isLoadingModels={isLoadingModels}
@@ -236,7 +246,10 @@ function Workbench() {
                 onDebugFillCurrentGap={handleDebugFillCurrentGap}
                 onDebugFillNormalData={handleDebugFillNormalData}
                 onDebugFillSchoolMismatch={handleDebugFillSchoolMismatch}
+                onDebugFillIdentityMismatch={handleDebugFillIdentityMismatch}
+                onDebugFillFundingShortfall={handleDebugFillFundingShortfall}
                 onDebugFillSponsorEquityGap={handleDebugFillSponsorEquityGap}
+                onDebugFillClaimVsDocument={handleDebugFillClaimVsDocument}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
               />

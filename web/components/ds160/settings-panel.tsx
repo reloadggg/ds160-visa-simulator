@@ -54,6 +54,8 @@ interface SettingsPanelProps {
   sessionId: string | null
   historyCount: number
   feedback?: string | null
+  isDebugBundleGenerating?: boolean
+  debugBundleProgress?: string[]
   userModelConfig: UserModelConfig
   availableModels: ModelListItem[]
   isLoadingModels: boolean
@@ -72,7 +74,10 @@ interface SettingsPanelProps {
   onDebugFillCurrentGap: () => void
   onDebugFillNormalData?: () => void
   onDebugFillSchoolMismatch?: () => void
+  onDebugFillIdentityMismatch?: () => void
+  onDebugFillFundingShortfall?: () => void
   onDebugFillSponsorEquityGap?: () => void
+  onDebugFillClaimVsDocument?: () => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
 }
@@ -83,6 +88,8 @@ export function SettingsPanel({
   sessionId,
   historyCount,
   feedback,
+  isDebugBundleGenerating = false,
+  debugBundleProgress = [],
   userModelConfig,
   availableModels,
   isLoadingModels,
@@ -101,7 +108,10 @@ export function SettingsPanel({
   onDebugFillCurrentGap,
   onDebugFillNormalData,
   onDebugFillSchoolMismatch,
+  onDebugFillIdentityMismatch,
+  onDebugFillFundingShortfall,
   onDebugFillSponsorEquityGap,
+  onDebugFillClaimVsDocument,
   onResetCurrentSession,
   onClearHistory,
 }: SettingsPanelProps) {
@@ -532,29 +542,62 @@ export function SettingsPanel({
                 variant="outline"
                 className="w-full justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
                 onClick={onDebugFillNormalData ?? onDebugFillCurrentGap}
-                disabled={!sessionId}
+                disabled={!sessionId || isDebugBundleGenerating}
               >
-                <FlaskConical className="h-4 w-4" />
-                调试：补全正常材料
+                <FlaskConical className={isDebugBundleGenerating ? "h-4 w-4 animate-pulse" : "h-4 w-4"} />
+                {isDebugBundleGenerating ? "正在生成材料包" : "调试：生成正常材料包"}
               </Button>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <Button
                   variant="outline"
                   className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
                   onClick={onDebugFillSchoolMismatch ?? onDebugFillCurrentGap}
-                  disabled={!sessionId}
+                  disabled={!sessionId || isDebugBundleGenerating}
                 >
                   缺陷：学校冲突
                 </Button>
                 <Button
                   variant="outline"
                   className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
+                  onClick={onDebugFillIdentityMismatch ?? onDebugFillCurrentGap}
+                  disabled={!sessionId || isDebugBundleGenerating}
+                >
+                  缺陷：身份号码
+                </Button>
+                <Button
+                  variant="outline"
+                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
+                  onClick={onDebugFillFundingShortfall ?? onDebugFillCurrentGap}
+                  disabled={!sessionId || isDebugBundleGenerating}
+                >
+                  缺陷：资金不足
+                </Button>
+                <Button
+                  variant="outline"
+                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
                   onClick={onDebugFillSponsorEquityGap ?? onDebugFillCurrentGap}
-                  disabled={!sessionId}
+                  disabled={!sessionId || isDebugBundleGenerating}
                 >
                   缺陷：股权资金链
                 </Button>
+                <Button
+                  variant="outline"
+                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
+                  onClick={onDebugFillClaimVsDocument ?? onDebugFillCurrentGap}
+                  disabled={!sessionId || isDebugBundleGenerating}
+                >
+                  缺陷：口头矛盾
+                </Button>
               </div>
+              {debugBundleProgress.length ? (
+                <div className="max-h-44 overflow-y-auto rounded-md border border-amber-200 bg-white px-3 py-2 text-xs leading-5 text-amber-900">
+                  {debugBundleProgress.slice(-8).map((line, index) => (
+                    <div key={`${line}-${index}`} className="break-words">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <Button
               variant="outline"

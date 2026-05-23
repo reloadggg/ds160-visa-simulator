@@ -1,4 +1,8 @@
+from collections.abc import Iterator
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core import settings as settings_module
@@ -7,6 +11,7 @@ from app.db.session import get_db
 from app.core.dependencies import get_session_repo
 from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
+from app.services.debug_material_bundle_service import DebugMaterialBundleService
 from app.services.gate_service import GateService
 from sqlalchemy.orm import Session
 
@@ -19,6 +24,11 @@ class CreateSessionRequest(BaseModel):
 
 class DebugFillCurrentGapRequest(BaseModel):
     scenario: str = "normal"
+
+
+class DebugMaterialBundleRequest(BaseModel):
+    scenario: str = "normal_f1_bundle"
+    include_synthetic_user_turns: bool = True
 
 
 @router.post("", status_code=201)
@@ -80,3 +90,64 @@ def debug_fill_current_gap(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/{session_id}/debug/material-bundles")
+def debug_create_material_bundle(
+    session_id: str,
+    payload: DebugMaterialBundleRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    if not settings_module.settings.allow_debug_fill:
+        raise HTTPException(status_code=403, detail="debug fill is disabled")
+    try:
+        return DebugMaterialBundleService(db).create_bundle(
+            session_id,
+            scenario=payload.scenario,
+            include_synthetic_user_turns=payload.include_synthetic_user_turns,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _sse_event(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post("/{session_id}/debug/material-bundles/stream")
+def debug_create_material_bundle_stream(
+    session_id: str,
+    payload: DebugMaterialBundleRequest,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    if not settings_module.settings.allow_debug_fill:
+        raise HTTPException(status_code=403, detail="debug fill is disabled")
+
+    def event_stream() -> Iterator[str]:
+        try:
+            for event in DebugMaterialBundleService(db).create_bundle_events(
+                session_id,
+                scenario=payload.scenario,
+                include_synthetic_user_turns=payload.include_synthetic_user_turns,
+            ):
+                yield _sse_event(event.event, event.data)
+        except LookupError as exc:
+            yield _sse_event("error", {"status": 404, "detail": str(exc)})
+        except ValueError as exc:
+            yield _sse_event("error", {"status": 422, "detail": str(exc)})
+        except Exception as exc:
+            yield _sse_event(
+                "error",
+                {"status": 500, "detail": f"debug material bundle failed: {exc}"},
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

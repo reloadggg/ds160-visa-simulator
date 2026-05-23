@@ -30,7 +30,10 @@ interface TopBarProps {
   onDebugFillCurrentGap?: () => void
   onDebugFillNormalData?: () => void
   onDebugFillSchoolMismatch?: () => void
+  onDebugFillIdentityMismatch?: () => void
+  onDebugFillFundingShortfall?: () => void
   onDebugFillSponsorEquityGap?: () => void
+  onDebugFillClaimVsDocument?: () => void
   onExportConversationImage?: () => void
 }
 
@@ -49,7 +52,10 @@ export function TopBar({
   onDebugFillCurrentGap,
   onDebugFillNormalData,
   onDebugFillSchoolMismatch,
+  onDebugFillIdentityMismatch,
+  onDebugFillFundingShortfall,
   onDebugFillSponsorEquityGap,
+  onDebugFillClaimVsDocument,
   onExportConversationImage,
 }: TopBarProps) {
   const displayName = userName.trim() || "User"
@@ -155,20 +161,34 @@ export function TopBar({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </div>
-            {onDebugFillNormalData || onDebugFillSchoolMismatch || onDebugFillSponsorEquityGap ? (
+            {onDebugFillNormalData ||
+            onDebugFillSchoolMismatch ||
+            onDebugFillIdentityMismatch ||
+            onDebugFillFundingShortfall ||
+            onDebugFillSponsorEquityGap ||
+            onDebugFillClaimVsDocument ? (
               <>
                 <DropdownMenuLabel className="flex items-center gap-2 text-xs text-muted-foreground">
                   <FlaskConical className="h-4 w-4" />
-                  一键补资料
+                  调试材料包
                 </DropdownMenuLabel>
                 <DropdownMenuItem onClick={onDebugFillNormalData}>
-                  补全正常材料
+                  生成正常材料包
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={onDebugFillSchoolMismatch}>
                   缺陷：学校冲突
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDebugFillIdentityMismatch}>
+                  缺陷：身份号码
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDebugFillFundingShortfall}>
+                  缺陷：资金不足
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={onDebugFillSponsorEquityGap}>
                   缺陷：股权资金链
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDebugFillClaimVsDocument}>
+                  缺陷：口头矛盾
                 </DropdownMenuItem>
               </>
             ) : onDebugFillCurrentGap ? (

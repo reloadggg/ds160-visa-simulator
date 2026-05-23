@@ -331,7 +331,7 @@ class DebugFillService:
                     "Available funds: USD 68,000 equivalent.\n"
                     "Funding source: proceeds from family company equity transfer.\n"
                     f"Company equity ownership: {parent_a} holds 38% shares in {SYNTHETIC_COMPANY_NAME}.\n"
-                    "Missing: equity transfer agreement, company registration record, and tax/payment trail.\n"
+                    "Transfer received date: 2026-04-12.\n"
                     f"Applicant: {applicant_name}\n"
                 ),
                 fields={

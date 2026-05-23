@@ -45,6 +45,10 @@ docker compose logs --tail=100 nginx
 docker compose logs --tail=100 ds160-agent2
 ```
 
+## 流式接口
+
+`/api/v1/.../stream` 使用 SSE。Nginx 配置需要对 `/api/` 关闭 `proxy_buffering` 和 `proxy_cache`，否则浏览器可能只能在后端全部完成后一次性收到事件，看起来像“卡住”。当前 `deploy/nginx/ds160.conf` 已包含该配置。
+
 ## Cloudflare 配置
 
 DNS 保持橙云代理：

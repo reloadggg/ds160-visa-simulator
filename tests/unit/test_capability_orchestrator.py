@@ -256,6 +256,178 @@ def test_document_review_context_extracts_fields_for_candidate_document_types() 
     assert document["extracted_fields"] == {"/funding_proof/field": "value"}
 
 
+def test_document_review_context_does_not_include_expected_findings() -> None:
+    class StubDocumentRepo:
+        def list_session_documents(self, session_id):
+            class Document:
+                document_id = "doc-1"
+                filename = "debug_i20.txt"
+                status = "parsed"
+                raw_text = "Form I-20\nSchool name: Example University\n"
+                artifact_json = {
+                    "metadata": {
+                        "debug_material_bundle": True,
+                        "synthetic_bundle_id": "dbg-bundle-test",
+                        "debug_bundle_scenario": "school_mismatch_bundle",
+                        "expected_findings": [
+                            {"kind": "cross_document_conflict"}
+                        ],
+                        "document_assessment": {
+                            "document_type": "i20",
+                            "document_type_candidates": ["i20"],
+                            "supported_claims": ["/education/school_name"],
+                        },
+                    }
+                }
+
+            return [Document()]
+
+    class StubEvidence:
+        def extract_document_fields(self, document_id, document_type):
+            return {"/education/school_name": "Example University"}
+
+    orchestrator = CapabilityOrchestrator(db=object())
+    orchestrator.document_repo = StubDocumentRepo()
+    orchestrator.evidence = StubEvidence()
+
+    review_context = orchestrator._build_document_review_context(
+        session_id="sess-1",
+        dynamic_turn_context={"profile_snapshot": {}, "current_focus": {}},
+        evidence_digest={"missing_evidence": []},
+        focus_thread={},
+        advisory_context={},
+        gate_progress={},
+    )
+
+    serialized = str(review_context)
+    assert "expected_findings" not in serialized
+    assert "cross_document_conflict" not in serialized
+    assert "school_mismatch_bundle" not in serialized
+    assert "dbg-bundle-test" not in serialized
+    assert review_context["documents"][0]["synthetic_metadata"] == {
+        "debug_material_bundle": True,
+    }
+
+
+def test_document_review_fallback_detects_material_field_defects() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    review = orchestrator._fallback_document_review_from_context(
+        {
+            "profile_claims": {"funding": {"primary_source": "self"}},
+            "documents": [
+                {
+                    "document_id": "doc-i20",
+                    "document_type": "i20",
+                    "extracted_fields": {
+                        "/education/school_name": "Example University",
+                        "/education/first_year_cost": "68000",
+                    },
+                    "extracted_fields_by_document_type": {},
+                },
+                {
+                    "document_id": "doc-admission",
+                    "document_type": "admission_letter",
+                    "extracted_fields": {
+                        "/education/school_name": "Alternate Example University",
+                    },
+                    "extracted_fields_by_document_type": {},
+                },
+                {
+                    "document_id": "doc-funding",
+                    "document_type": "funding_proof",
+                    "extracted_fields": {
+                        "/funding/primary_source": "parents",
+                        "/funding/available_funds": "9800",
+                    },
+                    "extracted_fields_by_document_type": {},
+                },
+            ],
+        }
+    )
+
+    assert review is not None
+    assert review["review_status"] == "high_risk"
+    assert {
+        tuple(conflict["field_paths"])
+        for conflict in review["cross_document_conflicts"]
+    } >= {
+        ("/education/school_name",),
+        ("/education/first_year_cost", "/funding/available_funds"),
+    }
+    assert review["claim_conflicts"][0]["field_paths"] == ["/funding/primary_source"]
+
+
+def test_document_review_fallback_uses_claim_history_after_profile_conflict() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    review = orchestrator._fallback_document_review_from_context(
+        {
+            "profile_claims": {
+                "funding": {},
+                "ds160_view": {
+                    "field_claim_history": {
+                        "/funding/primary_source": [
+                            {
+                                "value": "self",
+                                "content": "I am self-funded.",
+                            }
+                        ]
+                    }
+                },
+            },
+            "documents": [
+                {
+                    "document_id": "doc-funding",
+                    "document_type": "funding_proof",
+                    "extracted_fields": {
+                        "/funding/primary_source": "parents",
+                        "/funding/available_funds": "82000",
+                    },
+                    "extracted_fields_by_document_type": {},
+                },
+            ],
+        }
+    )
+
+    assert review is not None
+    assert review["review_status"] == "high_risk"
+    assert review["recommended_next_step"] == "high_risk_review"
+    assert review["claim_conflicts"][0]["field_paths"] == ["/funding/primary_source"]
+
+
+def test_document_review_merge_promotes_high_severity_fallback_conflicts() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    merged = orchestrator._merge_document_review_payload(
+        {
+            "review_status": "reviewed",
+            "primary_document": None,
+            "remaining_required_documents": [],
+            "verified_documents": ["funding_proof"],
+            "cross_document_conflicts": [
+                {
+                    "conflict_type": "document_vs_document",
+                    "severity": "high",
+                    "summary": "护照号码不一致。",
+                    "document_ids": ["doc-ds160", "doc-passport"],
+                    "field_paths": ["/identity/passport_number"],
+                    "evidence_refs": [],
+                }
+            ],
+            "claim_conflicts": [],
+            "unresolved_verification_points": [],
+            "suspicious_documents": [],
+            "reviewer_summary": "模型认为可继续。",
+            "recommended_next_step": "continue_interview",
+        },
+        None,
+    )
+
+    assert merged["review_status"] == "high_risk"
+    assert merged["recommended_next_step"] == "high_risk_review"
+
+
 def test_remaining_required_documents_prefers_active_focus_not_in_gate() -> None:
     orchestrator = CapabilityOrchestrator(db=object())
 

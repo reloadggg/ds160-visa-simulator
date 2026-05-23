@@ -225,6 +225,13 @@ class InterviewerRuntimeService:
         if action != pre_convergence_action:
             self._sync_last_turn_decision_trace(trace_entries, action)
         boundary = self._apply_boundary_transition(boundary, action)
+        action = self._align_action_with_document_review(
+            action,
+            capability_tool_outputs=dict(
+                self.interview_runtime._last_capability_tool_outputs
+            ),
+        )
+        boundary = self._apply_boundary_transition(boundary, action)
         return boundary, action, dict(self.interview_runtime._last_capability_tool_outputs)
 
 
@@ -334,6 +341,71 @@ class InterviewerRuntimeService:
             **boundary,
             "decision": action.decision,
         }
+
+    def _align_action_with_document_review(
+        self,
+        action: InterviewNextAction,
+        *,
+        capability_tool_outputs: dict[str, Any],
+    ) -> InterviewNextAction:
+        document_review = capability_tool_outputs.get("document_review")
+        if not isinstance(document_review, dict):
+            return action
+        if action.decision == GovernorDecision.SIMULATED_REFUSAL.value:
+            return action
+        cross_document_conflicts = [
+            item
+            for item in document_review.get("cross_document_conflicts", []) or []
+            if isinstance(item, dict)
+        ]
+        claim_conflicts = [
+            item
+            for item in document_review.get("claim_conflicts", []) or []
+            if isinstance(item, dict)
+        ]
+        conflicts = [
+            item
+            for item in [*cross_document_conflicts, *claim_conflicts]
+        ]
+        high_conflict = next(
+            (
+                item
+                for item in conflicts
+                if item.get("severity") == "high"
+            ),
+            None,
+        )
+        high_cross_document_conflict = next(
+            (
+                item
+                for item in cross_document_conflicts
+                if item.get("severity") == "high"
+            ),
+            None,
+        )
+        review_status = document_review.get("review_status")
+        if review_status != "high_risk" and high_cross_document_conflict is None:
+            return action
+        if review_status != "high_risk" and action.decision != "continue_interview":
+            return action
+        high_conflict = (
+            high_conflict if review_status == "high_risk" else high_cross_document_conflict
+        )
+        if high_conflict is None:
+            return action
+        summary = self._runtime_text(high_conflict.get("summary")) or (
+            self._runtime_text(document_review.get("reviewer_summary"))
+            or "材料核验发现关键冲突。"
+        )
+        return InterviewNextAction(
+            decision=GovernorDecision.HIGH_RISK_REVIEW.value,
+            assistant_message=f"{summary} 我们先停在这个点，请你解释这处不一致。",
+            requested_documents=[],
+            focus_kind="risk_review",
+            focus_document_type=None,
+            focus_risk_code="record_conflict",
+            reason="document_review_high_risk",
+        )
 
     def _gate_is_ready(self, record: SessionRecord) -> bool:
         return (record.gate_status_json or {}).get("status") == GateOverallStatus.READY_FOR_INTERVIEW

@@ -6,7 +6,7 @@ import { toPng } from "html-to-image"
 import {
   ApiError,
   createSession,
-  debugFillCurrentGap,
+  createDebugMaterialBundleStream,
   exportSession,
   generateInterviewReview,
   getFileContentUrl,
@@ -36,6 +36,10 @@ import type {
   ChatAttachment,
   ChatMessage,
   ComposerCommand,
+  DebugBundleDocument,
+  DebugMaterialBundleResponse,
+  DebugMaterialBundleScenario,
+  DebugMaterialBundleStreamEvent,
   FileUploadResponse,
   InternalReport,
   InterviewReviewResponse,
@@ -140,9 +144,13 @@ function formatRequestedDocuments(labels: string[]): string {
 }
 
 function buildRequiredPackageMessage(visaFamily: VisaFamily, requiredPackage: RequiredPackage): string {
-  return `欢迎开始 ${visaFamily} 签证面签模拟。请准备以下材料：${formatRequestedDocuments(
+  const materialHint = requiredPackage.required_initial_package_labels.length
+    ? `如果你手边有 ${formatRequestedDocuments(
     requiredPackage.required_initial_package_labels,
-  )}`
+  )}，可以在对话过程中随时上传。`
+    : "如果你手边有 I-20、DS-160 确认页、护照首页或资金证明，可以在对话过程中随时上传。"
+
+  return `你好，我们开始今天的 ${visaFamily} 签证模拟。我会像真实窗口面谈一样，先了解你的学习计划，再结合材料核对关键细节。\n\n你先简单介绍一下：这次去美国读什么项目？为什么选择这所学校？\n\n${materialHint}`
 }
 
 function buildRequestedDocumentsMessage(
@@ -200,6 +208,79 @@ function buildGateProgressMessage(overallStatus?: string): string | null {
   }
 
   return null
+}
+
+function truncateProgressLine(value: string): string {
+  return value.length > 220 ? `${value.slice(0, 217)}...` : value
+}
+
+function describeDebugBundleEvent(event: DebugMaterialBundleStreamEvent): string {
+  switch (event.event) {
+    case "accepted":
+      return "已收到材料包生成请求。"
+    case "debug_bundle_started":
+      return `开始生成${event.data.scenario_label ?? "调试材料包"}，预计 ${event.data.document_count ?? 0} 份材料。`
+    case "document_created":
+      return `已生成材料：${event.data.document_type_label ?? event.data.filename ?? "材料" }。`
+    case "evidence_written":
+      return truncateProgressLine(`已写入结构化字段：${Object.keys(event.data.fields ?? {}).join("、") || "字段待确认"}。`)
+    case "profile_recomputed":
+      return "已根据材料重新计算申请人档案。"
+    case "gate_refreshed":
+      return "已刷新材料门控状态。"
+    case "document_review_started":
+      return "开始进行材料交叉核验。"
+    case "governor_decided":
+      return `已完成本轮裁决：${humanizeBackendText(event.data.governor_decision ?? "") || "状态待确认"}。`
+    case "final":
+      return "材料包生成完成。"
+    case "error":
+      return `材料包生成失败：${event.data.detail ?? "未知错误"}`
+    default:
+      return "材料包生成状态已更新。"
+  }
+}
+
+function buildDebugBundleProgressMessage(lines: string[]): string {
+  return lines.join("\n")
+}
+
+function debugBundleDocumentToMaterial(
+  sessionId: string,
+  document: DebugBundleDocument,
+  bundle: DebugMaterialBundleResponse,
+): UploadedMaterial {
+  return {
+    id: document.document_id,
+    session_id: sessionId,
+    name: document.filename,
+    mime_type: "text/plain",
+    kind: "file",
+    size: new TextEncoder().encode(document.raw_text).length,
+    preview_url: getFileContentUrl(sessionId, document.document_id),
+    uploaded_at: getIsoTimestamp(),
+    status_label: "已生成",
+    document_id: document.document_id,
+    document_status: "parsed",
+    document_type: document.document_type,
+    document_type_label: document.document_type_label ?? toDocumentLabel(document.document_type),
+    relevance: "high",
+    feedback_message: `${bundle.scenario_label} / ${bundle.bundle_id}`,
+    requested_document_labels: [],
+    current_focus_document_label: null,
+    counts_toward_gate: true,
+    raw_text: document.raw_text,
+    fields: document.fields,
+    synthetic_bundle_id: bundle.bundle_id,
+    debug_bundle_scenario: bundle.scenario,
+    expected_findings: bundle.expected_findings,
+  }
+}
+
+function buildDebugBundleFinalMessage(bundle: DebugMaterialBundleResponse): string {
+  const documentNames = bundle.documents.map((document) => document.document_type_label ?? document.filename)
+  const findingCount = bundle.expected_findings.length
+  return `${bundle.scenario_label}已生成：${formatRequestedDocuments(documentNames)}。材料正文和字段已写入材料库；预期缺陷 ${findingCount} 条只作为调试 oracle 展示，不进入材料正文。`
 }
 
 function inferAttachmentKind(file: Pick<File, "name" | "type">): AttachmentKind {
@@ -1104,6 +1185,8 @@ export function useSessionWorkbench() {
   )
   const [composerCommand, setComposerCommand] = useState<ComposerCommand | null>(null)
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null)
+  const [isDebugBundleGenerating, setIsDebugBundleGenerating] = useState(false)
+  const [debugBundleProgress, setDebugBundleProgress] = useState<string[]>([])
   const [userModelConfig, setUserModelConfig] = useState<UserModelConfig>(
     () => loadUserModelConfig(),
   )
@@ -1172,6 +1255,12 @@ export function useSessionWorkbench() {
     )
   }, [])
 
+  const updateMessageContent = useCallback((id: string, content: string) => {
+    setMessages((prev) =>
+      prev.map((msg) => (msg.id === id ? { ...msg, content } : msg)),
+    )
+  }, [])
+
   const updateMessageAttachment = useCallback(
     (messageId: string, attachmentId: string, patch: Partial<ChatAttachment>) => {
       setMessages((prev) =>
@@ -1194,6 +1283,9 @@ export function useSessionWorkbench() {
 
   const getErrorMessage = useCallback((error: unknown, fallback: string) => {
     if (error instanceof ApiError) {
+      if (error.status === 403) {
+        return "当前部署未启用这个调试或流式功能，请检查后端开关。"
+      }
       if (error.status === 401) {
         return "当前对话模型认证失败，API Key 可能已失效或被禁用。"
       }
@@ -1461,6 +1553,8 @@ export function useSessionWorkbench() {
     setSessionTime(0)
     setIsReportModalOpen(false)
     setComposerCommand(null)
+    setIsDebugBundleGenerating(false)
+    setDebugBundleProgress([])
     setPendingResetAfterSummary(false)
   }, [])
 
@@ -1472,6 +1566,7 @@ export function useSessionWorkbench() {
       setReportError(null)
       setModalError(null)
       setUploadedMaterials([])
+      setDebugBundleProgress([])
 
       try {
         if (mockMode) {
@@ -2074,70 +2169,134 @@ export function useSessionWorkbench() {
     }
   }, [interviewReview, sessionId, visaType])
 
-  const runDebugFillCurrentGap = useCallback(async (scenario = "normal") => {
-    if (!sessionId) {
-      setSettingsFeedback("当前没有可填充的会话。")
-      return
-    }
-    if (mockMode) {
-      appendMessage({
-        role: "system",
-        content: "[Mock] 已生成一份调试材料，用于跳过当前缺口。",
-      })
-      setSettingsFeedback("Mock 调试材料已生成。")
-      return
-    }
-
-    try {
-      const result = await debugFillCurrentGap(sessionId, scenario)
-      setSession((prev) => prev ? {
-        ...prev,
-        phase_state: result.phase_state,
-        current_governor_decision: result.governor_decision ?? prev.current_governor_decision,
-        gate_status: mapSessionGateStatus(result.gate_status) ?? prev.gate_status,
-      } : prev)
-      const fillLabel = result.fill_scenario_label ?? "调试补全"
-      const fillSummary = result.filled_summary
-        ?? `${fillLabel}：已生成 ${toDocumentLabel(result.filled_document_type)}，文档 ID：${result.document_id}。`
-      appendMessage({
-        role: "system",
-        content: fillSummary,
-      })
-      if (result.assistant_message) {
+  const runDebugMaterialBundle = useCallback(
+    async (scenario: DebugMaterialBundleScenario) => {
+      if (!sessionId || isDebugBundleGenerating) {
+        setSettingsFeedback(
+          !sessionId ? "当前没有可生成材料包的会话。" : "材料包正在生成中。",
+        )
+        return
+      }
+      if (mockMode) {
         appendMessage({
-          role: "officer",
-          content: humanizeBackendText(result.assistant_message),
+          role: "system",
+          content: "[Mock] 已生成一组调试材料包，并写入材料库。",
         })
+        setSettingsFeedback("Mock 调试材料包已生成。")
+        return
       }
-      await refreshReports(sessionId)
-      if (result.main_flow_refresh_error) {
-        setSettingsFeedback(`已补资料，但下一步刷新失败：${result.main_flow_refresh_error}`)
-      } else {
-        setSettingsFeedback("已补资料，并已自动触发下一步。")
+
+      const progressLines: string[] = []
+      const progressMessageId = appendMessage({
+        role: "system",
+        content: "正在生成调试材料包...",
+        status: "sending",
+      })
+      const updateProgress = (line: string) => {
+        progressLines.push(line)
+        setDebugBundleProgress([...progressLines])
+        updateMessageContent(progressMessageId, buildDebugBundleProgressMessage(progressLines))
       }
-    } catch (error) {
-      setSettingsFeedback(getErrorMessage(error, "调试填充失败，请稍后重试。"))
-    }
-  }, [appendMessage, getErrorMessage, mockMode, refreshReports, sessionId])
+
+      setIsDebugBundleGenerating(true)
+      setSettingsFeedback("正在生成调试材料包...")
+      setDebugBundleProgress([])
+      try {
+        const result = await createDebugMaterialBundleStream(
+          sessionId,
+          scenario,
+          true,
+          (event) => {
+            updateProgress(describeDebugBundleEvent(event))
+          },
+        )
+        updateMessageStatus(progressMessageId, "sent")
+        setSession((prev) => prev ? {
+          ...prev,
+          phase_state: result.phase_state,
+          current_governor_decision: result.governor_decision ?? prev.current_governor_decision,
+          gate_status: mapSessionGateStatus(result.gate_status) ?? prev.gate_status,
+        } : prev)
+        setUploadedMaterials((prev) => {
+          const nextMaterials = result.documents.map((document) =>
+            debugBundleDocumentToMaterial(sessionId, document, result),
+          )
+          const generatedIds = new Set(nextMaterials.map((material) => material.id))
+          return [
+            ...nextMaterials,
+            ...prev.filter((material) => !generatedIds.has(material.id)),
+          ]
+        })
+        appendMessage({
+          role: "system",
+          content: buildDebugBundleFinalMessage(result),
+        })
+        if (result.assistant_message) {
+          appendMessage({
+            role: "officer",
+            content: humanizeBackendText(result.assistant_message),
+          })
+        }
+        await refreshReports(sessionId)
+        if (result.main_flow_refresh_error) {
+          setSettingsFeedback(`材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`)
+        } else {
+          setSettingsFeedback("材料包已生成，前端已接收完整流式进度。")
+        }
+      } catch (error) {
+        updateMessageStatus(progressMessageId, "error")
+        const message = getErrorMessage(error, "调试材料包生成失败，请稍后重试。")
+        updateProgress(`错误：${message}`)
+        setSettingsFeedback(message)
+      } finally {
+        setIsDebugBundleGenerating(false)
+      }
+    },
+    [
+      appendMessage,
+      getErrorMessage,
+      isDebugBundleGenerating,
+      mockMode,
+      refreshReports,
+      sessionId,
+      updateMessageContent,
+      updateMessageStatus,
+    ],
+  )
 
   const handleDebugFillCurrentGap = useCallback(
-    () => runDebugFillCurrentGap("normal"),
-    [runDebugFillCurrentGap],
+    () => runDebugMaterialBundle("normal_f1_bundle"),
+    [runDebugMaterialBundle],
   )
 
   const handleDebugFillNormalData = useCallback(
-    () => runDebugFillCurrentGap("normal"),
-    [runDebugFillCurrentGap],
+    () => runDebugMaterialBundle("normal_f1_bundle"),
+    [runDebugMaterialBundle],
   )
 
   const handleDebugFillSchoolMismatch = useCallback(
-    () => runDebugFillCurrentGap("school_mismatch"),
-    [runDebugFillCurrentGap],
+    () => runDebugMaterialBundle("school_mismatch_bundle"),
+    [runDebugMaterialBundle],
+  )
+
+  const handleDebugFillIdentityMismatch = useCallback(
+    () => runDebugMaterialBundle("identity_mismatch_bundle"),
+    [runDebugMaterialBundle],
+  )
+
+  const handleDebugFillFundingShortfall = useCallback(
+    () => runDebugMaterialBundle("funding_shortfall_bundle"),
+    [runDebugMaterialBundle],
   )
 
   const handleDebugFillSponsorEquityGap = useCallback(
-    () => runDebugFillCurrentGap("sponsor_equity_gap"),
-    [runDebugFillCurrentGap],
+    () => runDebugMaterialBundle("sponsor_chain_gap_bundle"),
+    [runDebugMaterialBundle],
+  )
+
+  const handleDebugFillClaimVsDocument = useCallback(
+    () => runDebugMaterialBundle("claim_vs_document_bundle"),
+    [runDebugMaterialBundle],
   )
 
   const handleClearHistory = useCallback(() => {
@@ -2163,6 +2322,8 @@ export function useSessionWorkbench() {
     setChatError(null)
     setReportError(null)
     setModalError(null)
+    setIsDebugBundleGenerating(false)
+    setDebugBundleProgress([])
     setIsReportModalOpen(false)
     setPendingResetAfterSummary(false)
     setSessionTime(0)
@@ -2215,6 +2376,8 @@ export function useSessionWorkbench() {
     sessionHistory,
     composerCommand,
     settingsFeedback,
+    isDebugBundleGenerating,
+    debugBundleProgress,
     userModelConfig,
     availableModels,
     isLoadingModels,
@@ -2243,7 +2406,10 @@ export function useSessionWorkbench() {
     handleDebugFillCurrentGap,
     handleDebugFillNormalData,
     handleDebugFillSchoolMismatch,
+    handleDebugFillIdentityMismatch,
+    handleDebugFillFundingShortfall,
     handleDebugFillSponsorEquityGap,
+    handleDebugFillClaimVsDocument,
     handleClearHistory,
     handleRestoreSession,
   }

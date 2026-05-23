@@ -1182,6 +1182,40 @@ def test_run_turn_routes_repeated_claim_document_conflict_to_review(
     assert record.current_focus_json["kind"] == "risk_review"
 
 
+def test_align_action_uses_high_severity_conflict_even_if_status_reviewed() -> None:
+    service = InterviewerRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="我们继续普通面试问题。",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    aligned = service._align_action_with_document_review(
+        action,
+        capability_tool_outputs={
+            "document_review": {
+                "review_status": "reviewed",
+                "cross_document_conflicts": [
+                    {
+                        "conflict_type": "document_vs_document",
+                        "severity": "high",
+                        "summary": "DS-160 与护照首页中的护照号码不一致。",
+                        "document_ids": ["doc-ds160", "doc-passport"],
+                        "field_paths": ["/identity/passport_number"],
+                        "evidence_refs": [],
+                    }
+                ],
+                "claim_conflicts": [],
+            }
+        },
+    )
+
+    assert aligned.decision == "high_risk_review"
+    assert aligned.focus_kind == "risk_review"
+    assert "护照号码不一致" in aligned.assistant_message
+
+
 def test_run_turn_downgrades_repeated_non_redline_conflict_refusal_to_review(
     monkeypatch,
 ) -> None:

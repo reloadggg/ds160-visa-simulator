@@ -184,6 +184,109 @@ Request:
 }
 ```
 
+### `POST /v1/sessions/{session_id}/debug/material-bundles`
+
+生成一整套 synthetic 调试材料，并触发材料变更后的主流程刷新。默认关闭，需要 `ALLOW_DEBUG_FILL=true`；不要在公开生产环境开启。
+
+Request:
+
+```json
+{
+  "scenario": "school_mismatch_bundle",
+  "include_synthetic_user_turns": true
+}
+```
+
+支持的 `scenario`：
+
+- `normal_f1_bundle`
+- `school_mismatch_bundle`
+- `identity_mismatch_bundle`
+- `funding_shortfall_bundle`
+- `sponsor_chain_gap_bundle`
+- `claim_vs_document_bundle`
+
+Response shape:
+
+```json
+{
+  "session_id": "sess-abc123",
+  "bundle_id": "dbg-bundle-abc123",
+  "scenario": "school_mismatch_bundle",
+  "scenario_label": "学校材料冲突包",
+  "documents": [
+    {
+      "document_id": "doc-abc123",
+      "filename": "debug_i20.txt",
+      "document_type": "i20",
+      "document_type_label": "I-20",
+      "raw_text": "Form I-20...",
+      "fields": {
+        "/education/school_name": "Example University"
+      },
+      "content_url": "/v1/sessions/sess-abc123/files/doc-abc123/content"
+    }
+  ],
+  "synthetic_turns": [],
+  "expected_findings": [
+    {
+      "kind": "cross_document_conflict",
+      "description": "I-20 and admission letter contain different school names.",
+      "field_path": "/education/school_name",
+      "document_types": ["i20", "admission_letter"],
+      "severity": "high",
+      "visible_to_model": false
+    }
+  ],
+  "assistant_message": "string",
+  "governor_decision": "high_risk_review",
+  "requested_documents": [],
+  "remaining_required_documents": [],
+  "turn_decision": {},
+  "document_review": {},
+  "runtime_view_state": {},
+  "phase_state": "interview",
+  "gate_status": {},
+  "main_flow_refresh_error": null
+}
+```
+
+调试 oracle 隔离规则：
+
+- `expected_findings` 只给 API 调试面板和前端材料详情展示。
+- `expected_findings`、`*_bundle` 场景名、bundle id 不进入 document review prompt/context。
+- `DocumentRecord.raw_text`、`DocumentChunk.text`、`EvidenceItem.excerpt` 不应包含 `Issue:`、`Missing:`、`Expected:`、`Defect:` 或 `This conflicts with` 这类答案提示。
+- document review 必须基于材料字段、材料正文和用户 claim 自行识别缺陷。
+
+### `POST /v1/sessions/{session_id}/debug/material-bundles/stream`
+
+材料包生成的事件式 SSE 入口。前端应在收到首个事件后立即显示 pending/进度状态，并在 `final` 后写入材料库。
+
+Request 与非流式接口相同。
+
+事件类型：
+
+- `accepted`：请求已接收
+- `debug_bundle_started`：材料包开始生成，包含 `bundle_id`、`scenario`、`document_count`
+- `document_created`：单份材料已写入 `DocumentRecord`
+- `evidence_written`：材料字段和 evidence/chunk 已写入
+- `profile_recomputed`：profile 已根据材料重算
+- `gate_refreshed`：最低材料包状态已刷新
+- `document_review_started`：开始触发材料变更后的主流程刷新
+- `governor_decided`：主流程刷新已产出 governor/turn decision 摘要
+- `final`：完整 `DebugMaterialBundleResponse`
+- `error`：`{"status": 404|422|500, "detail": "..."}`，流内错误事件
+
+SSE 响应头包含：
+
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+```
+
+线上 Nginx/反向代理还需要关闭 `/api/` 的响应缓冲，否则浏览器可能无法逐事件更新 UI。
+
 ## Messages API
 
 ### `POST /v1/sessions/{session_id}/messages`
@@ -453,6 +556,7 @@ API 文档对应的主要测试文件：
 
 - `tests/integration/test_simple_auth.py`
 - `tests/integration/test_sessions_api.py`
+- `tests/integration/test_debug_material_bundles_api.py`
 - `tests/integration/test_messages_api.py`
 - `tests/integration/test_files_api.py`
 - `tests/integration/test_reports_api.py`

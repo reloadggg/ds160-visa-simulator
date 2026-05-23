@@ -86,6 +86,101 @@ export type MessageStreamEvent =
   | { event: "final"; data: BackendMessageResponse }
   | { event: "error"; data: { status?: number; detail?: string } }
 
+export type DebugMaterialBundleScenario =
+  | "normal_f1_bundle"
+  | "school_mismatch_bundle"
+  | "identity_mismatch_bundle"
+  | "funding_shortfall_bundle"
+  | "sponsor_chain_gap_bundle"
+  | "claim_vs_document_bundle"
+
+export interface DebugBundleDocument {
+  document_id: string
+  filename: string
+  document_type: string
+  document_type_label?: string | null
+  raw_text: string
+  fields: Record<string, string>
+  content_url?: string | null
+}
+
+export interface DebugBundleExpectedFinding {
+  kind: string
+  description: string
+  field_path?: string | null
+  document_types?: string[]
+  severity?: string
+  visible_to_model: boolean
+}
+
+export interface DebugBundleSyntheticTurn {
+  role: "user"
+  content: string
+  turn_id?: string
+  field_claims?: Record<string, string>
+}
+
+export interface DebugMaterialBundleResponse {
+  session_id: string
+  bundle_id: string
+  scenario: DebugMaterialBundleScenario | string
+  scenario_label: string
+  documents: DebugBundleDocument[]
+  synthetic_turns: DebugBundleSyntheticTurn[]
+  expected_findings: DebugBundleExpectedFinding[]
+  assistant_message?: string | null
+  governor_decision?: string | null
+  requested_documents?: string[]
+  remaining_required_documents?: string[]
+  turn_decision?: Record<string, unknown>
+  document_review?: Record<string, unknown>
+  runtime_view_state?: Record<string, unknown>
+  phase_state?: string
+  gate_status?: BackendSessionGateStatus | null
+  main_flow_refresh_error?: string | null
+}
+
+export type DebugMaterialBundleStreamEvent =
+  | { event: "accepted"; data: { session_id?: string } & Record<string, unknown> }
+  | {
+      event: "debug_bundle_started"
+      data: {
+        session_id?: string
+        bundle_id?: string
+        scenario?: string
+        scenario_label?: string
+        document_count?: number
+      } & Record<string, unknown>
+    }
+  | {
+      event: "document_created"
+      data: {
+        bundle_id?: string
+        document_id?: string
+        filename?: string
+        document_type?: string
+        document_type_label?: string
+      } & Record<string, unknown>
+    }
+  | {
+      event: "evidence_written"
+      data: {
+        bundle_id?: string
+        document_id?: string
+        evidence_count?: number
+        fields?: Record<string, string>
+      } & Record<string, unknown>
+    }
+  | { event: "profile_recomputed"; data: Record<string, unknown> }
+  | { event: "gate_refreshed"; data: Record<string, unknown> }
+  | { event: "document_review_started"; data: Record<string, unknown> }
+  | {
+      event: "governor_decided"
+      data: { governor_decision?: string | null; turn_decision?: Record<string, unknown> } & Record<string, unknown>
+    }
+  | { event: "final"; data: DebugMaterialBundleResponse }
+  | { event: "error"; data: { status?: number; detail?: string } }
+
 export interface ChatAttachment {
   id: string
   name: string
@@ -344,6 +439,11 @@ export interface UploadedMaterial {
   requested_document_labels?: string[]
   current_focus_document_label?: string | null
   counts_toward_gate?: boolean | null
+  raw_text?: string | null
+  fields?: Record<string, string>
+  synthetic_bundle_id?: string | null
+  debug_bundle_scenario?: string | null
+  expected_findings?: DebugBundleExpectedFinding[]
 }
 
 export interface SessionHistoryEntry {

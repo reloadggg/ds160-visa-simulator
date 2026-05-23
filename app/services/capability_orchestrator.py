@@ -44,6 +44,14 @@ class CapabilityOrchestrator:
         focus_thread = self._payload(dynamic_turn_context.get("focus_thread"))
         advisory_context = self._payload(dynamic_turn_context.get("advisory_context"))
         gate_progress = self._payload(dynamic_turn_context.get("gate_progress"))
+        review_context = self._build_document_review_context(
+            session_id=session_id,
+            dynamic_turn_context=dynamic_turn_context,
+            evidence_digest=evidence_digest,
+            focus_thread=focus_thread,
+            advisory_context=advisory_context,
+            gate_progress=gate_progress,
+        )
 
         capability_plan: list[dict[str, Any]] = []
         tool_outputs: dict[str, Any] = {}
@@ -80,6 +88,7 @@ class CapabilityOrchestrator:
             focus_thread=focus_thread,
             advisory_context=advisory_context,
             gate_progress=gate_progress,
+            review_context=review_context,
         )
         capability_plan.append(
             self._plan_entry(
@@ -179,6 +188,9 @@ class CapabilityOrchestrator:
                 metadata={
                     "governor_decision": governor_decision,
                     "capability_plan": capability_plan,
+                    "document_review_context": self._context_trace_summary(
+                        review_context
+                    ),
                 },
             ),
             RuntimeTraceEntry(
@@ -189,6 +201,9 @@ class CapabilityOrchestrator:
                     "capability_plan": capability_plan,
                     "resolved_capabilities": sorted(tool_outputs.keys()),
                     "artifacts": artifacts,
+                    "document_review_context": self._context_trace_summary(
+                        review_context
+                    ),
                 },
             ),
         ]
@@ -265,6 +280,7 @@ class CapabilityOrchestrator:
         focus_thread: dict[str, Any],
         advisory_context: dict[str, Any],
         gate_progress: dict[str, Any],
+        review_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         fallback = self._fallback_document_review(
             evidence_digest=evidence_digest,
@@ -272,14 +288,20 @@ class CapabilityOrchestrator:
             advisory_context=advisory_context,
             gate_progress=gate_progress,
         )
-        review_context = self._build_document_review_context(
-            session_id=session_id,
-            dynamic_turn_context=dynamic_turn_context,
-            evidence_digest=evidence_digest,
-            focus_thread=focus_thread,
-            advisory_context=advisory_context,
-            gate_progress=gate_progress,
+        if review_context is None:
+            review_context = self._build_document_review_context(
+                session_id=session_id,
+                dynamic_turn_context=dynamic_turn_context,
+                evidence_digest=evidence_digest,
+                focus_thread=focus_thread,
+                advisory_context=advisory_context,
+                gate_progress=gate_progress,
+            )
+        context_fallback = self._fallback_document_review_from_context(
+            review_context,
         )
+        if context_fallback is not None:
+            fallback = self._merge_document_review_payload(context_fallback, fallback)
         if not review_context and fallback is None:
             return None
         if self.db is None or self.document_repo is None or self.evidence is None:
@@ -592,6 +614,21 @@ class CapabilityOrchestrator:
             return f"resolved={','.join(sorted(tool_outputs))}"
         return "resolved=none"
 
+    def _context_trace_summary(self, review_context: dict[str, Any]) -> dict[str, Any]:
+        documents = [
+            document
+            for document in review_context.get("documents", [])
+            if isinstance(document, dict)
+        ]
+        return {
+            "document_count": len(documents),
+            "document_ids": [
+                str(document.get("document_id"))
+                for document in documents[:8]
+                if document.get("document_id")
+            ],
+        }
+
     def _payload(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
             return dict(value)
@@ -656,6 +693,8 @@ class CapabilityOrchestrator:
 
         documents = []
         for document in self.document_repo.list_session_documents(session_id):
+            artifact_json = document.artifact_json or {}
+            artifact_metadata = self._payload(artifact_json.get("metadata"))
             assessment = DocumentAssessment.from_artifact(document.artifact_json)
             document_type = self._string_or_none(assessment.document_type)
             candidate_document_types = self._document_type_candidates(assessment)
@@ -696,6 +735,11 @@ class CapabilityOrchestrator:
                     "main_flow_feedback": main_flow_feedback,
                     "extracted_fields": extracted_fields,
                     "raw_text_excerpt": raw_text[:1200],
+                    "synthetic_metadata": {
+                        "debug_material_bundle": bool(
+                            artifact_metadata.get("debug_material_bundle")
+                        ),
+                    },
                 }
             )
 
@@ -735,6 +779,7 @@ class CapabilityOrchestrator:
             "visa_intent": self._payload(profile_snapshot.get("visa_intent")),
             "travel": self._payload(profile_snapshot.get("travel")),
             "field_states": self._payload(profile_snapshot.get("field_states")),
+            "ds160_view": self._payload(profile_snapshot.get("ds160_view")),
             "document_evidence_snapshot": self._payload(
                 self._payload(profile_snapshot.get("ds160_view")).get(
                     "document_evidence_snapshot"
@@ -839,13 +884,374 @@ class CapabilityOrchestrator:
             recommended_next_step=recommended_next_step,
         ).model_dump(mode="json")
 
+    def _fallback_document_review_from_context(
+        self,
+        review_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not review_context:
+            return None
+
+        documents = [
+            document
+            for document in review_context.get("documents", [])
+            if isinstance(document, dict)
+        ]
+        if not documents:
+            return None
+
+        cross_document_conflicts: list[dict[str, Any]] = []
+        claim_conflicts: list[dict[str, Any]] = []
+        unresolved_points: list[str] = []
+
+        school_conflict = self._field_value_conflict(
+            documents,
+            field_path="/education/school_name",
+        )
+        if school_conflict is not None:
+            cross_document_conflicts.append(
+                {
+                    "conflict_type": "document_vs_document",
+                    "severity": "high",
+                    "summary": "I-20 与录取信中的学校名称不一致，需要核对最终入读学校。",
+                    "document_ids": school_conflict["document_ids"],
+                    "field_paths": ["/education/school_name"],
+                    "evidence_refs": [],
+                }
+            )
+
+        passport_conflict = self._field_value_conflict(
+            documents,
+            field_path="/identity/passport_number",
+        )
+        if passport_conflict is not None:
+            cross_document_conflicts.append(
+                {
+                    "conflict_type": "document_vs_document",
+                    "severity": "high",
+                    "summary": "DS-160 与护照首页中的护照号码不一致。",
+                    "document_ids": passport_conflict["document_ids"],
+                    "field_paths": ["/identity/passport_number"],
+                    "evidence_refs": [],
+                }
+            )
+
+        funding_shortfall = self._funding_shortfall(documents)
+        if funding_shortfall is not None:
+            cross_document_conflicts.append(
+                {
+                    "conflict_type": "missing_verification",
+                    "severity": "high",
+                    "summary": (
+                        "资金证明金额低于 I-20 第一年度费用，当前资金能力无法覆盖 "
+                        "I-20 列示费用。"
+                    ),
+                    "document_ids": funding_shortfall["document_ids"],
+                    "field_paths": [
+                        "/education/first_year_cost",
+                        "/funding/available_funds",
+                    ],
+                    "evidence_refs": [],
+                }
+            )
+            unresolved_points.append("资金证明金额不足以覆盖 I-20 第一年度费用")
+
+        if self._has_equity_chain_gap(documents):
+            equity_document_ids = [
+                str(document.get("document_id"))
+                for document in documents
+                if self._document_field_value(document, "/funding/source_detail")
+            ]
+            cross_document_conflicts.append(
+                {
+                    "conflict_type": "missing_verification",
+                    "severity": "medium",
+                    "summary": "资金来源涉及股权转让收益，但现有材料缺少独立链路证明。",
+                    "document_ids": equity_document_ids,
+                    "field_paths": [
+                        "/funding/source_detail",
+                        "/funding/equity_ownership",
+                    ],
+                    "evidence_refs": [],
+                }
+            )
+            unresolved_points.append(
+                "股权资金来源还需要公司登记、转让协议、税务或付款流水交叉核验"
+            )
+
+        profile_claims = self._payload(review_context.get("profile_claims"))
+        funding_claim = (
+            self._latest_claim_history_value(
+                profile_claims,
+                "/funding/primary_source",
+            )
+            or self._payload(profile_claims.get("funding")).get("primary_source")
+        )
+        documented_funding = self._single_document_field_value(
+            documents,
+            "/funding/primary_source",
+        )
+        if (
+            isinstance(funding_claim, str)
+            and isinstance(documented_funding, str)
+            and funding_claim.strip().casefold()
+            != documented_funding.strip().casefold()
+        ):
+            claim_conflicts.append(
+                {
+                    "conflict_type": "claim_vs_document",
+                    "severity": "high",
+                    "summary": "口头资金来源说明与已提交资金证明不一致。",
+                    "document_ids": [
+                        str(document.get("document_id"))
+                        for document in documents
+                        if self._document_field_value(
+                            document,
+                            "/funding/primary_source",
+                        )
+                    ],
+                    "field_paths": ["/funding/primary_source"],
+                    "evidence_refs": [],
+                }
+            )
+
+        if not cross_document_conflicts and not claim_conflicts and not unresolved_points:
+            return None
+
+        high_conflicts = [*cross_document_conflicts, *claim_conflicts]
+        review_status = (
+            "high_risk"
+            if any(item.get("severity") == "high" for item in high_conflicts)
+            else "needs_clarification"
+            if claim_conflicts
+            else "reviewed"
+        )
+        recommended_next_step = (
+            "high_risk_review"
+            if review_status == "high_risk"
+            else "clarify_conflict"
+            if claim_conflicts
+            else "continue_interview"
+        )
+        return DocumentReviewResult(
+            review_status=review_status,
+            primary_document=self._context_primary_document(
+                cross_document_conflicts,
+                claim_conflicts,
+            ),
+            remaining_required_documents=[],
+            verified_documents=self._context_verified_documents(documents),
+            cross_document_conflicts=cross_document_conflicts,
+            claim_conflicts=claim_conflicts,
+            unresolved_verification_points=unresolved_points,
+            suspicious_documents=[],
+            reviewer_summary=(
+                "材料核验根据已提交材料字段识别到冲突或待核验缺口，"
+                "需要先围绕这些点复核。"
+            ),
+            recommended_next_step=recommended_next_step,
+        ).model_dump(mode="json")
+
+    def _field_value_conflict(
+        self,
+        documents: list[dict[str, Any]],
+        *,
+        field_path: str,
+    ) -> dict[str, Any] | None:
+        values: dict[str, list[str]] = {}
+        for document in documents:
+            value = self._document_field_value(document, field_path)
+            if value is None:
+                continue
+            normalized = value.strip().casefold()
+            if not normalized:
+                continue
+            values.setdefault(normalized, []).append(str(document.get("document_id")))
+        if len(values) <= 1:
+            return None
+        return {
+            "values": sorted(values),
+            "document_ids": sorted(
+                {
+                    document_id
+                    for document_ids in values.values()
+                    for document_id in document_ids
+                    if document_id
+                }
+            ),
+        }
+
+    def _funding_shortfall(
+        self,
+        documents: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        cost_documents: list[str] = []
+        fund_documents: list[str] = []
+        first_year_cost: float | None = None
+        available_funds: float | None = None
+        for document in documents:
+            cost_value = self._document_field_value(document, "/education/first_year_cost")
+            if cost_value is not None:
+                parsed_cost = self._parse_money(cost_value)
+                if parsed_cost is not None:
+                    first_year_cost = max(first_year_cost or 0, parsed_cost)
+                    cost_documents.append(str(document.get("document_id")))
+
+            funds_value = self._document_field_value(document, "/funding/available_funds")
+            if funds_value is not None:
+                parsed_funds = self._parse_money(funds_value)
+                if parsed_funds is not None:
+                    available_funds = max(available_funds or 0, parsed_funds)
+                    fund_documents.append(str(document.get("document_id")))
+
+        if (
+            first_year_cost is None
+            or available_funds is None
+            or available_funds >= first_year_cost
+        ):
+            return None
+        return {
+            "first_year_cost": first_year_cost,
+            "available_funds": available_funds,
+            "document_ids": sorted(set(cost_documents + fund_documents)),
+        }
+
+    def _has_equity_chain_gap(self, documents: list[dict[str, Any]]) -> bool:
+        has_equity_funding = any(
+            (
+                self._document_field_value(document, "/funding/source_detail")
+                or ""
+            ).casefold().find("equity") >= 0
+            or (
+                self._document_field_value(document, "/funding/equity_ownership")
+                is not None
+            )
+            for document in documents
+        )
+        if not has_equity_funding:
+            return False
+        document_types = {
+            str(document.get("document_type") or "")
+            for document in documents
+            if isinstance(document.get("document_type"), str)
+        }
+        chain_documents = {
+            "company_registration",
+            "equity_transfer_agreement",
+            "tax_record",
+            "payment_trail",
+        }
+        return not bool(document_types & chain_documents)
+
+    def _single_document_field_value(
+        self,
+        documents: list[dict[str, Any]],
+        field_path: str,
+    ) -> str | None:
+        values = [
+            value
+            for document in documents
+            if (value := self._document_field_value(document, field_path)) is not None
+        ]
+        if not values:
+            return None
+        return values[0]
+
+    def _latest_claim_history_value(
+        self,
+        profile_claims: dict[str, Any],
+        field_path: str,
+    ) -> str | None:
+        claim_history = self._payload(
+            self._payload(profile_claims.get("ds160_view")).get(
+                "field_claim_history"
+            )
+        )
+        field_history = claim_history.get(field_path)
+        if not isinstance(field_history, list):
+            return None
+        for item in reversed(field_history):
+            if not isinstance(item, dict):
+                continue
+            value = item.get("value")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _document_field_value(
+        self,
+        document: dict[str, Any],
+        field_path: str,
+    ) -> str | None:
+        fields = self._payload(document.get("extracted_fields"))
+        value = self._field_value_from_payload(fields, field_path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+        by_type = self._payload(document.get("extracted_fields_by_document_type"))
+        for candidate_fields in by_type.values():
+            payload = self._payload(candidate_fields)
+            value = self._field_value_from_payload(payload, field_path)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _field_value_from_payload(
+        self,
+        fields: dict[str, Any],
+        field_path: str,
+    ) -> Any:
+        if field_path in fields:
+            return fields.get(field_path)
+        short_key = field_path.rsplit("/", 1)[-1]
+        return fields.get(short_key)
+
+    def _parse_money(self, value: str) -> float | None:
+        normalized = "".join(
+            character for character in value if character.isdigit() or character == "."
+        )
+        if not normalized:
+            return None
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+
+    def _context_primary_document(
+        self,
+        cross_document_conflicts: list[dict[str, Any]],
+        claim_conflicts: list[dict[str, Any]],
+    ) -> str | None:
+        for conflict in [*cross_document_conflicts, *claim_conflicts]:
+            field_paths = conflict.get("field_paths")
+            if not isinstance(field_paths, list):
+                continue
+            if "/funding/available_funds" in field_paths:
+                return "funding_proof"
+            if "/funding/source_detail" in field_paths:
+                return "funding_proof"
+            if "/funding/primary_source" in field_paths:
+                return "funding_proof"
+            if "/identity/passport_number" in field_paths:
+                return "passport_bio"
+            if "/education/school_name" in field_paths:
+                return "i20"
+        return None
+
+    def _context_verified_documents(self, documents: list[dict[str, Any]]) -> list[str]:
+        verified: list[str] = []
+        for document in documents:
+            document_type = self._string_or_none(document.get("document_type"))
+            if document_type and document_type not in verified:
+                verified.append(document_type)
+        return verified
+
     def _merge_document_review_payload(
         self,
         payload: dict[str, Any],
         fallback: dict[str, Any] | None,
     ) -> dict[str, Any]:
         if not fallback:
-            return payload
+            return self._normalize_document_review_risk(payload)
 
         merged = dict(payload)
         for key in (
@@ -856,9 +1262,10 @@ class CapabilityOrchestrator:
             "unresolved_verification_points",
             "suspicious_documents",
         ):
-            if merged.get(key):
-                continue
-            merged[key] = fallback.get(key, [])
+            merged[key] = self._merge_review_list_values(
+                merged.get(key),
+                fallback.get(key, []),
+            )
         if not merged.get("primary_document"):
             merged["primary_document"] = fallback.get("primary_document")
         if not merged.get("review_status"):
@@ -867,7 +1274,55 @@ class CapabilityOrchestrator:
             merged["reviewer_summary"] = fallback.get("reviewer_summary")
         if not merged.get("recommended_next_step"):
             merged["recommended_next_step"] = fallback.get("recommended_next_step")
+        merged = self._normalize_document_review_risk(merged)
         return DocumentReviewResult.model_validate(merged).model_dump(mode="json")
+
+    def _merge_review_list_values(
+        self,
+        primary: Any,
+        fallback: Any,
+    ) -> list[Any]:
+        values: list[Any] = []
+        seen: set[str] = set()
+        for item in [
+            *self._review_list(primary),
+            *self._review_list(fallback),
+        ]:
+            marker = repr(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            values.append(item)
+        return values
+
+    def _review_list(self, value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        return []
+
+    def _normalize_document_review_risk(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(payload)
+        conflicts = [
+            item
+            for item in [
+                *(merged.get("cross_document_conflicts", []) or []),
+                *(merged.get("claim_conflicts", []) or []),
+            ]
+            if isinstance(item, dict)
+        ]
+        has_high_conflict = any(
+            item.get("severity") == "high" for item in conflicts
+        )
+        if has_high_conflict:
+            merged["review_status"] = "high_risk"
+            merged["recommended_next_step"] = "high_risk_review"
+        elif conflicts and merged.get("review_status") in {None, "", "reviewed"}:
+            merged["review_status"] = "needs_clarification"
+            merged["recommended_next_step"] = "clarify_conflict"
+        return merged
 
     def _remaining_required_documents(
         self,
