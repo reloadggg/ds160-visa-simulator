@@ -50,7 +50,7 @@ docker compose logs --tail=100 ds160-agent2
 DNS 保持橙云代理：
 
 ```text
-A  ds160  107.174.79.247
+A  ds160  <origin-server-ip>
 ```
 
 创建 Origin Rule：
