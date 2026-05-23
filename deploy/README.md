@@ -1,5 +1,11 @@
 # DS-160 Docker 部署说明
 
+## Agent 运维记忆
+
+- 推送 GitHub 时优先使用 Windows 侧的 `gh`/SSH 配置，不要默认走 WSL 内的 HTTPS remote。
+- 线上部署需要 SSH 入口时，优先检查 Codex 配置中记录的 SSH host/command；不要从 `known_hosts` 猜主机，也不要读取或记录私钥内容。
+- 项目文档只记录操作规则，不记录 GitHub token、私钥、源站 IP 等敏感信息。
+
 ## 端口规划
 
 - 对公网只暴露 `18000/tcp`，由 Docker Nginx 监听。
