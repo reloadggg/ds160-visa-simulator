@@ -17,7 +17,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw, Upload } from "lucide-react"
+import { PROJECT_INFO } from "@/lib/project-info"
+import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw, Upload, Github, ExternalLink } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -598,6 +599,30 @@ export function SettingsPanel({
                 {feedback}
               </div>
             ) : null}
+          </CardContent>
+        </Card>
+
+        <Card className="py-4">
+          <CardHeader className="px-5 pb-3">
+            <CardTitle className="text-base">项目信息</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 px-5">
+            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="text-sm font-medium text-foreground">项目创建者</div>
+              <div className="mt-1 text-sm text-muted-foreground">{PROJECT_INFO.creatorName}</div>
+            </div>
+            <a
+              href={PROJECT_INFO.githubUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <Github className="h-4 w-4 shrink-0 text-primary" />
+                <span className="truncate">GitHub 仓库</span>
+              </span>
+              <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </a>
           </CardContent>
         </Card>
       </div>

@@ -2,7 +2,8 @@
 
 import Image from "next/image"
 import { cn } from "@/lib/utils"
-import { MessageSquare, Clock, FolderOpen, Settings } from "lucide-react"
+import { PROJECT_INFO } from "@/lib/project-info"
+import { Clock, FolderOpen, Github, MessageSquare, Settings } from "lucide-react"
 
 interface SidebarProps {
   activeItem: string
@@ -57,6 +58,26 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
           })}
         </ul>
       </nav>
+
+      <div className="border-t border-border p-4">
+        <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Created by
+          </div>
+          <div className="mt-1 truncate text-sm font-medium text-foreground">
+            {PROJECT_INFO.creatorName}
+          </div>
+          <a
+            href={PROJECT_INFO.githubUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 inline-flex max-w-full items-center gap-2 rounded-md text-sm font-medium text-primary hover:text-primary/80"
+          >
+            <Github className="h-4 w-4 shrink-0" />
+            <span className="truncate">GitHub</span>
+          </a>
+        </div>
+      </div>
     </aside>
   )
 }
