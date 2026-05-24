@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import DATABASE_URL, SQLITE_CONNECT_ARGS
+from app.evals.graph_replay_eval import GraphReplayEvaluator
 from app.evals.replay_runner import ReplayRunner
 
 
@@ -27,12 +28,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay_parser = subparsers.add_parser("replay-session")
     replay_parser.add_argument("--session-id", required=True)
+
+    graph_fixture_parser = subparsers.add_parser("eval-graph-fixture")
+    graph_fixture_parser.add_argument("--fixture", required=True)
+    graph_fixture_parser.add_argument("--max-repeated-template", type=int, default=2)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.command == "eval-graph-fixture":
+        result = GraphReplayEvaluator().evaluate_fixture_file(
+            args.fixture,
+            max_repeated_template=args.max_repeated_template,
+        )
+        print(json.dumps(result.model_dump(), ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if result.passed else 1
+
     session_factory = _build_session_factory(args.db_url)
 
     with session_factory() as db:

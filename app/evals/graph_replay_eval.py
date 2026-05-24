@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from app.domain.agent_runtime import DS160GraphState, GraphEvent, PublicClaim
@@ -48,6 +49,20 @@ class GraphReplayEvalResult:
 
 
 class GraphReplayEvaluator:
+    def evaluate_fixture_file(
+        self,
+        path: str | Path,
+        *,
+        max_repeated_template: int = 2,
+    ) -> GraphReplayEvalResult:
+        fixture = GraphReplayFixture.from_file(path)
+        return self.evaluate(
+            fixture_id=fixture.fixture_id,
+            state=fixture.state,
+            events=fixture.events,
+            max_repeated_template=max_repeated_template,
+        )
+
     def evaluate(
         self,
         *,
@@ -178,3 +193,35 @@ class GraphReplayEvaluator:
                 f"message repeated {repeated_count} times",
             )
         return GraphReplayCheck("repeated_template", True)
+
+
+class GraphReplayFixture:
+    def __init__(
+        self,
+        *,
+        fixture_id: str,
+        state: DS160GraphState,
+        events: list[GraphEvent],
+        expected: dict[str, Any] | None = None,
+    ) -> None:
+        self.fixture_id = fixture_id
+        self.state = state
+        self.events = events
+        self.expected = expected or {}
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> "GraphReplayFixture":
+        import json
+
+        fixture_path = Path(path)
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        fixture_id = str(payload.get("fixture_id") or fixture_path.stem)
+        return cls(
+            fixture_id=fixture_id,
+            state=DS160GraphState.model_validate(payload["state"]),
+            events=[
+                GraphEvent.model_validate(event)
+                for event in payload.get("events", [])
+            ],
+            expected=payload.get("expected", {}),
+        )

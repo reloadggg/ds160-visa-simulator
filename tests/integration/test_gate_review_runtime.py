@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import asyncio
 
 from fastapi.testclient import TestClient
 import pytest
@@ -11,6 +12,7 @@ from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.main import app
 from app.workers.parse_worker import ParseWorker
+from app.workers.parse_worker import stop_parse_worker_runtime
 
 
 def build_pdf_bytes(*pages: str) -> bytes:
@@ -40,7 +42,10 @@ def db_session_factory(tmp_path):
 
 
 @pytest.fixture()
-def client(db_session_factory) -> Generator[TestClient, None, None]:
+def client(
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[TestClient, None, None]:
     def override_get_db() -> Generator[Session, None, None]:
         db = db_session_factory()
         try:
@@ -48,16 +53,26 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
         finally:
             db.close()
 
+    asyncio.run(stop_parse_worker_runtime(app))
+    monkeypatch.setenv("PARSE_WORKER_INLINE", "0")
+    app.state.parse_worker_session_factory = None
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
+    asyncio.run(stop_parse_worker_runtime(app))
     app.dependency_overrides.clear()
+    app.state.parse_worker_session_factory = None
 
 
 def test_f1_gate_review_runtime_progresses_from_pending_to_ready(
     client: TestClient,
     db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.refresh_after_material_change",
+        lambda self, session_id, *, reason: {},
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     assert session_resp.status_code == 201
     session_id = session_resp.json()["session_id"]

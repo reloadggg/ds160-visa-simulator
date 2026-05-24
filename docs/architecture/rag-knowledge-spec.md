@@ -70,6 +70,10 @@ URL 级 citation 不合格。
 
 ## 数据治理
 
+代码合同位于：
+
+- `app/domain/knowledge_plane.py`
+
 用户材料进入向量库前必须先解决：
 
 - tenant/user/session 隔离。
@@ -78,6 +82,30 @@ URL 级 citation 不合格。
 - 支持 tombstone / compaction。
 - 支持 embedding version replacement。
 - 检索和引用写审计日志。
+
+Postgres / pgvector 目标 baseline 表：
+
+- `knowledge_sources`
+- `knowledge_documents`
+- `knowledge_chunks`
+- `knowledge_embeddings`
+- `citation_claims`
+- `ingest_runs`
+- `graph_checkpoints`
+- `graph_run_events`
+- `knowledge_audit_events`
+
+当前仓库没有 Alembic 迁移底座，因此本阶段只冻结 schema / scope / lifecycle 合同，不迁生产数据。
+
+## 删除语义
+
+用户材料默认是 `case_evidence + session_scoped`。删除会话或材料时必须：
+
+- 使用 `tenant_id + user_id + session_id` 作为最小删除过滤条件。
+- 先 tombstone chunk / embedding，再 compaction。
+- tombstoned / deleted chunk 不允许生成新的 public citation。
+- embedding tombstone / delete 必须记录 `deletion_request_id`。
+- 审计事件必须记录 delete / tombstone / compact。
 
 ## Ingestion Pipeline
 
@@ -102,6 +130,13 @@ retrieval planner 必须先判断 claim 类型：
 - training / review suggestion 查 `product_rubric`
 
 检索失败不能让 agent 编造结论。
+
+代码合同：
+
+- `official_policy` claim 只能检索 `official_policy`。
+- `case_evidence` claim 只能检索当前 session scope 的 `case_evidence`。
+- `product_guidance` claim 只能检索 `product_rubric`。
+- `third_party_reference` 不能默认进入 public citation。
 
 ## Staleness
 

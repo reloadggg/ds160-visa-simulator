@@ -7,7 +7,7 @@ from app.domain.agent_runtime import (
     GraphRunResult,
     PublicClaim,
 )
-from app.evals.graph_replay_eval import GraphReplayEvaluator
+from app.evals.graph_replay_eval import GraphReplayEvaluator, GraphReplayFixture
 from app.services.agent_runtime_graph import (
     DeterministicDS160TurnGraph,
     fake_adjudication_node,
@@ -128,3 +128,19 @@ def test_graph_replay_eval_requires_single_final_event() -> None:
 
     assert result.passed is False
     assert result.failed_checks[0].name == "single_final_event"
+
+
+def test_graph_replay_fixture_file_loads_and_evaluates() -> None:
+    fixture = GraphReplayFixture.from_file(
+        "fixtures/graph_replay/school_mismatch_where.json"
+    )
+
+    result = GraphReplayEvaluator().evaluate(
+        fixture_id=fixture.fixture_id,
+        state=fixture.state,
+        events=fixture.events,
+    )
+
+    assert fixture.fixture_id == "school-mismatch-where"
+    assert fixture.expected["checks"]
+    assert result.passed is True

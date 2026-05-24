@@ -63,3 +63,18 @@ def test_cli_main_replay_session_outputs_json(monkeypatch, capsys) -> None:
     assert exit_code == 0
     assert '"session_id": "sess-2"' in captured
     assert '"turn_count": 2' in captured
+
+
+def test_cli_main_eval_graph_fixture_outputs_result(capsys) -> None:
+    exit_code = main(
+        [
+            "eval-graph-fixture",
+            "--fixture",
+            "fixtures/graph_replay/school_mismatch_where.json",
+        ]
+    )
+
+    captured = capsys.readouterr().out
+    assert exit_code == 0
+    assert '"fixture_id": "school-mismatch-where"' in captured
+    assert '"passed": true' in captured

@@ -1,0 +1,98 @@
+{
+  "fixture_id": "school-mismatch-where",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-fixture-1",
+    "run_id": "run-fixture-1",
+    "user_turn": {
+      "content": "哪里不一致？"
+    },
+    "case_state": {
+      "recent_assistant_messages": [
+        {
+          "content": "你刚才提到的是纽约大学。"
+        }
+      ]
+    },
+    "citation_bundle": {
+      "citations": [
+        {
+          "citation_id": "cite-i20-school",
+          "source_type": "case_evidence",
+          "source_authority": "user_provided",
+          "source_id": "source-session",
+          "document_id": "doc-i20",
+          "chunk_id": "chunk-school",
+          "span_start": 0,
+          "span_end": 50,
+          "content_hash": "sha256:school",
+          "quote_or_summary": "I-20 shows Example University.",
+          "retrieved_at": "2026-05-24T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-school"
+          ]
+        }
+      ]
+    },
+    "guard_result": {
+      "status": "passed",
+      "violations": []
+    },
+    "final_response": {
+      "assistant_message": "I-20 显示 Example University，但你刚才说的是纽约大学。请解释这个学校差异。",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "high_risk_review",
+      "requested_documents": [],
+      "public_claims": [
+        {
+          "claim_id": "claim-school",
+          "claim_type": "case_evidence",
+          "text": "I-20 显示 Example University。",
+          "citation_ids": [
+            "cite-i20-school"
+          ]
+        }
+      ],
+      "used_citation_ids": [
+        "cite-i20-school"
+      ],
+      "guard_status": "passed",
+      "incomplete_reason": null,
+      "next_safe_action": "ask_clarification"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-fixture-1",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "client_turn_id": null
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-fixture-1",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "I-20 显示 Example University，但你刚才说的是纽约大学。请解释这个学校差异。",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "high_risk_review"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "final_response_author",
+      "single_final_event",
+      "public_claim_citations",
+      "guard_failure_reason",
+      "repeated_template"
+    ]
+  }
+}
