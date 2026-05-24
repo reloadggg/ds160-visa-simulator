@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     agent_runtime_canary_percent: int = 0
     agent_runtime_trace_enabled: bool = True
     agent_runtime_fail_open_to_legacy: bool = True
+    agent_runtime_typed_adjudication_enabled: bool = False
     rag_enabled: bool = False
     rag_vector_store: str = "chroma"
     rag_index_version: str = "v1"

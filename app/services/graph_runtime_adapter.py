@@ -7,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.settings import settings
 from app.db.evidence_models import DocumentChunkRecord
 from app.db.models import SessionRecord
 from app.domain.agent_runtime import DS160GraphState
@@ -18,6 +19,7 @@ from app.services.agent_runtime_graph import (
     fake_adjudication_node,
     fake_guard_node,
 )
+from app.services.graph_adjudication_node import GraphAdjudicationNode
 from app.services.graph_case_state_builder import GraphCaseStateBuilder
 from app.services.graph_response_mapper import GraphResponseMapper
 
@@ -31,6 +33,7 @@ class GraphRuntimeAdapter:
         *,
         case_state_builder: GraphCaseStateBuilder | None = None,
         response_mapper: GraphResponseMapper | None = None,
+        adjudication_node: GraphAdjudicationNode | None = None,
     ) -> None:
         self.db = db
         self.session_turn_repo = SessionTurnRepository(db)
@@ -38,6 +41,7 @@ class GraphRuntimeAdapter:
         self.evidence_repo = EvidenceRepository(db)
         self.case_state_builder = case_state_builder or GraphCaseStateBuilder()
         self.response_mapper = response_mapper or GraphResponseMapper()
+        self.adjudication_node = adjudication_node or GraphAdjudicationNode()
 
     def run_turn(
         self,
@@ -55,10 +59,7 @@ class GraphRuntimeAdapter:
                     user_turn_id=user_turn_id,
                 ),
                 "build_case_state": self._build_case_state_node(record),
-                "adjudicate": fake_adjudication_node(
-                    assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
-                    decision="continue_interview",
-                ),
+                "adjudicate": self._adjudication_node(record, message_text),
                 "deterministic_grounding_guard": fake_guard_node(),
             }
         )
@@ -73,6 +74,34 @@ class GraphRuntimeAdapter:
             event.model_dump(mode="json") for event in events
         ]
         return payload
+
+    def _adjudication_node(
+        self,
+        record: SessionRecord,
+        message_text: str,
+    ):
+        if not settings.agent_runtime_typed_adjudication_enabled:
+            return fake_adjudication_node(
+                assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
+                decision="continue_interview",
+            )
+
+        def _node(state: DS160GraphState) -> DS160GraphState:
+            result = self.adjudication_node.run(
+                state,
+                message_text=message_text,
+                declared_family=record.declared_family,
+            )
+            return result.state.model_copy(
+                update={
+                    "adjudication_result": {
+                        **(result.state.adjudication_result or {}),
+                        "metadata": result.metadata,
+                    }
+                }
+            )
+
+        return _node
 
     def _receive_turn_node(
         self,

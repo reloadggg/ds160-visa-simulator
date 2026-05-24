@@ -9,6 +9,7 @@ from app.domain.agent_runtime import (
     GraphEvent,
     GraphRunResult,
     GroundingCheckResult,
+    GroundingViolation,
     RetryBudget,
 )
 
@@ -132,10 +133,19 @@ class DeterministicDS160TurnGraph:
         if node_name == "deterministic_grounding_guard":
             guard_result = state.guard_result
             return {
+                "node": node_name,
                 "guard_result": (
                     guard_result.model_dump(mode="json") if guard_result else {}
                 )
             }
+        if node_name == "adjudicate":
+            payload = {"node": node_name}
+            adjudication_result = state.adjudication_result
+            if isinstance(adjudication_result, dict):
+                metadata = adjudication_result.get("metadata")
+                if isinstance(metadata, dict):
+                    payload.update(metadata)
+            return payload
         return {"node": node_name}
 
 
@@ -168,9 +178,20 @@ def fake_adjudication_node(
 
 def fake_guard_node(status: str = "passed") -> GraphNode:
     def _node(state: DS160GraphState) -> DS160GraphState:
-        guard_result = GroundingCheckResult(status=status)  # type: ignore[arg-type]
         final_response = state.final_response
-        if final_response is not None:
+        if final_response is not None and final_response.guard_status != "passed":
+            guard_result = GroundingCheckResult(
+                status=final_response.guard_status,
+                violations=[
+                    GroundingViolation(
+                        code=final_response.incomplete_reason or "schema_invalid",
+                        detail="final response required deterministic fallback",
+                    )
+                ],
+            )
+        else:
+            guard_result = GroundingCheckResult(status=status)  # type: ignore[arg-type]
+        if final_response is not None and final_response.guard_status == "passed":
             final_response = final_response.model_copy(
                 update={"guard_status": guard_result.status}
             )

@@ -95,3 +95,70 @@ def test_graph_runtime_adapter_builds_legacy_compatible_shadow_response(tmp_path
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_graph_runtime_adapter_typed_adjudication_missing_model_falls_back(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.settings.agent_runtime_typed_adjudication_enabled",
+        True,
+    )
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'graph-runtime-typed-fallback.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            record = SessionRecord(
+                session_id="sess-graph-typed-fallback",
+                phase_state="interview",
+                declared_family="f1",
+                current_governor_decision="continue_interview",
+                gate_status_json=build_initial_gate_status(
+                    declared_family="f1",
+                    required_documents=[],
+                    scenario_key="student",
+                ),
+                profile_json={"profile_id": "profile-sess-graph-typed-fallback"},
+                runtime_trace_json=[],
+                score_history_json=[],
+                governor_history_json=[],
+                interviewer_state_json={},
+                current_focus_json={},
+            )
+            db.add(record)
+            user_turn = SessionTurnRepository(db).append_user_turn(
+                session_id=record.session_id,
+                content="I will study computer science.",
+                source="user_message",
+                commit=False,
+            )
+            db.flush()
+
+            payload = GraphRuntimeAdapter(db).run_turn(
+                record,
+                "I will study computer science.",
+                user_turn=user_turn,
+            )
+
+        assert payload["agent_runtime"] == "graph"
+        assert payload["turn_decision"]["assistant_message_author"] == (
+            "deterministic_safe_fallback"
+        )
+        assert payload["turn_decision"]["guard_status"] == "fallback_required"
+        adjudication_event = next(
+            event
+            for event in payload["graph_events"]
+            if event["event_type"] == "adjudication_completed"
+        )
+        assert adjudication_event["payload"]["fallback_used"] is True
+        assert adjudication_event["payload"]["fallback_reason"] == "model_unavailable"
+        assert adjudication_event["payload"]["llm_calls_used"] == 0
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

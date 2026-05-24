@@ -1120,6 +1120,60 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
     }
 
 
+def test_message_turn_graph_typed_adjudication_missing_model_uses_safe_fallback(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(
+        settings_module.settings,
+        "agent_runtime_typed_adjudication_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run for graph typed fallback")
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_runtime"] == "graph"
+    assert payload["turn_decision"]["assistant_message_author"] == (
+        "deterministic_safe_fallback"
+    )
+    assert payload["turn_decision"]["guard_status"] == "fallback_required"
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    adjudication_event = next(
+        event
+        for event in assistant_turn.metadata_json["graph_events"]
+        if event["event_type"] == "adjudication_completed"
+    )
+    assert adjudication_event["payload"]["fallback_used"] is True
+    assert adjudication_event["payload"]["fallback_reason"] == "model_unavailable"
+    assert adjudication_event["payload"]["llm_calls_used"] == 0
+
+
 def test_messages_stream_graph_mode_keeps_sse_contract(
     client: TestClient,
     db_session_factory,
