@@ -36,6 +36,44 @@ docker compose ps
 curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
 ```
 
+## Agent Runtime Canary
+
+默认保持旧主流程：
+
+```env
+AGENT_RUNTIME=legacy
+AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true
+```
+
+上线观察顺序：
+
+```bash
+# 1. 旁路观察，用户可见回复仍由 legacy 写入。
+AGENT_RUNTIME=graph_shadow docker compose up -d --build
+
+# 2. 小流量切 graph，未命中 session 仍走 legacy。
+AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=10 docker compose up -d --build
+AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=25 docker compose up -d --build
+AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=50 docker compose up -d --build
+AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=100 docker compose up -d --build
+```
+
+每一档切换前后先跑：
+
+```bash
+./scripts/agent-runtime-canary-smoke.sh
+docker compose ps
+curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
+```
+
+回滚命令：
+
+```bash
+AGENT_RUNTIME=legacy AGENT_RUNTIME_CANARY_PERCENT=0 docker compose up -d --build
+```
+
+任一档出现新增 500、重复模板、无法解释冲突、citation 缺失率异常、fallback 率异常，直接回滚到上一档或 `legacy`。
+
 ## 本机验证
 
 ```bash
