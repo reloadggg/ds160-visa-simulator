@@ -1,0 +1,51 @@
+{
+  "fixture_id": "repeated-template-failure",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-fixture-repeat",
+    "run_id": "run-fixture-repeat",
+    "case_state": {
+      "recent_assistant_messages": [
+        {
+          "content": "你的说法和材料不一致，请解释。"
+        },
+        {
+          "content": "你的说法和材料不一致，请解释。"
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "你的说法和材料不一致，请解释。",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "high_risk_review",
+      "requested_documents": [],
+      "public_claims": [],
+      "used_citation_ids": [],
+      "guard_status": "passed",
+      "incomplete_reason": null,
+      "next_safe_action": "ask_clarification"
+    }
+  },
+  "events": [
+    {
+      "event_type": "final",
+      "run_id": "run-fixture-repeat",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "你的说法和材料不一致，请解释。",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "high_risk_review"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "should_pass": false,
+    "failed_checks": [
+      "repeated_template",
+      "high_risk_what_why_next"
+    ]
+  }
+}

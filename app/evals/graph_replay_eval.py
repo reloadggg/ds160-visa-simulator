@@ -75,7 +75,11 @@ class GraphReplayEvaluator:
             self._check_final_response_author(state),
             self._check_final_event(events),
             self._check_public_claim_citations(state),
+            self._check_policy_claims_use_official_citations(state),
+            self._check_case_claims_use_case_evidence_citations(state),
             self._check_guard_failure_reason(state),
+            self._check_failure_diagnostics(state, events),
+            self._check_high_risk_explains_what_why_next(state),
             self._check_repeated_templates(
                 state,
                 max_repeated_template=max_repeated_template,
@@ -142,6 +146,48 @@ class GraphReplayEvaluator:
                 )
         return GraphReplayCheck("public_claim_citations", True)
 
+    def _check_policy_claims_use_official_citations(
+        self,
+        state: DS160GraphState,
+    ) -> GraphReplayCheck:
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck("official_policy_citation", False, "missing final response")
+        citations = {citation.citation_id: citation for citation in state.citation_bundle.citations}
+        for claim in response.public_claims:
+            if claim.claim_type != "official_policy":
+                continue
+            for citation_id in claim.citation_ids:
+                citation = citations.get(citation_id)
+                if citation is None or citation.source_type != "official_policy":
+                    return GraphReplayCheck(
+                        "official_policy_citation",
+                        False,
+                        f"official policy claim {claim.claim_id} lacks official citation",
+                    )
+        return GraphReplayCheck("official_policy_citation", True)
+
+    def _check_case_claims_use_case_evidence_citations(
+        self,
+        state: DS160GraphState,
+    ) -> GraphReplayCheck:
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck("case_evidence_citation", False, "missing final response")
+        citations = {citation.citation_id: citation for citation in state.citation_bundle.citations}
+        for claim in response.public_claims:
+            if claim.claim_type != "case_evidence":
+                continue
+            for citation_id in claim.citation_ids:
+                citation = citations.get(citation_id)
+                if citation is None or citation.source_type != "case_evidence":
+                    return GraphReplayCheck(
+                        "case_evidence_citation",
+                        False,
+                        f"case evidence claim {claim.claim_id} lacks case citation",
+                    )
+        return GraphReplayCheck("case_evidence_citation", True)
+
     def _missing_claim_citations(
         self,
         claim: PublicClaim,
@@ -162,6 +208,75 @@ class GraphReplayEvaluator:
                 "guard failure missing incomplete_reason",
             )
         return GraphReplayCheck("guard_failure_reason", True)
+
+    def _check_failure_diagnostics(
+        self,
+        state: DS160GraphState,
+        events: list[GraphEvent],
+    ) -> GraphReplayCheck:
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck("failure_diagnostics", False, "missing final response")
+        if response.guard_status == "passed" and response.assistant_message_author == "adjudication_agent":
+            return GraphReplayCheck("failure_diagnostics", True)
+        diagnostic_events = [
+            event
+            for event in events
+            if event.event_type
+            in {"adjudication_completed", "guard_completed", "fallback_used", "error"}
+        ]
+        if not diagnostic_events:
+            return GraphReplayCheck(
+                "failure_diagnostics",
+                False,
+                "fallback or guard failure has no diagnostic event",
+            )
+        for event in diagnostic_events:
+            payload = event.payload
+            if payload.get("fallback_reason") or payload.get("guard_result") or payload.get("error_code"):
+                return GraphReplayCheck("failure_diagnostics", True)
+        return GraphReplayCheck(
+            "failure_diagnostics",
+            False,
+            "diagnostic events lack fallback_reason, guard_result, or error_code",
+        )
+
+    def _check_high_risk_explains_what_why_next(
+        self,
+        state: DS160GraphState,
+    ) -> GraphReplayCheck:
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck("high_risk_what_why_next", False, "missing final response")
+        if response.decision != "high_risk_review":
+            return GraphReplayCheck("high_risk_what_why_next", True)
+        message = response.assistant_message.strip()
+        has_citation = any(
+            claim.claim_type in {"case_evidence", "official_policy"} and claim.citation_ids
+            for claim in response.public_claims
+        )
+        asks_next = "？" in message or "?" in message or response.next_safe_action in {
+            "ask_clarification",
+            "request_document",
+            "manual_review",
+        }
+        explains_what = bool(message) and not self._is_generic_risk_message(message)
+        if has_citation and asks_next and explains_what:
+            return GraphReplayCheck("high_risk_what_why_next", True)
+        return GraphReplayCheck(
+            "high_risk_what_why_next",
+            False,
+            "high-risk response must include concrete what, cited why, and next action",
+        )
+
+    def _is_generic_risk_message(self, message: str) -> bool:
+        normalized = message.strip().lower()
+        generic_messages = {
+            "this case needs additional review before the interview can continue.",
+            "当前案例需要进一步审核。",
+            "你的情况需要进一步核对。",
+        }
+        return normalized in generic_messages
 
     def _check_repeated_templates(
         self,

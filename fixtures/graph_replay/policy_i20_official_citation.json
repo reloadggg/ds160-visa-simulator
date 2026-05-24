@@ -1,0 +1,114 @@
+{
+  "fixture_id": "policy-i20-official-citation",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-fixture-policy",
+    "run_id": "run-fixture-policy",
+    "user_turn": {
+      "content": "F-1 是否需要 I-20？"
+    },
+    "case_state": {
+      "recent_assistant_messages": []
+    },
+    "citation_bundle": {
+      "citations": [
+        {
+          "citation_id": "cite-policy-i20",
+          "source_type": "official_policy",
+          "source_authority": "official",
+          "source_id": "study_in_the_states_i20",
+          "document_id": "doc-policy-i20",
+          "chunk_id": "chunk-policy-i20",
+          "span_start": 0,
+          "span_end": 74,
+          "content_hash": "sha256:policy-i20",
+          "quote_or_summary": "F and M students need a Form I-20 to study in the United States.",
+          "retrieved_at": "2026-05-24T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-policy-i20"
+          ]
+        }
+      ]
+    },
+    "guard_result": {
+      "status": "passed",
+      "violations": []
+    },
+    "final_response": {
+      "assistant_message": "F-1 学生通常需要学校签发的 I-20。你这份 I-20 上的学校名称是什么？",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [
+        {
+          "claim_id": "claim-policy-i20",
+          "claim_type": "official_policy",
+          "text": "F-1 学生通常需要学校签发的 I-20。",
+          "citation_ids": [
+            "cite-policy-i20"
+          ]
+        }
+      ],
+      "used_citation_ids": [
+        "cite-policy-i20"
+      ],
+      "guard_status": "passed",
+      "incomplete_reason": null,
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-fixture-policy",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "client_turn_id": null
+      }
+    },
+    {
+      "event_type": "adjudication_completed",
+      "run_id": "run-fixture-policy",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "node": "adjudicate",
+        "status": "completed",
+        "fallback_used": false
+      }
+    },
+    {
+      "event_type": "guard_completed",
+      "run_id": "run-fixture-policy",
+      "sequence": 2,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "node": "deterministic_grounding_guard",
+        "guard_result": {
+          "status": "passed",
+          "violations": []
+        }
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-fixture-policy",
+      "sequence": 3,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "F-1 学生通常需要学校签发的 I-20。你这份 I-20 上的学校名称是什么？",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "official_policy_citation"
+    ]
+  }
+}

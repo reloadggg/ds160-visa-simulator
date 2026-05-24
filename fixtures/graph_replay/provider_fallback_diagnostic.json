@@ -1,0 +1,91 @@
+{
+  "fixture_id": "provider-fallback-diagnostic",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-fixture-fallback",
+    "run_id": "run-fixture-fallback",
+    "user_turn": {
+      "content": "继续"
+    },
+    "case_state": {
+      "recent_assistant_messages": []
+    },
+    "citation_bundle": {
+      "citations": []
+    },
+    "guard_result": {
+      "status": "fallback_required",
+      "violations": [
+        {
+          "code": "provider_error",
+          "detail": "provider failed"
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "我会继续围绕你的 DS-160 材料做下一步核对。",
+      "assistant_message_author": "deterministic_safe_fallback",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [],
+      "used_citation_ids": [],
+      "guard_status": "fallback_required",
+      "incomplete_reason": "provider_error",
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-fixture-fallback",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {}
+    },
+    {
+      "event_type": "adjudication_completed",
+      "run_id": "run-fixture-fallback",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "fallback_used": true,
+        "fallback_reason": "provider_error"
+      }
+    },
+    {
+      "event_type": "guard_completed",
+      "run_id": "run-fixture-fallback",
+      "sequence": 2,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "guard_result": {
+          "status": "fallback_required",
+          "violations": [
+            {
+              "code": "provider_error",
+              "detail": "provider failed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-fixture-fallback",
+      "sequence": 3,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "我会继续围绕你的 DS-160 材料做下一步核对。",
+          "assistant_message_author": "deterministic_safe_fallback",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "failure_diagnostics"
+    ]
+  }
+}

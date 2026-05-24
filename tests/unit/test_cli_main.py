@@ -78,3 +78,20 @@ def test_cli_main_eval_graph_fixture_outputs_result(capsys) -> None:
     assert exit_code == 0
     assert '"fixture_id": "school-mismatch-where"' in captured
     assert '"passed": true' in captured
+
+
+def test_cli_main_eval_graph_corpus_matches_expected_failures(capsys) -> None:
+    exit_code = main(
+        [
+            "eval-graph-corpus",
+            "--fixture-dir",
+            "fixtures/graph_replay",
+        ]
+    )
+
+    captured = capsys.readouterr().out
+    assert exit_code == 0
+    assert '"fixture_count": 5' in captured
+    assert '"fixture_id": "repeated-template-failure"' in captured
+    assert '"expected_passed": false' in captured
+    assert '"matched_expectation": true' in captured

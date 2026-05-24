@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.session import DATABASE_URL, SQLITE_CONNECT_ARGS
-from app.evals.graph_replay_eval import GraphReplayEvaluator
+from app.evals.graph_replay_eval import GraphReplayEvaluator, GraphReplayFixture
 from app.evals.replay_runner import ReplayRunner
 
 
@@ -32,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     graph_fixture_parser = subparsers.add_parser("eval-graph-fixture")
     graph_fixture_parser.add_argument("--fixture", required=True)
     graph_fixture_parser.add_argument("--max-repeated-template", type=int, default=2)
+
+    graph_corpus_parser = subparsers.add_parser("eval-graph-corpus")
+    graph_corpus_parser.add_argument("--fixture-dir", default="fixtures/graph_replay")
+    graph_corpus_parser.add_argument("--max-repeated-template", type=int, default=2)
     return parser
 
 
@@ -45,6 +50,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps(result.model_dump(), ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result.passed else 1
+    if args.command == "eval-graph-corpus":
+        fixture_dir = Path(args.fixture_dir)
+        evaluator = GraphReplayEvaluator()
+        results = []
+        for path in sorted(fixture_dir.glob("*.json")):
+            fixture = GraphReplayFixture.from_file(path)
+            result = evaluator.evaluate(
+                fixture_id=fixture.fixture_id,
+                state=fixture.state,
+                events=fixture.events,
+                max_repeated_template=args.max_repeated_template,
+            )
+            expected_passed = bool(fixture.expected.get("should_pass", True))
+            expected_failed_checks = set(fixture.expected.get("failed_checks") or [])
+            actual_failed_checks = {check.name for check in result.failed_checks}
+            matched_expectation = result.passed == expected_passed
+            if expected_failed_checks:
+                matched_expectation = matched_expectation and expected_failed_checks <= actual_failed_checks
+            results.append(
+                {
+                    **result.model_dump(),
+                    "fixture_path": str(path),
+                    "expected_passed": expected_passed,
+                    "matched_expectation": matched_expectation,
+                }
+            )
+        payload = {
+            "fixture_dir": str(fixture_dir),
+            "fixture_count": len(results),
+            "passed": all(result["matched_expectation"] for result in results),
+            "results": results,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if payload["passed"] else 1
 
     session_factory = _build_session_factory(args.db_url)
 

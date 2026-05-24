@@ -50,21 +50,26 @@ def test_graph_replay_eval_passes_deterministic_graph_output() -> None:
     )
     assert state.final_response is not None
     state = state.model_copy(
-        update={
-            "final_response": state.final_response.model_copy(
-                update={
-                    "public_claims": [
-                        PublicClaim(
-                            claim_id="claim-school",
-                            claim_type="case_evidence",
-                            text="I-20 显示 Example University。",
-                            citation_ids=[citation.citation_id],
-                        )
-                    ]
-                }
-            )
-        }
-    )
+            update={
+                "final_response": state.final_response.model_copy(
+                    update={
+                        "assistant_message": (
+                            "I-20 显示 Example University，但你刚才说的是纽约大学。"
+                            "请解释这个学校差异。"
+                        ),
+                        "public_claims": [
+                            PublicClaim(
+                                claim_id="claim-school",
+                                claim_type="case_evidence",
+                                text="I-20 显示 Example University。",
+                                citation_ids=[citation.citation_id],
+                            )
+                        ],
+                        "next_safe_action": "ask_clarification",
+                    }
+                )
+            }
+        )
 
     result = GraphReplayEvaluator().evaluate(
         fixture_id="school-mismatch-where",
@@ -107,7 +112,70 @@ def test_graph_replay_eval_flags_repeated_template() -> None:
     )
 
     assert result.passed is False
-    assert result.failed_checks[0].name == "repeated_template"
+    assert "repeated_template" in {check.name for check in result.failed_checks}
+
+
+def test_graph_replay_eval_requires_high_risk_what_why_next() -> None:
+    state = DS160GraphState(
+        session_id="sess-1",
+        run_id="run-1",
+        final_response=GraphRunResult(
+            assistant_message="This case needs additional review before the interview can continue.",
+            decision="high_risk_review",
+            guard_status="passed",
+            next_safe_action="ask_clarification",
+        ),
+    )
+    events = [
+        DeterministicDS160TurnGraph()._event(
+            "final",
+            state=state,
+            sequence=0,
+            payload={"final_response": state.final_response.model_dump(mode="json")},
+        )
+    ]
+
+    result = GraphReplayEvaluator().evaluate(
+        fixture_id="generic-high-risk",
+        state=state,
+        events=events,
+    )
+
+    assert result.passed is False
+    assert "high_risk_what_why_next" in {
+        check.name for check in result.failed_checks
+    }
+
+
+def test_graph_replay_eval_requires_failure_diagnostics() -> None:
+    state = DS160GraphState(
+        session_id="sess-1",
+        run_id="run-1",
+        final_response=GraphRunResult(
+            assistant_message="请继续说明。",
+            assistant_message_author="deterministic_safe_fallback",
+            decision="continue_interview",
+            guard_status="fallback_required",
+            incomplete_reason="provider_error",
+        ),
+    )
+    events = [
+        DeterministicDS160TurnGraph()._event(
+            "final",
+            state=state,
+            sequence=0,
+            payload={"final_response": state.final_response.model_dump(mode="json")},
+        )
+    ]
+
+    result = GraphReplayEvaluator().evaluate(
+        fixture_id="fallback-without-diagnostics",
+        state=state,
+        events=events,
+    )
+
+    assert result.passed is False
+    assert "failure_diagnostics" in {check.name for check in result.failed_checks}
 
 
 def test_graph_replay_eval_requires_single_final_event() -> None:

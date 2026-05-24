@@ -1,0 +1,84 @@
+{
+  "fixture_id": "missing-case-citation-deleted-material",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-fixture-deleted",
+    "run_id": "run-fixture-deleted",
+    "user_turn": {
+      "content": "哪里不一致？"
+    },
+    "case_state": {
+      "recent_assistant_messages": []
+    },
+    "citation_bundle": {
+      "citations": []
+    },
+    "guard_result": {
+      "status": "fallback_required",
+      "violations": [
+        {
+          "code": "missing_case_evidence",
+          "detail": "case claim lacks citation"
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "我现在无法确认材料里的学校差异，请重新上传对应 I-20 的关键页。",
+      "assistant_message_author": "deterministic_safe_fallback",
+      "decision": "need_more_evidence",
+      "requested_documents": [
+        "i20"
+      ],
+      "public_claims": [],
+      "used_citation_ids": [],
+      "guard_status": "fallback_required",
+      "incomplete_reason": "missing_case_evidence",
+      "next_safe_action": "request_document"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-fixture-deleted",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {}
+    },
+    {
+      "event_type": "guard_completed",
+      "run_id": "run-fixture-deleted",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "guard_result": {
+          "status": "fallback_required",
+          "violations": [
+            {
+              "code": "missing_case_evidence",
+              "detail": "case claim lacks citation"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-fixture-deleted",
+      "sequence": 2,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "我现在无法确认材料里的学校差异，请重新上传对应 I-20 的关键页。",
+          "assistant_message_author": "deterministic_safe_fallback",
+          "decision": "need_more_evidence"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "guard_failure_reason",
+      "failure_diagnostics"
+    ]
+  }
+}
