@@ -1,0 +1,97 @@
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db.base import Base
+from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
+from app.db.models import DocumentRecord, SessionRecord
+from app.domain.runtime import build_initial_gate_status
+from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.graph_runtime_adapter import GraphRuntimeAdapter
+
+
+def test_graph_runtime_adapter_builds_legacy_compatible_shadow_response(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'graph-runtime-adapter.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            record = SessionRecord(
+                session_id="sess-graph-adapter",
+                phase_state="interview",
+                declared_family="f1",
+                current_governor_decision="continue_interview",
+                gate_status_json=build_initial_gate_status(
+                    declared_family="f1",
+                    required_documents=["i20"],
+                    scenario_key="student",
+                ),
+                profile_json={"profile_id": "profile-sess-graph-adapter"},
+                runtime_trace_json=[],
+                score_history_json=[],
+                governor_history_json=[],
+                interviewer_state_json={},
+                current_focus_json={},
+            )
+            db.add(record)
+            db.add(
+                DocumentRecord(
+                    document_id="doc-i20",
+                    session_id=record.session_id,
+                    filename="i20.txt",
+                    status="parsed",
+                    artifact_json={"document_type": "i20", "source_type": "text"},
+                )
+            )
+            db.add(
+                DocumentChunkRecord(
+                    chunk_id="chunk-i20",
+                    document_id="doc-i20",
+                    session_id=record.session_id,
+                    ordinal=0,
+                    page_number=1,
+                    text="School Name: Example University",
+                    metadata_json={},
+                )
+            )
+            db.add(
+                EvidenceItemRecord(
+                    evidence_id="evi-school",
+                    session_id=record.session_id,
+                    document_id="doc-i20",
+                    chunk_id="chunk-i20",
+                    evidence_type="i20",
+                    field_path="/education/school_name",
+                    value="Example University",
+                    excerpt="School Name: Example University",
+                    confidence=1.0,
+                    metadata_json={},
+                )
+            )
+            user_turn = SessionTurnRepository(db).append_user_turn(
+                session_id=record.session_id,
+                content="I will study computer science.",
+                source="user_message",
+                commit=False,
+            )
+            db.flush()
+
+            payload = GraphRuntimeAdapter(db).run_turn(
+                record,
+                "I will study computer science.",
+                user_turn=user_turn,
+            )
+
+        assert payload["agent_runtime"] == "graph"
+        assert payload["assistant_message"]
+        assert payload["turn_decision"]["decision"] == "continue_interview"
+        assert payload["runtime_view_state"]["decision"] == "continue_interview"
+        assert payload["turn_record"]["user_turn_id"] == user_turn.turn_id
+        assert payload["graph_trace"]["event_count"] > 0
+        assert payload["prompt_trace"]["graph_run_id"] == payload["graph_run_id"]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

@@ -624,6 +624,92 @@ def test_messages_stream_emits_final_payload_contract(
     assert final_payload["requested_documents"] == []
 
 
+def test_messages_stream_graph_shadow_keeps_final_payload_public(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+
+    def fake_run_turn(self, record, message_text: str) -> dict:
+        del self
+        turn_record = {
+            "turn_id": "turn-stream-graph-shadow",
+            "session_id": record.session_id,
+            "user_input": message_text,
+            "decision": "continue_interview",
+            "assistant_message": "What will you study?",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "focus": {
+                "owner": "interviewer_runtime_service",
+                "kind": "interview_question",
+                "question": "What will you study?",
+            },
+            "trace_refs": ["turn_decision"],
+            "advisory_summary": {
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+            "document_review": {},
+        }
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        record.current_focus_json = dict(turn_record["focus"])
+        record.interviewer_state_json = {
+            "decision": "continue_interview",
+            "current_focus": dict(turn_record["focus"]),
+            "document_review": {},
+        }
+        return {
+            "assistant_message": turn_record["assistant_message"],
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.interviewer",
+                "prompt_version": "v2",
+            },
+            "turn_record": turn_record,
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    with client.stream(
+        "POST",
+        f"/v1/sessions/{session_id}/messages/stream",
+        json={"role": "user", "content": "I will study computer science."},
+    ) as response:
+        body = response.read().decode()
+
+    assert response.status_code == 200
+    events = parse_sse_events(body)
+    assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
+    final_payload = events[-1][1]
+    assert final_payload["assistant_message"] == "What will you study?"
+    assert "graph_shadow" not in final_payload
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.metadata_json["graph_shadow"]["status"] == "completed"
+
+
 def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
     client: TestClient,
     db_session_factory,
@@ -744,6 +830,133 @@ def test_message_turn_uses_adjudication_agent_output_for_continue_interview(
         }
         assert record.interviewer_state_json["owner"] == "interviewer_runtime_service"
         assert record.interviewer_state_json["next_action"] == "answer_question"
+
+
+def test_message_turn_graph_shadow_keeps_legacy_response_and_single_assistant_turn(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "assistant_message": "What is the purpose of your travel?",
+                    "requested_documents": [],
+                    "decision_hint": "continue_interview",
+                },
+            ),
+            {"model": "gpt-5.4"},
+        )
+        if module_key == "adjudication_agent"
+        else (None, {"model": None}),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert "graph_shadow" not in payload
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+        record = db.get(SessionRecord, session_id)
+
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("user", "user_message"),
+        ("assistant", "interviewer_runtime_service"),
+    ]
+    assert record is not None
+    assert [entry["node_name"] for entry in record.runtime_trace_json] == [
+        "receive_input",
+        "extract_claims",
+        "resolve_evidence",
+        "consistency_check",
+        "score_case",
+        "governor_decide",
+        "decide_capability",
+        "resolve_capability",
+        "turn_decision",
+    ]
+    graph_shadow = turns[1].metadata_json["graph_shadow"]
+    assert graph_shadow["status"] == "completed"
+    assert graph_shadow["agent_runtime"] == "graph_shadow"
+    assert graph_shadow["graph_run_id"].startswith("graph-run-")
+    assert graph_shadow["graph_trace"]["event_count"] > 0
+    assert graph_shadow["turn_decision"]["decision"] == "continue_interview"
+
+
+def test_message_turn_graph_shadow_failure_fails_open_to_legacy(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_turn",
+        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
+            RuntimeError("shadow exploded")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "assistant_message": "What is the purpose of your travel?",
+                    "requested_documents": [],
+                    "decision_hint": "continue_interview",
+                },
+            ),
+            {"model": "gpt-5.4"},
+        )
+        if module_key == "adjudication_agent"
+        else (None, {"model": None}),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assistant_message"] == "What is the purpose of your travel?"
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("user", "user_message"),
+        ("assistant", "interviewer_runtime_service"),
+    ]
+    graph_shadow = turns[1].metadata_json["graph_shadow"]
+    assert graph_shadow == {
+        "status": "error",
+        "agent_runtime": "graph_shadow",
+        "error_type": "RuntimeError",
+        "error_message": "shadow exploded",
+    }
 
 
 def test_message_turn_returns_503_when_adjudication_agent_config_missing_for_interview_question(

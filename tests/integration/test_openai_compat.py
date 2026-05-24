@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from types import SimpleNamespace
 
 from app.db.base import Base
-from app.db.models import SessionRecord
+from app.core import settings as settings_module
+from app.db.models import SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
 from app.services.runtime_errors import ModelRuntimeError, ModelUnavailableError
@@ -90,6 +91,52 @@ def test_chat_completions_maps_to_domain_flow(
     assert payload["metadata"]["runtime_view_state"].get("prompt_trace", {}) == payload["metadata"][
         "prompt_trace"
     ]
+
+
+def test_chat_completions_graph_shadow_keeps_metadata_contract(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
+        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
+            assistant_message="Please explain your funding plan.",
+            requested_documents=[],
+            decision_hint="continue_interview",
+        ),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "My parents will pay."}],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    metadata = payload["metadata"]
+    assert "graph_shadow" not in metadata
+    assert metadata["turn_decision"]["decision"] == "continue_interview"
+    assert isinstance(metadata["prompt_trace"], dict)
+    assert isinstance(metadata["runtime_view_state"], dict)
+
+    with db_session_factory() as db:
+        assistant_turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == metadata["session_id"],
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert len(assistant_turns) == 1
+    assert assistant_turns[0].metadata_json["graph_shadow"]["status"] == "completed"
 
 
 def test_chat_completions_uses_same_runtime_gate_initialization(

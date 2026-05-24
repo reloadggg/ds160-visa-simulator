@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import field_validator
@@ -32,6 +33,10 @@ class Settings(BaseSettings):
     allow_debug_fill: bool = False
     allow_user_model_config: bool = False
     allow_user_model_streaming: bool = True
+    agent_runtime: Literal["legacy", "graph_shadow", "graph_canary", "graph"] = "legacy"
+    agent_runtime_canary_percent: int = 0
+    agent_runtime_trace_enabled: bool = True
+    agent_runtime_fail_open_to_legacy: bool = True
     rag_enabled: bool = False
     rag_vector_store: str = "chroma"
     rag_index_version: str = "v1"
@@ -68,6 +73,15 @@ class Settings(BaseSettings):
     def empty_embedding_dimensions_as_none(cls, value: object) -> object:
         if value == "":
             return None
+        return value
+
+    @field_validator("agent_runtime_canary_percent")
+    @classmethod
+    def validate_agent_runtime_canary_percent(cls, value: int) -> int:
+        if value < 0:
+            return 0
+        if value > 100:
+            return 100
         return value
 
     @property

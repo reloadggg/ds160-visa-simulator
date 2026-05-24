@@ -1,11 +1,13 @@
 from sqlalchemy.orm import Session
 
+from app.core.settings import settings
 from app.db.models import SessionTurnRecord
 from app.domain.runtime import GateOverallStatus
 from app.platform.turn_record import TurnRecord
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.services.gate_runtime_service import GateRuntimeService
+from app.services.graph_runtime_adapter import GraphRuntimeAdapter
 from app.services.interviewer_runtime_service import InterviewerRuntimeService
 from app.services.runtime_view_contract_service import RuntimeViewContractService
 from app.services.session_read_model_service import SessionReadModelService
@@ -31,6 +33,7 @@ class MessageService:
         self.session_turn_repo = SessionTurnRepository(db)
         self.gate_runtime = GateRuntimeService(db)
         self.interviewer_runtime = InterviewerRuntimeService(db)
+        self.graph_runtime = GraphRuntimeAdapter(db)
         self.session_read_model = SessionReadModelService(db)
 
     def handle_user_turn(self, session_id: str, message_text: str) -> dict:
@@ -42,7 +45,7 @@ class MessageService:
         record = self.gate_runtime.refresh_session(session_id, save=False)
 
         try:
-            self.session_turn_repo.append_user_turn(
+            user_turn = self.session_turn_repo.append_user_turn(
                 session_id=record.session_id,
                 content=message_text,
                 source="user_message",
@@ -63,10 +66,13 @@ class MessageService:
                 self.session_repo.save(record)
                 return response
 
+            graph_shadow = self._run_graph_shadow(record, message_text, user_turn)
             interview_response = self.interviewer_runtime.run_turn(record, message_text)
             response = self.gate_runtime.merge_interview_response(interview_response, record)
+            self._attach_graph_shadow(response, graph_shadow)
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
+            self._strip_internal_shadow(response)
             self.session_repo.save(record)
             return response
         except Exception:
@@ -112,6 +118,51 @@ class MessageService:
         if interviewer_state.get("status") == "simulated_refusal":
             return True
         return record.phase_state == "session_closed"
+
+    def _run_graph_shadow(
+        self,
+        record,
+        message_text: str,
+        user_turn: SessionTurnRecord,
+    ) -> dict | None:
+        if settings.agent_runtime != "graph_shadow":
+            return None
+        if not settings.agent_runtime_trace_enabled:
+            return None
+        try:
+            shadow_response = self.graph_runtime.run_turn(
+                record,
+                message_text,
+                user_turn=user_turn,
+            )
+        except Exception as exc:
+            if not settings.agent_runtime_fail_open_to_legacy:
+                raise
+            return {
+                "status": "error",
+                "agent_runtime": "graph_shadow",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            }
+        return {
+            "status": "completed",
+            "agent_runtime": "graph_shadow",
+            "graph_run_id": shadow_response.get("graph_run_id"),
+            "graph_trace": dict(shadow_response.get("graph_trace", {}) or {}),
+            "turn_decision": dict(shadow_response.get("turn_decision", {}) or {}),
+            "prompt_trace": dict(shadow_response.get("prompt_trace", {}) or {}),
+        }
+
+    def _attach_graph_shadow(
+        self,
+        response: dict,
+        graph_shadow: dict | None,
+    ) -> None:
+        if graph_shadow:
+            response["graph_shadow"] = graph_shadow
+
+    def _strip_internal_shadow(self, response: dict) -> None:
+        response.pop("graph_shadow", None)
 
     def _apply_gate_response_state(
         self,
@@ -182,6 +233,7 @@ class MessageService:
                 "turn_decision": (response.get("turn_decision", {}) or {}).get("decision"),
                 "current_focus_kind": (record.current_focus_json or {}).get("kind"),
                 "prompt_trace": response.get("prompt_trace", {}),
+                "graph_shadow": response.get("graph_shadow"),
             },
             commit=False,
         )
