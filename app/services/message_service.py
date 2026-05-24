@@ -238,6 +238,8 @@ class MessageService:
     def _strip_internal_runtime_fields(self, response: dict) -> None:
         response.pop("graph_shadow", None)
         response.pop("graph_events", None)
+        response.pop("graph_runtime_engine", None)
+        response.pop("graph_runtime_engine_class", None)
         response.pop("graph_runtime_error", None)
 
     def _apply_graph_response_state(self, record, response: dict) -> None:

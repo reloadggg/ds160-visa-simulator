@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from app.domain.agent_runtime import (
     CitationBundle,
@@ -17,8 +20,28 @@ from app.domain.agent_runtime import (
 GraphNode = Callable[[DS160GraphState], DS160GraphState]
 
 
+def _replace_state(
+    _current: DS160GraphState | None,
+    update: DS160GraphState | None,
+) -> DS160GraphState | None:
+    return update or _current
+
+
+def _append_events(
+    current: list[GraphEvent],
+    update: list[GraphEvent] | None,
+) -> list[GraphEvent]:
+    return current + list(update or [])
+
+
+class LangGraphTurnState(TypedDict):
+    state: Annotated[DS160GraphState, _replace_state]
+    events: Annotated[list[GraphEvent], _append_events]
+    next_sequence: int
+
+
 class DeterministicDS160TurnGraph:
-    """Framework-neutral graph skeleton used to freeze runtime contracts first."""
+    """DS-160 turn graph backed by the official LangGraph StateGraph runtime."""
 
     node_order = (
         "receive_turn",
@@ -40,6 +63,7 @@ class DeterministicDS160TurnGraph:
         nodes: dict[str, GraphNode] | None = None,
     ) -> None:
         self.nodes = dict(nodes or {})
+        self.compiled_graph = self._compile_graph()
 
     def run(
         self,
@@ -59,30 +83,65 @@ class DeterministicDS160TurnGraph:
             citation_bundle=citation_bundle or CitationBundle(),
             retry_budget=retry_budget or RetryBudget(),
         )
-        events = [
-            self._event(
-                "accepted",
-                state=state,
-                sequence=0,
-                payload={"client_turn_id": client_turn_id},
-            )
-        ]
-        sequence = 1
+        accepted_event = self._event(
+            "accepted",
+            state=state,
+            sequence=0,
+            payload={"client_turn_id": client_turn_id},
+        )
+        result = self.compiled_graph.invoke(
+            {
+                "state": state,
+                "events": [accepted_event],
+                "next_sequence": 1,
+            },
+            config={
+                "configurable": {
+                    "thread_id": run_id,
+                }
+            },
+        )
+        return result["state"], result["events"]
+
+    def _compile_graph(self) -> CompiledStateGraph:
+        builder = StateGraph(LangGraphTurnState)
         for node_name in self.node_order:
-            state = self.nodes.get(node_name, self._noop_node)(state)
+            builder.add_node(node_name, self._langgraph_node(node_name))
+
+        builder.add_edge(START, self.node_order[0])
+        for start, end in zip(self.node_order, self.node_order[1:]):
+            builder.add_edge(start, end)
+        builder.add_edge(self.node_order[-1], END)
+        return builder.compile(name="ds160_turn_graph")
+
+    def _langgraph_node(self, node_name: str):
+        def _node(graph_state: LangGraphTurnState) -> dict[str, Any]:
+            state = self.nodes.get(node_name, self._noop_node)(graph_state["state"])
             event_type = self._event_type_for_node(node_name)
             if event_type is None:
-                continue
-            events.append(
-                self._event(
-                    event_type,
-                    state=state,
-                    sequence=sequence,
-                    payload=self._payload_for_node(node_name, state),
-                )
+                return {"state": state}
+            sequence = graph_state["next_sequence"]
+            event = self._event(
+                event_type,
+                state=state,
+                sequence=sequence,
+                payload=self._payload_for_node(node_name, state),
             )
-            sequence += 1
-        return state, events
+            return {
+                "state": state,
+                "events": [event],
+                "next_sequence": sequence + 1,
+            }
+
+        return _node
+
+    @property
+    def graph_runtime_name(self) -> str:
+        return type(self.compiled_graph).__name__
+
+    @property
+    def is_official_langgraph_runtime(self) -> bool:
+        return isinstance(self.compiled_graph, CompiledStateGraph)
 
     def _noop_node(self, state: DS160GraphState) -> DS160GraphState:
         return state

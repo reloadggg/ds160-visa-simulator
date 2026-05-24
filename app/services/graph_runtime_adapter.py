@@ -75,6 +75,8 @@ class GraphRuntimeAdapter:
             message_text=message_text,
         )
         payload = self.response_mapper.to_message_response(state, events)
+        payload["graph_runtime_engine"] = "langgraph"
+        payload["graph_runtime_engine_class"] = graph.graph_runtime_name
         payload["graph_events"] = [
             event.model_dump(mode="json") for event in events
         ]

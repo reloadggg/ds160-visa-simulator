@@ -21,6 +21,13 @@ Postgres        session、checkpoint、knowledge metadata、audit
 pgvector        vector search，不绕过权限和生命周期
 ```
 
+当前代码必须真实依赖官方 `langgraph` package，而不是只采用 graph 风格命名：
+
+- 依赖：`pyproject.toml` 中声明 `langgraph`。
+- 执行：`DeterministicDS160TurnGraph` 使用 `langgraph.graph.StateGraph` 编译为 `CompiledStateGraph`。
+- 入口：`GraphRuntimeAdapter` 返回内部调试字段 `graph_runtime_engine=langgraph` 和 `graph_runtime_engine_class=CompiledStateGraph`。
+- 测试：`tests/unit/test_agent_runtime_graph.py` 与 `tests/unit/test_graph_runtime_adapter.py` 必须断言官方 LangGraph runtime 被使用。
+
 ## 主控权
 
 `AdjudicationAgent` 是 live turn 唯一 user-facing writer。

@@ -23,7 +23,14 @@
 
 ## 简化原则
 
-这次迁移不是把旧 `InterviewerRuntimeService -> InterviewRuntimeService -> CapabilityOrchestrator -> Projector -> RuntimeLedger` 链路搬进 LangGraph。
+这次迁移使用官方 `langgraph` Python package 承载图执行，但不是把旧 `InterviewerRuntimeService -> InterviewRuntimeService -> CapabilityOrchestrator -> Projector -> RuntimeLedger` 链路搬进 LangGraph。
+
+当前实现边界：
+
+- 图执行器：`app/services/agent_runtime_graph.py::DeterministicDS160TurnGraph` 内部编译官方 `langgraph.graph.StateGraph`，运行时产物是 `CompiledStateGraph`。
+- 业务合同：仍由 `DS160GraphState`、`GraphRunResult`、`GraphEvent`、`CitationBundle` 冻结，避免把业务语义绑死在框架私有对象上。
+- 兼容层：`GraphRuntimeAdapter` 和 `GraphResponseMapper` 保持旧 API 字段兼容；框架替换不要求前端同步改造。
+- 后续扩展：checkpoint / resume / replay / conditional edges 应优先使用 LangGraph 原生能力，不再扩展自研 graph executor。
 
 新主流程只保留 5 个概念：
 

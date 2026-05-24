@@ -18,6 +18,9 @@ def test_deterministic_graph_emits_ordered_contract_events() -> None:
         }
     )
 
+    assert graph.is_official_langgraph_runtime is True
+    assert graph.graph_runtime_name == "CompiledStateGraph"
+
     state, events = graph.run(
         session_id="sess-1",
         run_id="run-1",

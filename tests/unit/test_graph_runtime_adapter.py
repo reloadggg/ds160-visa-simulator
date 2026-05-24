@@ -86,6 +86,8 @@ def test_graph_runtime_adapter_builds_legacy_compatible_shadow_response(tmp_path
             )
 
         assert payload["agent_runtime"] == "graph"
+        assert payload["graph_runtime_engine"] == "langgraph"
+        assert payload["graph_runtime_engine_class"] == "CompiledStateGraph"
         assert payload["assistant_message"]
         assert payload["turn_decision"]["decision"] == "continue_interview"
         assert payload["runtime_view_state"]["decision"] == "continue_interview"
@@ -151,6 +153,8 @@ def test_graph_runtime_adapter_typed_adjudication_missing_model_falls_back(
             )
 
         assert payload["agent_runtime"] == "graph"
+        assert payload["graph_runtime_engine"] == "langgraph"
+        assert payload["graph_runtime_engine_class"] == "CompiledStateGraph"
         assert payload["turn_decision"]["assistant_message_author"] == (
             "deterministic_safe_fallback"
         )
