@@ -518,7 +518,7 @@ export function getMockRequiredDocuments(visaFamily: VisaFamily): string[] {
       return ["ds160", "passport_bio", "i797", "employer_letter"]
     case "F-1":
     default:
-      return ["ds160", "passport_bio", "i20", "admission_letter", "funding_proof"]
+      return ["ds160", "passport_bio", "i20"]
   }
 }
 

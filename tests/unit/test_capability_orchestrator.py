@@ -428,6 +428,108 @@ def test_document_review_merge_promotes_high_severity_fallback_conflicts() -> No
     assert merged["recommended_next_step"] == "high_risk_review"
 
 
+def test_document_review_merge_does_not_promote_unverified_missing_funding() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    merged = orchestrator._merge_document_review_payload(
+        {
+            "review_status": "reviewed",
+            "primary_document": "funding_proof",
+            "remaining_required_documents": [],
+            "verified_documents": [],
+            "cross_document_conflicts": [
+                {
+                    "conflict_type": "claim_vs_document",
+                    "severity": "high",
+                    "summary": (
+                        "No funding proof or sponsor information has been "
+                        "provided; first-year funding remains unverified."
+                    ),
+                    "document_ids": [],
+                    "field_paths": ["/funding/primary_source"],
+                    "evidence_refs": [],
+                }
+            ],
+            "claim_conflicts": [],
+            "unresolved_verification_points": ["funding source unverified"],
+            "suspicious_documents": [],
+            "reviewer_summary": "Funding remains unverified.",
+            "recommended_next_step": "continue_interview",
+        },
+        None,
+    )
+
+    assert merged["review_status"] == "needs_clarification"
+    assert merged["recommended_next_step"] == "clarify_conflict"
+
+
+def test_document_review_merge_promotes_anchored_claim_conflict_with_missing_wording() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    merged = orchestrator._merge_document_review_payload(
+        {
+            "review_status": "reviewed",
+            "primary_document": "i20",
+            "remaining_required_documents": [],
+            "verified_documents": ["i20"],
+            "cross_document_conflicts": [],
+            "claim_conflicts": [
+                {
+                    "conflict_type": "claim_vs_document",
+                    "severity": "high",
+                    "summary": "用户仍缺少与已提交 I-20 一致的学校说明。",
+                    "document_ids": ["doc-i20"],
+                    "field_paths": ["/education/school_name"],
+                    "evidence_refs": ["evi-i20"],
+                }
+            ],
+            "unresolved_verification_points": [],
+            "suspicious_documents": [],
+            "reviewer_summary": "口头学校说明与 I-20 不一致。",
+            "recommended_next_step": "continue_interview",
+        },
+        None,
+    )
+
+    assert merged["review_status"] == "high_risk"
+    assert merged["recommended_next_step"] == "high_risk_review"
+
+
+def test_document_review_merge_promotes_confirmed_funding_shortfall() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    merged = orchestrator._merge_document_review_payload(
+        {
+            "review_status": "reviewed",
+            "primary_document": "funding_proof",
+            "remaining_required_documents": [],
+            "verified_documents": ["i20", "funding_proof"],
+            "cross_document_conflicts": [
+                {
+                    "conflict_type": "missing_verification",
+                    "severity": "high",
+                    "summary": "资金证明金额低于 I-20 第一年度费用。",
+                    "document_ids": ["doc-i20", "doc-bank"],
+                    "field_paths": [
+                        "/education/first_year_cost",
+                        "/funding/available_funds",
+                    ],
+                    "evidence_refs": [],
+                }
+            ],
+            "claim_conflicts": [],
+            "unresolved_verification_points": ["funding shortfall"],
+            "suspicious_documents": [],
+            "reviewer_summary": "已确认资金覆盖不足。",
+            "recommended_next_step": "continue_interview",
+        },
+        None,
+    )
+
+    assert merged["review_status"] == "high_risk"
+    assert merged["recommended_next_step"] == "high_risk_review"
+
+
 def test_remaining_required_documents_prefers_active_focus_not_in_gate() -> None:
     orchestrator = CapabilityOrchestrator(db=object())
 

@@ -703,6 +703,36 @@ def test_window_style_guard_removes_coaching_phrase_from_interview_question() ->
     assert polished.reason == "window_interview_style_guard"
 
 
+def test_window_style_guard_removes_vague_answer_label() -> None:
+    service = InterviewerRuntimeService(db=object())
+    record = SessionRecord(
+        session_id="sess-vague-label",
+        declared_family="f1",
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "你为什么选择这个学校？",
+        },
+    )
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="这个回答太笼统。毕业后你准备做什么工作？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    polished = service._polish_window_interview_action(
+        record,
+        action,
+        history_turns=[],
+        latest_user_message="学校很好。",
+    )
+
+    assert polished.assistant_message == "毕业后你准备做什么工作？"
+    assert "笼统" not in polished.assistant_message
+    assert polished.reason == "window_interview_style_guard"
+
+
 def test_window_style_guard_advances_repeated_f1_project_detail_question() -> None:
     service = InterviewerRuntimeService(db=object())
     record = SessionRecord(
@@ -737,11 +767,92 @@ def test_window_style_guard_advances_repeated_f1_project_detail_question() -> No
         latest_user_message="这个学校的专业很厉害啊",
     )
 
-    assert polished.assistant_message == "这个回答太笼统。你本科读的是什么专业？"
+    assert polished.assistant_message == "你本科读的是什么专业？"
     assert "哪门课" not in polished.assistant_message
     assert "哪项训练" not in polished.assistant_message
     assert "我听到了" not in polished.assistant_message
+    assert "笼统" not in polished.assistant_message
     assert polished.decision == "continue_interview"
+
+
+def test_run_turn_rewrites_online_project_loop_into_window_checkpoint(
+    monkeypatch,
+) -> None:
+    service = InterviewerRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-sess-online-loop")
+    score = _build_score()
+    record = SessionRecord(
+        session_id="sess-online-loop",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+        profile_json={},
+        runtime_trace_json=[],
+        score_history_json=[],
+        governor_history_json=[],
+        interviewer_state_json={},
+        current_focus_json={
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "这个项目里哪一部分最能帮助你回国进高校任教？",
+        },
+        gate_status_json={
+            "status": "ready_for_interview",
+            "required_documents": [],
+        },
+    )
+    history_turns = [
+        SimpleNamespace(
+            role="assistant",
+            content="这个项目里哪一部分最能帮助你回国进高校任教？",
+            metadata_json={},
+        )
+    ]
+
+    monkeypatch.setattr(
+        service.session_turn_repo,
+        "list_session_turns",
+        lambda session_id: history_turns,
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "analyze_turn",
+        lambda current_record, message_text, recent_turns: SimpleNamespace(
+            profile=profile,
+            score=score,
+            trace_entries=[
+                RuntimeTraceEntry(
+                    node_name="turn_decision",
+                    turn_decision="continue_interview",
+                    metadata={},
+                )
+            ],
+            findings=[],
+        ),
+    )
+    monkeypatch.setattr(
+        service.interview_runtime,
+        "build_question_action",
+        lambda session_id, current_profile, current_score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
+            assistant_message="我听到了。具体一点，这个项目的哪门课或哪项训练最适合你以后任教？",
+            requested_documents=[],
+            decision="continue_interview",
+        ),
+    )
+    monkeypatch.setattr(
+        service.session_repo,
+        "append_runtime_history",
+        lambda current_record, **kwargs: current_record,
+    )
+
+    response = service.run_turn(record, "这个学校的专业很厉害啊")
+
+    assert response["assistant_message"] == "你本科读的是什么专业？"
+    assert response["turn_decision"]["decision"] == "continue_interview"
+    assert record.current_focus_json["question"] == "你本科读的是什么专业？"
+    assert "我听到了" not in response["assistant_message"]
+    assert "具体一点" not in response["assistant_message"]
+    assert "笼统" not in response["assistant_message"]
+    assert "哪门课" not in response["assistant_message"]
 
 
 def test_window_style_guard_does_not_override_specific_project_answer() -> None:
@@ -1278,6 +1389,9 @@ def test_run_turn_routes_repeated_claim_document_conflict_to_review(
 
     assert response["governor_decision"] == "high_risk_review"
     assert response["turn_decision"]["decision"] == "high_risk_review"
+    assert response["assistant_message"] == "你的说法和材料不一致，请解释。"
+    assert "申请人口头学校" not in response["assistant_message"]
+    assert "当前案例" not in response["assistant_message"]
     assert record.phase_state == "interview"
     assert record.interviewer_state_json["status"] == "high_risk_review"
     assert record.current_focus_json["kind"] == "risk_review"
@@ -1314,7 +1428,153 @@ def test_align_action_uses_high_severity_conflict_even_if_status_reviewed() -> N
 
     assert aligned.decision == "high_risk_review"
     assert aligned.focus_kind == "risk_review"
-    assert "护照号码不一致" in aligned.assistant_message
+    assert aligned.assistant_message == "两份材料信息不一致，请解释。"
+
+
+def test_align_action_does_not_expose_internal_document_review_summary() -> None:
+    service = InterviewerRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="你这次去美国读什么项目？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    aligned = service._align_action_with_document_review(
+        action,
+        capability_tool_outputs={
+            "document_review": {
+                "review_status": "high_risk",
+                "cross_document_conflicts": [
+                    {
+                        "conflict_type": "document_vs_document",
+                        "severity": "high",
+                        "summary": (
+                            "Passport number mismatch on field "
+                            "/identity/passport_number for doc-passport"
+                        ),
+                        "document_ids": ["doc-ds160", "doc-passport"],
+                        "field_paths": ["/identity/passport_number"],
+                        "evidence_refs": ["evi-passport"],
+                    }
+                ],
+                "claim_conflicts": [],
+                "reviewer_summary": "review_status=high_risk",
+            }
+        },
+    )
+
+    assert aligned.decision == "high_risk_review"
+    assert aligned.assistant_message == "两份材料信息不一致，请解释。"
+    assert "Passport" not in aligned.assistant_message
+    assert "/identity/passport_number" not in aligned.assistant_message
+    assert "doc-passport" not in aligned.assistant_message
+    assert "review_status" not in aligned.assistant_message
+
+
+def test_align_action_ignores_missing_or_unverified_funding_summary() -> None:
+    service = InterviewerRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="第一年的费用由谁支付？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    aligned = service._align_action_with_document_review(
+        action,
+        capability_tool_outputs={
+            "document_review": {
+                "review_status": "high_risk",
+                "cross_document_conflicts": [
+                    {
+                        "conflict_type": "claim_vs_document",
+                        "severity": "high",
+                        "summary": (
+                            "No funding proof or sponsor information has been "
+                            "provided; first-year funding remains unverified."
+                        ),
+                        "document_ids": [],
+                        "field_paths": ["/funding/primary_source"],
+                        "evidence_refs": [],
+                    }
+                ],
+                "claim_conflicts": [],
+                "reviewer_summary": "No funding proof has been provided.",
+            }
+        },
+    )
+
+    assert aligned == action
+
+
+def test_align_action_promotes_anchored_claim_conflict_with_missing_wording() -> None:
+    service = InterviewerRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="你最终入读哪一所学校？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    aligned = service._align_action_with_document_review(
+        action,
+        capability_tool_outputs={
+            "document_review": {
+                "review_status": "high_risk",
+                "claim_conflicts": [
+                    {
+                        "conflict_type": "claim_vs_document",
+                        "severity": "high",
+                        "summary": "用户仍缺少与已提交 I-20 一致的学校说明。",
+                        "document_ids": ["doc-i20"],
+                        "field_paths": ["/education/school_name"],
+                        "evidence_refs": ["evi-i20"],
+                    }
+                ],
+                "cross_document_conflicts": [],
+            }
+        },
+    )
+
+    assert aligned.decision == "high_risk_review"
+    assert aligned.assistant_message == "你的说法和材料不一致，请解释。"
+
+
+def test_align_action_promotes_confirmed_funding_shortfall_to_review() -> None:
+    service = InterviewerRuntimeService(db=object())
+    action = InterviewNextAction(
+        decision="continue_interview",
+        assistant_message="第一年的费用由谁支付？",
+        requested_documents=[],
+        focus_kind="interview_question",
+    )
+
+    aligned = service._align_action_with_document_review(
+        action,
+        capability_tool_outputs={
+            "document_review": {
+                "review_status": "reviewed",
+                "cross_document_conflicts": [
+                    {
+                        "conflict_type": "missing_verification",
+                        "severity": "high",
+                        "summary": "资金证明金额低于 I-20 第一年度费用。",
+                        "document_ids": ["doc-i20", "doc-bank"],
+                        "field_paths": [
+                            "/education/first_year_cost",
+                            "/funding/available_funds",
+                        ],
+                        "evidence_refs": [],
+                    }
+                ],
+                "claim_conflicts": [],
+            }
+        },
+    )
+
+    assert aligned.decision == "high_risk_review"
+    assert aligned.assistant_message == "资金证明低于 I-20 费用，请解释。"
 
 
 def test_run_turn_downgrades_repeated_non_redline_conflict_refusal_to_review(

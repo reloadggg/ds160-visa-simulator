@@ -1,4 +1,12 @@
 from app.services.gate_service import GateService
+from app.domain.document_types import normalize_document_type
+
+
+def test_normalize_document_type_accepts_natural_labels() -> None:
+    assert normalize_document_type("I-20") == "i20"
+    assert normalize_document_type("DS-160 confirmation page") == "ds160"
+    assert normalize_document_type("passport bio page") == "passport_bio"
+    assert normalize_document_type("funding proof") == "funding_proof"
 
 
 def test_default_scenario_package_covers_supported_families() -> None:
@@ -10,7 +18,7 @@ def test_default_scenario_package_covers_supported_families() -> None:
     )
     assert service.default_scenario_package("f1") == (
         "parent_sponsored",
-        ["ds160", "passport_bio", "i20", "admission_letter", "funding_proof"],
+        ["ds160", "passport_bio", "i20"],
     )
     assert service.default_scenario_package("h1b") == (
         "first_time_stamping",
@@ -60,8 +68,6 @@ def test_required_package_detail_separates_official_and_simulator_evidence() -> 
             "ds160",
             "passport_bio",
             "i20",
-            "admission_letter",
-            "funding_proof",
         ],
     }
 

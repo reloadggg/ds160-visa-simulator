@@ -245,6 +245,38 @@ def test_project_appends_capability_artifacts_from_trace_metadata() -> None:
     ]
 
 
+def test_project_normalizes_natural_document_type_labels() -> None:
+    projector = InterviewerTurnProjectorService()
+    score = _build_score(missing_evidence=["i20"])
+    record = _build_record("sess-projector-doc-normalize")
+
+    projection = projector.project(
+        record=record,
+        message_text="I will upload it.",
+        action=InterviewNextAction(
+            assistant_message="请提供你的 I-20。",
+            requested_documents=["I-20"],
+            focus_kind="required_document",
+            focus_document_type="I-20",
+            decision_hint="need_more_evidence",
+        ),
+        score=score,
+        governor_decision="need_more_evidence",
+        governor_requested_documents=[],
+        trace_entries=[RuntimeTraceEntry(node_name="turn_decision")],
+        history_turn_count=1,
+        history_turns=[SimpleNamespace(role="user", turn_id="turn-user-i20")],
+    )
+
+    assert projection.response["requested_documents"] == ["i20"]
+    assert projection.response["turn_decision"]["requested_documents"] == ["i20"]
+    assert projection.response["turn_decision"]["focus_document_type"] == "i20"
+    assert projection.current_focus["document_type"] == "i20"
+    assert projection.interviewer_state["current_key_proof"] == "i20"
+    assert projection.turn_record["requested_documents"] == ["i20"]
+    assert projection.turn_record["artifacts"][0]["document_type"] == "i20"
+
+
 def test_select_remaining_required_documents_uses_only_active_requested_documents() -> None:
     projector = InterviewerTurnProjectorService()
     record = SessionRecord(

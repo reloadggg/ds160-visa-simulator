@@ -71,12 +71,12 @@ def stream_message(
     payload: MessageRequest,
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
-    if not settings.allow_user_model_streaming:
-        raise HTTPException(status_code=403, detail="当前部署未启用用户模型流式输出。")
     try:
         runtime_config = to_runtime_config(payload.user_model_config)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if runtime_config is not None and not settings.allow_user_model_streaming:
+        raise HTTPException(status_code=403, detail="当前部署未启用用户模型流式输出。")
 
     def event_stream() -> Iterator[str]:
         yield _sse_event("accepted", {"session_id": session_id})

@@ -1314,7 +1314,7 @@ class CapabilityOrchestrator:
             if isinstance(item, dict)
         ]
         has_high_conflict = any(
-            item.get("severity") == "high" for item in conflicts
+            self._is_confirmed_high_review_conflict(item) for item in conflicts
         )
         if has_high_conflict:
             merged["review_status"] = "high_risk"
@@ -1323,6 +1323,63 @@ class CapabilityOrchestrator:
             merged["review_status"] = "needs_clarification"
             merged["recommended_next_step"] = "clarify_conflict"
         return merged
+
+    def _is_confirmed_high_review_conflict(self, conflict: dict[str, Any]) -> bool:
+        if conflict.get("severity") != "high":
+            return False
+        summary = (self._string_or_none(conflict.get("summary")) or "").casefold()
+        has_material_anchor = bool(
+            self._string_list(conflict.get("document_ids"))
+            or self._string_list(conflict.get("evidence_refs"))
+        )
+        if self._looks_like_unverified_missing_evidence(summary):
+            return False if not has_material_anchor else True
+        conflict_type = self._string_or_none(conflict.get("conflict_type"))
+        if conflict_type in {"document_vs_document", "claim_vs_document"}:
+            return True
+        if conflict_type != "missing_verification":
+            return False
+        if not self._string_list(conflict.get("document_ids")):
+            return False
+        field_paths = set(self._string_list(conflict.get("field_paths")))
+        if {
+            "/education/first_year_cost",
+            "/funding/available_funds",
+        }.issubset(field_paths):
+            return True
+        shortfall_markers = (
+            "低于",
+            "不足",
+            "无法覆盖",
+            "不能覆盖",
+            "below",
+            "less than",
+            "shortfall",
+            "insufficient",
+            "cannot cover",
+        )
+        return any(marker in summary for marker in shortfall_markers)
+
+    def _looks_like_unverified_missing_evidence(self, summary: str) -> bool:
+        if not summary:
+            return False
+        missing_markers = (
+            "no funding proof",
+            "no sponsor",
+            "not provided",
+            "has not been provided",
+            "missing",
+            "unverified",
+            "not verified",
+            "awaiting",
+            "缺少",
+            "未提供",
+            "未提交",
+            "未验证",
+            "待验证",
+            "待补",
+        )
+        return any(marker in summary for marker in missing_markers)
 
     def _remaining_required_documents(
         self,

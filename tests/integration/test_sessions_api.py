@@ -160,20 +160,6 @@ def test_create_session_returns_initial_phase(client: TestClient) -> None:
                 "is_parsed": False,
                 "meets_minimum_fields": False,
             },
-            {
-                "document_type": "admission_letter",
-                "status": "missing",
-                "is_uploaded": False,
-                "is_parsed": False,
-                "meets_minimum_fields": False,
-            },
-            {
-                "document_type": "funding_proof",
-                "status": "missing",
-                "is_uploaded": False,
-                "is_parsed": False,
-                "meets_minimum_fields": False,
-            },
         ],
     }
 
@@ -237,8 +223,6 @@ def test_create_session_persists_runtime_state_skeleton(
         "ds160",
         "passport_bio",
         "i20",
-        "admission_letter",
-        "funding_proof",
     ]
     assert record.runtime_trace_json == []
     assert record.score_history_json == []
@@ -284,8 +268,6 @@ def test_required_package_endpoint_uses_declared_family(
         "ds160",
         "passport_bio",
         "i20",
-        "admission_letter",
-        "funding_proof",
     ]
 
 

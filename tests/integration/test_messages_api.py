@@ -321,7 +321,7 @@ def test_message_turn_enters_runtime_when_gate_not_ready(
         "overall_status": "pending_documents",
         "ready_count": 0,
         "uploaded_count": 0,
-        "missing_count": 5,
+        "missing_count": 3,
         "documents": [
             {
                 "document_type": "ds160",
@@ -339,20 +339,6 @@ def test_message_turn_enters_runtime_when_gate_not_ready(
             },
             {
                 "document_type": "i20",
-                "status": "missing",
-                "is_uploaded": False,
-                "is_parsed": False,
-                "meets_minimum_fields": False,
-            },
-            {
-                "document_type": "admission_letter",
-                "status": "missing",
-                "is_uploaded": False,
-                "is_parsed": False,
-                "meets_minimum_fields": False,
-            },
-            {
-                "document_type": "funding_proof",
                 "status": "missing",
                 "is_uploaded": False,
                 "is_parsed": False,
@@ -437,11 +423,92 @@ def test_messages_apply_user_model_config_for_request_scope(
     assert runtime_config.model == "user-model"
 
 
-def test_messages_stream_requires_streaming_switch(
+def test_messages_stream_allows_default_model_without_user_streaming_switch(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "allow_user_model_streaming", False)
+
+    def fake_run_turn(self, record, message_text: str) -> dict:
+        del self
+        turn_record = {
+            "turn_id": "turn-stream-default-model",
+            "session_id": record.session_id,
+            "user_input": message_text,
+            "decision": "continue_interview",
+            "assistant_message": "What will you study?",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "focus": {
+                "owner": "interviewer_runtime_service",
+                "kind": "interview_question",
+                "question": "What will you study?",
+            },
+            "trace_refs": ["turn_decision"],
+            "advisory_summary": {
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+            "document_review": {},
+        }
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        record.current_focus_json = dict(turn_record["focus"])
+        record.interviewer_state_json = {
+            "decision": "continue_interview",
+            "current_focus": dict(turn_record["focus"]),
+            "document_review": {},
+        }
+        return {
+            "assistant_message": turn_record["assistant_message"],
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "runtime_view_state": {
+                "decision": "continue_interview",
+                "current_focus": dict(turn_record["focus"]),
+            },
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.interviewer",
+                "prompt_version": "v2",
+            },
+            "turn_record": turn_record,
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    with client.stream(
+        "POST",
+        f"/v1/sessions/{session_id}/messages/stream",
+        json={
+            "role": "user",
+            "content": "I will study computer science.",
+        },
+    ) as response:
+        body = response.read().decode()
+
+    assert response.status_code == 200
+    assert "event: accepted" in body
+    assert "event: analyzing" in body
+    assert "event: final" in body
+    events = parse_sse_events(body)
+    assert events[-1][1]["assistant_message"] == "What will you study?"
+
+
+def test_messages_stream_requires_switch_for_user_model_config(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    monkeypatch.setattr(settings_module.settings, "allow_user_model_streaming", False)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -881,7 +948,7 @@ def test_message_turn_rejects_non_user_role(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_funding_proof_upload_keeps_interview_flow_while_parse_is_pending(
+def test_supporting_funding_upload_does_not_block_interview_flow(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -934,10 +1001,10 @@ def test_funding_proof_upload_keeps_interview_flow_while_parse_is_pending(
     assert pre_worker_payload["assistant_message"] == "What school will you attend?"
     assert pre_worker_payload["requested_documents"] == []
     assert pre_worker_payload["gate_progress"] == {
-        "overall_status": "waiting_for_parse",
+        "overall_status": "pending_documents",
         "ready_count": 0,
-        "uploaded_count": 1,
-        "missing_count": 4,
+        "uploaded_count": 0,
+        "missing_count": 3,
         "documents": [
             {
                 "document_type": "ds160",
@@ -957,20 +1024,6 @@ def test_funding_proof_upload_keeps_interview_flow_while_parse_is_pending(
                 "document_type": "i20",
                 "status": "missing",
                 "is_uploaded": False,
-                "is_parsed": False,
-                "meets_minimum_fields": False,
-            },
-            {
-                "document_type": "admission_letter",
-                "status": "missing",
-                "is_uploaded": False,
-                "is_parsed": False,
-                "meets_minimum_fields": False,
-            },
-            {
-                "document_type": "funding_proof",
-                "status": "uploaded",
-                "is_uploaded": True,
                 "is_parsed": False,
                 "meets_minimum_fields": False,
             },

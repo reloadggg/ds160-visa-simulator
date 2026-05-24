@@ -79,7 +79,6 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
     install_stub_build_question_action(monkeypatch)
     fixture_dir = Path("fixtures/f1/f1_parent_sponsored_consistent_01")
     case_payload = json.loads((fixture_dir / "case.json").read_text())
-    expected_score = json.loads((fixture_dir / "expected_score.json").read_text())
     expected_governor = json.loads((fixture_dir / "expected_governor.json").read_text())
     expected_internal_report = json.loads(
         (fixture_dir / "expected_internal_report.json").read_text(),
@@ -105,11 +104,10 @@ def test_f1_happy_path_fixture_produces_expected_user_report(
     assert message_resp.json()["requested_documents"] == []
     assert message_resp.json()["remaining_required_documents"] == []
     assert message_resp.json()["gate_progress"]["overall_status"] == "pending_documents"
-    for document_type in expected_score["missing_evidence"]:
-        assert any(
-            item["document_type"] == document_type
-            for item in message_resp.json()["gate_progress"]["documents"]
-        )
+    assert report_resp.json()["missing_evidence"] == []
+    assert [
+        item["document_type"] for item in message_resp.json()["gate_progress"]["documents"]
+    ] == ["ds160", "passport_bio", "i20"]
     assert message_resp.json()["governor_decision"] == expected_governor["decision"]
     assert report_resp.json()["interview_status"] == "verify_key_issue"
     assert report_resp.json()["outcome_label"] == "需核验关键问题"

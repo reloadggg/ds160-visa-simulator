@@ -1760,9 +1760,9 @@ export function useSessionWorkbench() {
 
           if (mockMode) {
             const mockResponses = [
-              "好的，我明白了。请告诉我更多关于你的资金来源。谁来支付你的学费和生活费？",
-              "你有没有在美国的亲戚或朋友？他们是什么签证身份？",
-              "你之前有没有去过其他国家？可以简单介绍一下你的旅行经历吗？",
+              "第一年的费用由谁支付？",
+              "你在美国有亲属吗？",
+              "以前去过美国吗？",
               "你的父母是做什么工作的？他们对你出国留学有什么看法？",
             ]
             const randomResponse =
@@ -1778,8 +1778,9 @@ export function useSessionWorkbench() {
             if (userModelConfig.enabled && !runtimeModelConfig) {
               throw new Error("请完整填写 Base URL、API Key 和模型名称，或关闭自带模型。")
             }
+            const shouldUseStream = !runtimeModelConfig || userModelConfig.streamingEnabled
             const response =
-              runtimeModelConfig && userModelConfig.streamingEnabled
+              shouldUseStream
                 ? await sendMessageStream(
                     sessionId,
                     trimmedContent,

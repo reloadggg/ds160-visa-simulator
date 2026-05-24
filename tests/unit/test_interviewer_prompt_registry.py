@@ -117,3 +117,26 @@ def test_f1_adjudication_prompt_keeps_base_contract_and_family_addendum() -> Non
     assert "毕业后你打算回国做什么工作？" in instructions
     assert "我听到了" in instructions
     assert "具体一点" in instructions
+    assert "真实窗口节奏是“核验式短问”" in instructions
+    assert "为什么不在国内读？" in instructions
+    assert "第一年的费用由谁支付？" in instructions
+    assert "不要像面试教练评价答案" in instructions
+    assert "这个回答太笼统" in instructions
+
+
+def test_default_fallback_messages_are_window_style() -> None:
+    registry = InterviewerPromptRegistry()
+    fallback = registry.fallback_messages()
+
+    assert fallback["need_more_evidence"] == "请提供当前这项证明材料。"
+    assert fallback["high_risk_review"] == "这里有关键不一致，请解释。"
+    for decision in (
+        "need_more_evidence",
+        "route_correction",
+        "high_risk_review",
+        "simulated_refusal",
+    ):
+        message = fallback[decision]
+        assert "当前案例" not in message
+        assert "正式问答" not in message
+        assert "关键点" not in message

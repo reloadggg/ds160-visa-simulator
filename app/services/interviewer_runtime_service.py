@@ -384,15 +384,12 @@ class InterviewerRuntimeService:
             for item in document_review.get("claim_conflicts", []) or []
             if isinstance(item, dict)
         ]
-        conflicts = [
-            item
-            for item in [*cross_document_conflicts, *claim_conflicts]
-        ]
+        conflicts = [item for item in [*cross_document_conflicts, *claim_conflicts]]
         high_conflict = next(
             (
                 item
                 for item in conflicts
-                if item.get("severity") == "high"
+                if self._is_confirmed_high_review_conflict(item)
             ),
             None,
         )
@@ -400,7 +397,7 @@ class InterviewerRuntimeService:
             (
                 item
                 for item in cross_document_conflicts
-                if item.get("severity") == "high"
+                if self._is_confirmed_high_review_conflict(item)
             ),
             None,
         )
@@ -414,19 +411,86 @@ class InterviewerRuntimeService:
         )
         if high_conflict is None:
             return action
-        summary = self._runtime_text(high_conflict.get("summary")) or (
-            self._runtime_text(document_review.get("reviewer_summary"))
-            or "材料核验发现关键冲突。"
-        )
         return InterviewNextAction(
             decision=GovernorDecision.HIGH_RISK_REVIEW.value,
-            assistant_message=f"{summary} 我们先停在这个点，请你解释这处不一致。",
+            assistant_message=self._review_conflict_window_message(high_conflict),
             requested_documents=[],
             focus_kind="risk_review",
             focus_document_type=None,
             focus_risk_code="record_conflict",
             reason="document_review_high_risk",
         )
+
+    def _is_confirmed_high_review_conflict(self, conflict: dict[str, Any]) -> bool:
+        if conflict.get("severity") != "high":
+            return False
+        summary = (self._runtime_text(conflict.get("summary")) or "").casefold()
+        has_material_anchor = bool(
+            self._normalized_string_list(conflict.get("document_ids"))
+            or self._normalized_string_list(conflict.get("evidence_refs"))
+        )
+        if self._looks_like_unverified_missing_evidence(summary):
+            return False if not has_material_anchor else True
+        conflict_type = self._runtime_text(conflict.get("conflict_type"))
+        if conflict_type in {"document_vs_document", "claim_vs_document"}:
+            return True
+        if conflict_type != "missing_verification":
+            return False
+        if not self._normalized_string_list(conflict.get("document_ids")):
+            return False
+        field_paths = self._normalized_string_list(conflict.get("field_paths"))
+        if {
+            "/education/first_year_cost",
+            "/funding/available_funds",
+        }.issubset(set(field_paths)):
+            return True
+        shortfall_markers = (
+            "低于",
+            "不足",
+            "无法覆盖",
+            "不能覆盖",
+            "below",
+            "less than",
+            "shortfall",
+            "insufficient",
+            "cannot cover",
+        )
+        return any(marker in summary for marker in shortfall_markers)
+
+    def _looks_like_unverified_missing_evidence(self, summary: str) -> bool:
+        if not summary:
+            return False
+        missing_markers = (
+            "no funding proof",
+            "no sponsor",
+            "not provided",
+            "has not been provided",
+            "missing",
+            "unverified",
+            "not verified",
+            "awaiting",
+            "缺少",
+            "未提供",
+            "未提交",
+            "未验证",
+            "待验证",
+            "待补",
+        )
+        return any(marker in summary for marker in missing_markers)
+
+    def _review_conflict_window_message(self, conflict: dict[str, Any]) -> str:
+        conflict_type = self._runtime_text(conflict.get("conflict_type"))
+        field_paths = set(self._normalized_string_list(conflict.get("field_paths")))
+        if conflict_type == "claim_vs_document":
+            return "你的说法和材料不一致，请解释。"
+        if {
+            "/education/first_year_cost",
+            "/funding/available_funds",
+        }.issubset(field_paths):
+            return "资金证明低于 I-20 费用，请解释。"
+        if conflict_type == "document_vs_document":
+            return "两份材料信息不一致，请解释。"
+        return "材料核验有关键冲突，请解释。"
 
     def _gate_is_ready(self, record: SessionRecord) -> bool:
         return (record.gate_status_json or {}).get("status") == GateOverallStatus.READY_FOR_INTERVIEW
@@ -555,6 +619,10 @@ class InterviewerRuntimeService:
             "具体一点，",
             "再具体一点，",
             "请具体一点，",
+            "这个回答太笼统。",
+            "这个回答太笼统，",
+            "回答太笼统。",
+            "回答太笼统，",
         )
         changed = True
         while changed:
@@ -563,7 +631,11 @@ class InterviewerRuntimeService:
                 if normalized.startswith(phrase):
                     normalized = normalized[len(phrase) :].strip()
                     changed = True
-        normalized = re.sub(r"^(?:具体一点|再具体一点|请具体一点)[，,。.\s]*", "", normalized)
+        normalized = re.sub(
+            r"^(?:具体一点|再具体一点|请具体一点|这个回答太笼统|回答太笼统)[，,。.\s]*",
+            "",
+            normalized,
+        )
         return normalized or message.strip()
 
     def _should_advance_from_repeated_f1_project_detail(
@@ -678,12 +750,12 @@ class InterviewerRuntimeService:
             if getattr(turn, "role", None) == "assistant"
         )
         if not self._contains_any(transcript, ("本科", "成绩", "语言", "academic", "gpa", "toefl", "ielts")):
-            return "这个回答太笼统。你本科读的是什么专业？"
+            return "你本科读的是什么专业？"
         if not self._contains_any(transcript, ("毕业后", "回国", "工作", "岗位", "任教", "career", "job")):
-            return "这个回答太笼统。毕业后你准备做什么工作？"
+            return "毕业后你准备做什么工作？"
         if not self._contains_any(transcript, ("学费", "生活费", "资金", "资助", "fund", "sponsor")):
             return "第一年的学费和生活费由谁支付？"
-        return "这个回答太笼统。你回国后准备申请什么岗位？"
+        return "你回国后准备申请什么岗位？"
 
     def _contains_any(self, value: str, markers: tuple[str, ...]) -> bool:
         normalized = value.lower()
@@ -711,15 +783,9 @@ class InterviewerRuntimeService:
         ) < 2:
             return action
         risk_code = self._first_score_risk_code(score) or "record_conflict"
-        summary = self._runtime_text(conflict.get("summary")) or (
-            "你的连续回答仍与已提交材料存在核心冲突。"
-        )
         return InterviewNextAction(
             decision=GovernorDecision.HIGH_RISK_REVIEW.value,
-            assistant_message=(
-                f"{summary} 这个冲突已经无法通过继续重复追问澄清，"
-                "当前案例需要先进入高风险复核。"
-            ),
+            assistant_message=self._review_conflict_window_message(conflict),
             requested_documents=[],
             focus_kind="risk_review",
             focus_document_type=None,

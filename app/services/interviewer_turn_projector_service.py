@@ -10,6 +10,7 @@ from app.domain.contracts import (
     InterviewStateStatus,
     ScoreState,
 )
+from app.domain.document_types import normalize_document_type
 from app.domain.runtime import (
     InterviewAllowedNextAction,
     InterviewStateSnapshot,
@@ -150,9 +151,10 @@ class InterviewerTurnProjectorService:
             return {
                 "owner": "interviewer_runtime_service",
                 "kind": "required_document",
-                "document_type": action.focus_document_type
-                or (action.requested_documents[0] if action.requested_documents else None)
-                or (requested_documents[0] if requested_documents else None),
+                "document_type": (requested_documents[0] if requested_documents else None)
+                or normalize_document_type(action.focus_document_type)
+                or action.focus_document_type
+                or (action.requested_documents[0] if action.requested_documents else None),
             }
         if (
             action.focus_kind == "route_correction"
@@ -335,6 +337,13 @@ class InterviewerTurnProjectorService:
             "decision_hint": action.decision_hint or action.decision,
             "turn_decision": {
                 **action.model_dump(mode="json"),
+                "requested_documents": list(requested_documents),
+                "remaining_required_documents": list(remaining_required_documents),
+                "focus_document_type": (
+                    normalize_document_type(action.focus_document_type)
+                    if action.focus_document_type
+                    else action.focus_document_type
+                ),
                 "governor_decision": governor_decision,
             },
             "document_review": dict(document_review),
@@ -359,13 +368,14 @@ class InterviewerTurnProjectorService:
         if explicit_requested_documents:
             return explicit_requested_documents[:1]
         if action.focus_document_type and action.focus_document_type.strip():
-            return [action.focus_document_type.strip()]
+            normalized_focus = normalize_document_type(action.focus_document_type)
+            return [normalized_focus or action.focus_document_type.strip()]
         return []
 
     def normalize_requested_documents(self, document_types: list[str]) -> list[str]:
         normalized: list[str] = []
         for document_type in document_types:
-            candidate = document_type.strip()
+            candidate = normalize_document_type(document_type) or document_type.strip()
             if candidate and candidate not in normalized:
                 normalized.append(candidate)
         return normalized

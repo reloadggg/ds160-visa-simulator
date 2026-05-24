@@ -12,8 +12,6 @@ scenarios:
       - ds160
       - passport_bio
       - i20
-      - admission_letter
-      - funding_proof
     prompts:
       routing_prompt: f1-routing-v1
       interview_prompt: f1-interview-v1

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     app_compat_api_key: str | None = None
     allow_debug_fill: bool = False
     allow_user_model_config: bool = False
-    allow_user_model_streaming: bool = False
+    allow_user_model_streaming: bool = True
     rag_enabled: bool = False
     rag_vector_store: str = "chroma"
     rag_index_version: str = "v1"
