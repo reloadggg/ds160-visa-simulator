@@ -139,6 +139,47 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
     assert assistant_turns[0].metadata_json["graph_shadow"]["status"] == "completed"
 
 
+def test_chat_completions_graph_mode_keeps_metadata_contract(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "My parents will pay."}],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    metadata = payload["metadata"]
+    assert payload["choices"][0]["message"]["content"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert metadata["turn_decision"]["decision"] == "continue_interview"
+    assert metadata["turn_decision"]["assistant_message_author"] == "adjudication_agent"
+    assert metadata["prompt_trace"]["prompt_pack_id"] == "ds160.graph_runtime"
+    assert metadata["runtime_view_state"]["source_turn_id"]
+    assert metadata["runtime_view_state"]["prompt_trace"]["graph_run_id"]
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == metadata["session_id"],
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "graph_runtime_adapter"
+    assert assistant_turn.metadata_json["graph_events"][-1]["event_type"] == "final"
+
+
 def test_chat_completions_uses_same_runtime_gate_initialization(
     client: TestClient,
     db_session_factory,

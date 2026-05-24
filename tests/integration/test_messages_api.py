@@ -959,6 +959,191 @@ def test_message_turn_graph_shadow_failure_fails_open_to_legacy(
     }
 
 
+def test_message_turn_graph_mode_writes_public_response_and_single_assistant_turn(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+
+    def legacy_must_not_run(self, record, message_text: str) -> dict:
+        raise AssertionError("legacy runtime should not run in graph mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        legacy_must_not_run,
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant_message"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert payload["agent_runtime"] == "graph"
+    assert payload["graph_run_id"].startswith("graph-run-")
+    assert payload["graph_trace"]["event_count"] > 0
+    assert "graph_events" not in payload
+    assert "graph_runtime_error" not in payload
+    assert payload["turn_decision"]["assistant_message_author"] == "adjudication_agent"
+    assert payload["prompt_trace"]["graph_run_id"] == payload["graph_run_id"]
+    assert payload["runtime_view_state"]["source_turn_id"]
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+        record = db.get(SessionRecord, session_id)
+
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("user", "user_message"),
+        ("assistant", "graph_runtime_adapter"),
+    ]
+    assistant_turn = turns[1]
+    metadata = assistant_turn.metadata_json
+    assert metadata["agent_runtime"] == "graph"
+    assert metadata["graph_run_id"] == payload["graph_run_id"]
+    assert metadata["runtime_view_state"]["source_turn_id"] == assistant_turn.turn_id
+    assert metadata["runtime_view_state"]["prompt_trace"]["graph_run_id"] == payload["graph_run_id"]
+    assert metadata["turn_record"]["assistant_turn_id"] == assistant_turn.turn_id
+    assert metadata["turn_record"]["user_turn_id"] == turns[0].turn_id
+    assert metadata["graph_events"][-1]["event_type"] == "final"
+    assert record is not None
+    assert record.current_governor_decision == "continue_interview"
+    assert record.interviewer_state_json["owner"] == "graph_runtime"
+
+
+def test_message_turn_graph_canary_hundred_percent_uses_graph(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_canary")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_canary_percent", 100)
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run when canary selects graph")
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agent_runtime"] == "graph"
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "graph_runtime_adapter"
+
+
+def test_message_turn_graph_failure_fails_open_to_legacy(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_turn",
+        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
+            RuntimeError("graph exploded")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "assistant_message": "What is the purpose of your travel?",
+                    "requested_documents": [],
+                    "decision_hint": "continue_interview",
+                },
+            ),
+            {"model": "gpt-5.4"},
+        )
+        if module_key == "adjudication_agent"
+        else (None, {"model": None}),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert "graph_runtime_error" not in payload
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("user", "user_message"),
+        ("assistant", "interviewer_runtime_service"),
+    ]
+    assert turns[1].metadata_json["graph_runtime_error"] == {
+        "status": "error",
+        "agent_runtime": "graph",
+        "selected_public_runtime": "graph",
+        "error_type": "RuntimeError",
+        "error_message": "graph exploded",
+        "fallback_runtime": "legacy",
+    }
+
+
+def test_messages_stream_graph_mode_keeps_sse_contract(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    with client.stream(
+        "POST",
+        f"/v1/sessions/{session_id}/messages/stream",
+        json={"role": "user", "content": "I will study computer science."},
+    ) as response:
+        body = response.read().decode()
+
+    assert response.status_code == 200
+    events = parse_sse_events(body)
+    assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
+    final_payload = events[-1][1]
+    assert final_payload["agent_runtime"] == "graph"
+    assert final_payload["assistant_message"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert "graph_events" not in final_payload
+
+
 def test_message_turn_returns_503_when_adjudication_agent_config_missing_for_interview_question(
     client: TestClient,
     db_session_factory,

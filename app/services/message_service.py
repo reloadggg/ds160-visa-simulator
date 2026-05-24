@@ -1,3 +1,6 @@
+from hashlib import sha256
+from typing import Literal
+
 from sqlalchemy.orm import Session
 
 from app.core.settings import settings
@@ -24,6 +27,9 @@ class SessionClosedError(RuntimeError):
         self.session_id = session_id
         self.detail = detail
         super().__init__(detail)
+
+
+PublicRuntimeMode = Literal["legacy", "graph"]
 
 
 class MessageService:
@@ -67,12 +73,18 @@ class MessageService:
                 return response
 
             graph_shadow = self._run_graph_shadow(record, message_text, user_turn)
-            interview_response = self.interviewer_runtime.run_turn(record, message_text)
-            response = self.gate_runtime.merge_interview_response(interview_response, record)
+            runtime_mode = self._select_public_runtime(record.session_id)
+            response = self._run_public_runtime(
+                runtime_mode,
+                record,
+                message_text,
+                user_turn,
+                graph_shadow=graph_shadow,
+            )
             self._attach_graph_shadow(response, graph_shadow)
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
-            self._strip_internal_shadow(response)
+            self._strip_internal_runtime_fields(response)
             self.session_repo.save(record)
             return response
         except Exception:
@@ -119,6 +131,67 @@ class MessageService:
             return True
         return record.phase_state == "session_closed"
 
+    def _select_public_runtime(self, session_id: str) -> PublicRuntimeMode:
+        if settings.agent_runtime == "graph":
+            return "graph"
+        if settings.agent_runtime == "graph_canary":
+            if self._is_graph_canary_selected(session_id):
+                return "graph"
+        return "legacy"
+
+    def _is_graph_canary_selected(self, session_id: str) -> bool:
+        percent = settings.agent_runtime_canary_percent
+        if percent <= 0:
+            return False
+        if percent >= 100:
+            return True
+        bucket = int(sha256(session_id.encode("utf-8")).hexdigest()[:8], 16) % 100
+        return bucket < percent
+
+    def _run_public_runtime(
+        self,
+        runtime_mode: PublicRuntimeMode,
+        record,
+        message_text: str,
+        user_turn: SessionTurnRecord,
+        *,
+        graph_shadow: dict | None,
+    ) -> dict:
+        if runtime_mode == "graph":
+            try:
+                response = self.graph_runtime.run_turn(
+                    record,
+                    message_text,
+                    user_turn=user_turn,
+                )
+            except Exception as exc:
+                if not settings.agent_runtime_fail_open_to_legacy:
+                    raise
+                interview_response = self.interviewer_runtime.run_turn(record, message_text)
+                response = self.gate_runtime.merge_interview_response(
+                    interview_response,
+                    record,
+                )
+                response["graph_runtime_error"] = {
+                    "status": "error",
+                    "agent_runtime": settings.agent_runtime,
+                    "selected_public_runtime": "graph",
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "fallback_runtime": "legacy",
+                }
+                return response
+            response["selected_public_runtime"] = "graph"
+            self._apply_graph_response_state(record, response)
+            return self.gate_runtime.merge_interview_response(response, record)
+
+        interview_response = self.interviewer_runtime.run_turn(record, message_text)
+        response = self.gate_runtime.merge_interview_response(interview_response, record)
+        if graph_shadow:
+            response["agent_runtime"] = settings.agent_runtime
+            response["selected_public_runtime"] = "legacy"
+        return response
+
     def _run_graph_shadow(
         self,
         record,
@@ -149,6 +222,7 @@ class MessageService:
             "agent_runtime": "graph_shadow",
             "graph_run_id": shadow_response.get("graph_run_id"),
             "graph_trace": dict(shadow_response.get("graph_trace", {}) or {}),
+            "graph_events": list(shadow_response.get("graph_events", []) or []),
             "turn_decision": dict(shadow_response.get("turn_decision", {}) or {}),
             "prompt_trace": dict(shadow_response.get("prompt_trace", {}) or {}),
         }
@@ -161,8 +235,57 @@ class MessageService:
         if graph_shadow:
             response["graph_shadow"] = graph_shadow
 
-    def _strip_internal_shadow(self, response: dict) -> None:
+    def _strip_internal_runtime_fields(self, response: dict) -> None:
         response.pop("graph_shadow", None)
+        response.pop("graph_events", None)
+        response.pop("graph_runtime_error", None)
+
+    def _apply_graph_response_state(self, record, response: dict) -> None:
+        decision = response.get("governor_decision") or (
+            response.get("turn_decision", {}) or {}
+        ).get("decision")
+        decision = decision or "continue_interview"
+        runtime_view_state = dict(response.get("runtime_view_state", {}) or {})
+        current_focus = dict(
+            runtime_view_state.get("current_focus")
+            or (response.get("turn_record", {}) or {}).get("focus")
+            or {}
+        )
+        record.phase_state = (
+            "session_closed" if decision == "simulated_refusal" else "interview"
+        )
+        record.current_governor_decision = decision
+        record.current_focus_json = current_focus
+        record.interviewer_state_json = {
+            "owner": "graph_runtime",
+            "status": decision,
+            "public_status": runtime_view_state.get("public_status"),
+            "decision": decision,
+            "governor_decision": decision,
+            "next_action": (response.get("turn_decision", {}) or {}).get(
+                "next_safe_action"
+            ),
+            "decision_hint": decision,
+            "current_focus": current_focus,
+            "current_key_question": runtime_view_state.get("current_key_question"),
+            "current_key_proof": runtime_view_state.get("current_key_proof"),
+            "current_risk_code": runtime_view_state.get("current_risk_code"),
+            "risk_level": runtime_view_state.get("risk_level"),
+            "allowed_next_actions": list(
+                runtime_view_state.get("allowed_next_actions", []) or []
+            ),
+            "requested_documents": list(
+                response.get("requested_documents", []) or []
+            ),
+            "remaining_required_documents": list(
+                response.get("remaining_required_documents", []) or []
+            ),
+            "document_review": dict(response.get("document_review", {}) or {}),
+            "advisory_context": dict(response.get("advisory_context", {}) or {}),
+            "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+            "graph_run_id": response.get("graph_run_id"),
+            "graph_trace": dict(response.get("graph_trace", {}) or {}),
+        }
 
     def _apply_gate_response_state(
         self,
@@ -221,6 +344,9 @@ class MessageService:
         source = (
             "gate_runtime_service"
             if gate_status == GateOverallStatus.FAMILY_NOT_SELECTED
+            else "graph_runtime_adapter"
+            if response.get("agent_runtime") == "graph"
+            and response.get("selected_public_runtime", "graph") == "graph"
             else "interviewer_runtime_service"
         )
         assistant_turn = self.session_turn_repo.append_assistant_turn(
@@ -234,6 +360,12 @@ class MessageService:
                 "current_focus_kind": (record.current_focus_json or {}).get("kind"),
                 "prompt_trace": response.get("prompt_trace", {}),
                 "graph_shadow": response.get("graph_shadow"),
+                "agent_runtime": response.get("agent_runtime"),
+                "selected_public_runtime": response.get("selected_public_runtime"),
+                "graph_run_id": response.get("graph_run_id"),
+                "graph_trace": response.get("graph_trace"),
+                "graph_events": response.get("graph_events"),
+                "graph_runtime_error": response.get("graph_runtime_error"),
             },
             commit=False,
         )
@@ -251,6 +383,7 @@ class MessageService:
         response: dict,
         assistant_turn: SessionTurnRecord,
     ) -> None:
+        original_runtime_view_state = dict(response.get("runtime_view_state", {}) or {})
         read_model = self.session_read_model.build_from_record(record)
         runtime_view_state = RuntimeViewContractService.payload(
             read_model.runtime_view_state
@@ -310,7 +443,16 @@ class MessageService:
                 "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
             }
         )
-        if runtime_view_state.get("source_turn_id") == assistant_turn.turn_id:
+        if response.get("agent_runtime") == "graph":
+            graph_runtime_view_state = dict(original_runtime_view_state)
+            graph_runtime_view_state["source_turn_id"] = assistant_turn.turn_id
+            graph_runtime_view_state["prompt_trace"] = dict(
+                response.get("prompt_trace", {}) or {}
+            )
+            response["runtime_view_state"] = graph_runtime_view_state
+            metadata["runtime_view_state"] = graph_runtime_view_state
+            metadata["prompt_trace"] = dict(response.get("prompt_trace", {}) or {})
+        elif runtime_view_state.get("source_turn_id") == assistant_turn.turn_id:
             metadata["runtime_view_state"] = runtime_view_state
         assistant_turn.metadata_json = metadata
 

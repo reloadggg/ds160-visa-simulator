@@ -2,12 +2,13 @@ from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
+from app.core import settings as settings_module
 from app.db.session import get_db
 from app.main import app
 
@@ -612,3 +613,49 @@ def test_debug_fill_current_gap_persists_assistant_refresh_turn(
         and turn.content == "Please continue with your study plan."
         for turn in persisted_messages
     )
+
+
+def test_runtime_trace_endpoint_returns_graph_events(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = {
+            "declared_family": "f1",
+            "scenario_key": "parent_sponsored",
+            "status": "ready_for_interview",
+            "required_documents": [],
+        }
+        db.add(record)
+        db.commit()
+
+    message_response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert message_response.status_code == 200
+    run_id = message_response.json()["graph_run_id"]
+    trace_response = client.get(f"/v1/sessions/{session_id}/runtime-traces/{run_id}")
+
+    assert trace_response.status_code == 200
+    payload = trace_response.json()
+    assert payload["session_id"] == session_id
+    assert payload["run_id"] == run_id
+    assert payload["agent_runtime"] == "graph"
+    assert payload["selected_public_runtime"] == "graph"
+    assert payload["graph_trace"]["run_id"] == run_id
+    assert payload["graph_events"][0]["event_type"] == "accepted"
+    assert payload["graph_events"][-1]["event_type"] == "final"
+
+    missing_response = client.get(
+        f"/v1/sessions/{session_id}/runtime-traces/graph-run-missing"
+    )
+    assert missing_response.status_code == 404

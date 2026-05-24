@@ -68,7 +68,11 @@ class GraphRuntimeAdapter:
             client_turn_id=user_turn_id,
             message_text=message_text,
         )
-        return self.response_mapper.to_message_response(state, events)
+        payload = self.response_mapper.to_message_response(state, events)
+        payload["graph_events"] = [
+            event.model_dump(mode="json") for event in events
+        ]
+        return payload
 
     def _receive_turn_node(
         self,

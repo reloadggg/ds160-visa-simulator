@@ -124,6 +124,14 @@ class RuntimeLedgerService:
                 prompt_trace=self._prompt_trace_payload(ledger),
             )
 
+        metadata_view_state = self._runtime_view_state_from_metadata(
+            latest_turn.metadata,
+            latest_turn.turn_id,
+            fallback_governor_decision=governor_decision,
+        )
+        if metadata_view_state is not None:
+            return metadata_view_state
+
         turn_record = dict(latest_turn.turn_record or {})
         focus = self._focus_from_turn_record(turn_record) or dict(ledger.current_focus or {})
         decision = (
@@ -296,6 +304,13 @@ class RuntimeLedgerService:
                 )
 
             if turn is not None:
+                events.extend(
+                    self._graph_trace_events_from_metadata(
+                        record,
+                        turn,
+                        batch_index,
+                    )
+                )
                 advisory_summary = self._advisory_summary_from_metadata(turn.metadata_json)
                 if advisory_summary:
                     events.append(
@@ -311,6 +326,76 @@ class RuntimeLedgerService:
                         )
                     )
         return events
+
+    def _graph_trace_events_from_metadata(
+        self,
+        record: SessionRecord,
+        turn: Any,
+        batch_index: int,
+    ) -> list[LedgerEvent]:
+        metadata = dict(getattr(turn, "metadata_json", None) or {})
+        graph_events = metadata.get("graph_events")
+        if not isinstance(graph_events, list):
+            return []
+
+        ledger_events: list[LedgerEvent] = []
+        for index, raw_event in enumerate(graph_events):
+            if not isinstance(raw_event, dict):
+                continue
+            event_type = self._string_or_none(raw_event.get("event_type"))
+            if event_type is None:
+                continue
+            payload = dict(raw_event.get("payload") or {})
+            payload.update(
+                {
+                    "graph_event_type": event_type,
+                    "graph_run_id": raw_event.get("run_id"),
+                    "sequence": raw_event.get("sequence"),
+                    "schema_version": raw_event.get("schema_version"),
+                }
+            )
+            ledger_events.append(
+                LedgerEvent(
+                    event_id=self._event_id(
+                        getattr(turn, "turn_id", None),
+                        "graph-trace",
+                        batch_index,
+                        index,
+                    ),
+                    session_id=record.session_id,
+                    turn_id=getattr(turn, "turn_id", None),
+                    turn_index=getattr(turn, "turn_index", None),
+                    event_type=LedgerEventType.TRACE,
+                    source="graph_events",
+                    name=event_type,
+                    payload=payload,
+                )
+            )
+        return ledger_events
+
+    def _runtime_view_state_from_metadata(
+        self,
+        metadata: dict[str, Any],
+        turn_id: str,
+        *,
+        fallback_governor_decision: str,
+    ) -> RuntimeViewState | None:
+        payload = metadata.get("runtime_view_state")
+        if not isinstance(payload, dict) or not payload:
+            return None
+        if payload.get("source_turn_id") != turn_id:
+            return None
+        candidate = dict(payload)
+        candidate["decision"] = (
+            self._string_or_none(candidate.get("decision"))
+            or fallback_governor_decision
+        )
+        candidate["governor_decision"] = (
+            self._string_or_none(candidate.get("governor_decision"))
+            or self._string_or_none(candidate.get("decision"))
+            or fallback_governor_decision
+        )
+        return RuntimeViewState.model_validate(candidate)
 
     def _group_runtime_trace(self, runtime_trace_json: list[Any]) -> list[list[dict[str, Any]]]:
         groups: list[list[dict[str, Any]]] = []

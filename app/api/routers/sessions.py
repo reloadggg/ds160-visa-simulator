@@ -13,7 +13,10 @@ from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
 from app.services.debug_material_bundle_service import DebugMaterialBundleService
 from app.services.gate_service import GateService
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from app.db.models import SessionTurnRecord
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -151,3 +154,35 @@ def debug_create_material_bundle_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/{session_id}/runtime-traces/{run_id}")
+def get_runtime_trace(
+    session_id: str,
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    statement = (
+        select(SessionTurnRecord)
+        .where(
+            SessionTurnRecord.session_id == session_id,
+            SessionTurnRecord.role == "assistant",
+        )
+        .order_by(SessionTurnRecord.turn_index.desc())
+    )
+    for turn in db.scalars(statement):
+        metadata = dict(turn.metadata_json or {})
+        if metadata.get("graph_run_id") != run_id:
+            continue
+        return {
+            "session_id": session_id,
+            "run_id": run_id,
+            "turn_id": turn.turn_id,
+            "turn_index": turn.turn_index,
+            "agent_runtime": metadata.get("agent_runtime"),
+            "selected_public_runtime": metadata.get("selected_public_runtime"),
+            "graph_trace": dict(metadata.get("graph_trace", {}) or {}),
+            "graph_events": list(metadata.get("graph_events", []) or []),
+            "graph_runtime_error": metadata.get("graph_runtime_error"),
+        }
+    raise HTTPException(status_code=404, detail="runtime trace not found")
