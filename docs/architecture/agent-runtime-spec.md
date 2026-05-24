@@ -38,6 +38,33 @@ pgvector        vector search，不绕过权限和生命周期
 - 前端生成 officer 主线话术。
 - 多 agent handoff 链接管 live turn。
 
+## Simplification Boundary
+
+graph runtime 不迁移旧 agent-like 层级，只迁移业务合同。
+
+保留：
+
+- `MessageService` 作为 API transaction boundary。
+- `GateRuntimeService` 作为材料门控状态机。
+- `TurnRecord` 作为兼容 artifact。
+
+替换：
+
+- `InterviewerRuntimeService` 主控流程。
+- `InterviewRuntimeService` 内的主控 agent 调用。
+- `CapabilityOrchestrator` 的主流程工具编排。
+- `InterviewerTurnProjectorService` 的回复改写能力。
+- `RuntimeLedgerService` 对旧 trace 的事实源地位。
+
+新 graph 的事实源是：
+
+- `DS160GraphState`
+- `GraphEvent`
+- `GraphRunResult`
+- `CitationBundle`
+
+旧 API 字段只能由 `GraphResponseMapper` 从这些事实源投影，不得反向影响 graph state。
+
 ## Retry Budget
 
 默认预算：
