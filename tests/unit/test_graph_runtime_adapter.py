@@ -92,6 +92,10 @@ def test_graph_runtime_adapter_builds_legacy_compatible_shadow_response(tmp_path
         assert payload["turn_record"]["user_turn_id"] == user_turn.turn_id
         assert payload["graph_trace"]["event_count"] > 0
         assert payload["prompt_trace"]["graph_run_id"] == payload["graph_run_id"]
+        assert payload["graph_trace"]["citation_count"] == 1
+        assert payload["document_review"]["knowledge_plane"]["case_evidence"][
+            "candidate_count"
+        ] == 1
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

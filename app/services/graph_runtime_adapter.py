@@ -21,6 +21,7 @@ from app.services.agent_runtime_graph import (
 )
 from app.services.graph_adjudication_node import GraphAdjudicationNode
 from app.services.graph_case_state_builder import GraphCaseStateBuilder
+from app.services.graph_knowledge_plane_service import GraphKnowledgePlaneService
 from app.services.graph_response_mapper import GraphResponseMapper
 
 
@@ -34,6 +35,7 @@ class GraphRuntimeAdapter:
         case_state_builder: GraphCaseStateBuilder | None = None,
         response_mapper: GraphResponseMapper | None = None,
         adjudication_node: GraphAdjudicationNode | None = None,
+        knowledge_plane: GraphKnowledgePlaneService | None = None,
     ) -> None:
         self.db = db
         self.session_turn_repo = SessionTurnRepository(db)
@@ -42,6 +44,7 @@ class GraphRuntimeAdapter:
         self.case_state_builder = case_state_builder or GraphCaseStateBuilder()
         self.response_mapper = response_mapper or GraphResponseMapper()
         self.adjudication_node = adjudication_node or GraphAdjudicationNode()
+        self.knowledge_plane = knowledge_plane or GraphKnowledgePlaneService()
 
     def run_turn(
         self,
@@ -59,6 +62,8 @@ class GraphRuntimeAdapter:
                     user_turn_id=user_turn_id,
                 ),
                 "build_case_state": self._build_case_state_node(record),
+                "plan_retrieval": self._plan_retrieval_node(message_text),
+                "build_citation_bundle": self._build_citation_bundle_node(),
                 "adjudicate": self._adjudication_node(record, message_text),
                 "deterministic_grounding_guard": fake_guard_node(),
             }
@@ -74,6 +79,36 @@ class GraphRuntimeAdapter:
             event.model_dump(mode="json") for event in events
         ]
         return payload
+
+    def _plan_retrieval_node(self, message_text: str):
+        def _node(state: DS160GraphState) -> DS160GraphState:
+            retrieval_plan = self.knowledge_plane.build_retrieval_plan(
+                state.case_state,
+                message_text=message_text,
+            )
+            return state.model_copy(update={"retrieval_plan": retrieval_plan})
+
+        return _node
+
+    def _build_citation_bundle_node(self):
+        def _node(state: DS160GraphState) -> DS160GraphState:
+            citation_bundle, summary = self.knowledge_plane.build_citation_bundle(
+                state.case_state,
+                retrieval_plan=state.retrieval_plan,
+                run_id=state.run_id,
+            )
+            material_review = {
+                **(state.material_review or {}),
+                "knowledge_plane": summary,
+            }
+            return state.model_copy(
+                update={
+                    "citation_bundle": citation_bundle,
+                    "material_review": material_review,
+                }
+            )
+
+        return _node
 
     def _adjudication_node(
         self,
