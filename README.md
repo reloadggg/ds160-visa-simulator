@@ -125,7 +125,9 @@ Gate primary document、`score.missing_evidence`、document review 建议和 gov
 
 ### 🧪 调试材料包
 
-本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端一键生成 F-1 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
+本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端从“材料包”菜单生成 F-1 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
+
+材料正文会模拟 DS-160 确认页、护照 OCR、I-20、录取信、银行证明和亲属关系证明的真实文本形态；所有人名、学校、证件号和机构名仍使用明显合成占位值。
 
 当前支持：
 
@@ -136,7 +138,7 @@ Gate primary document、`score.missing_evidence`、document review 建议和 gov
 - `sponsor_chain_gap_bundle`：父母股权资金来源缺少独立链路证明
 - `claim_vs_document_bundle`：口头资金来源与材料不一致
 
-调试材料包的 `expected_findings` 只作为前端调试 oracle 展示，不写入材料正文、证据 excerpt、profile，也不进入 document review prompt/context。document review 必须基于材料字段和口头 claim 自己判断缺陷。
+调试材料包的 `expected_findings` 只作为 API 测试参考和前端材料详情里的“核验线索”展示，不写入材料正文、证据 excerpt、profile，也不进入 document review prompt/context。document review 必须基于材料字段、材料正文和口头 claim 自己判断缺陷。
 
 ### 🧾 可复盘运行记录
 

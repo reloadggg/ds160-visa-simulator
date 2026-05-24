@@ -10,10 +10,15 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { DEBUG_MATERIAL_BUNDLE_OPTIONS } from "@/lib/debug-material-bundles"
 import { Pause, StopCircle, Bell, ChevronDown, RotateCcw, FlaskConical, Camera, MoreHorizontal } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import type { DebugMaterialBundleScenario } from "@/lib/api/types"
 
 interface TopBarProps {
   visaType: string
@@ -27,13 +32,8 @@ interface TopBarProps {
   onPause: () => void
   onEndSession: () => void
   onReset: () => void
-  onDebugFillCurrentGap?: () => void
-  onDebugFillNormalData?: () => void
-  onDebugFillSchoolMismatch?: () => void
-  onDebugFillIdentityMismatch?: () => void
-  onDebugFillFundingShortfall?: () => void
-  onDebugFillSponsorEquityGap?: () => void
-  onDebugFillClaimVsDocument?: () => void
+  onDebugMaterialBundleScenario?: (scenario: DebugMaterialBundleScenario) => void
+  isDebugBundleGenerating?: boolean
   onExportConversationImage?: () => void
 }
 
@@ -49,13 +49,8 @@ export function TopBar({
   onPause,
   onEndSession,
   onReset,
-  onDebugFillCurrentGap,
-  onDebugFillNormalData,
-  onDebugFillSchoolMismatch,
-  onDebugFillIdentityMismatch,
-  onDebugFillFundingShortfall,
-  onDebugFillSponsorEquityGap,
-  onDebugFillClaimVsDocument,
+  onDebugMaterialBundleScenario,
+  isDebugBundleGenerating = false,
   onExportConversationImage,
 }: TopBarProps) {
   const displayName = userName.trim() || "User"
@@ -161,41 +156,30 @@ export function TopBar({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </div>
-            {onDebugFillNormalData ||
-            onDebugFillSchoolMismatch ||
-            onDebugFillIdentityMismatch ||
-            onDebugFillFundingShortfall ||
-            onDebugFillSponsorEquityGap ||
-            onDebugFillClaimVsDocument ? (
+            {onDebugMaterialBundleScenario ? (
               <>
-                <DropdownMenuLabel className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <FlaskConical className="h-4 w-4" />
-                  调试材料包
-                </DropdownMenuLabel>
-                <DropdownMenuItem onClick={onDebugFillNormalData}>
-                  生成正常材料包
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDebugFillSchoolMismatch}>
-                  缺陷：学校冲突
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDebugFillIdentityMismatch}>
-                  缺陷：身份号码
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDebugFillFundingShortfall}>
-                  缺陷：资金不足
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDebugFillSponsorEquityGap}>
-                  缺陷：股权资金链
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onDebugFillClaimVsDocument}>
-                  缺陷：口头矛盾
-                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <FlaskConical className={isDebugBundleGenerating ? "h-4 w-4 animate-pulse" : "h-4 w-4"} />
+                    材料包
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    <DropdownMenuLabel className="text-xs text-muted-foreground">
+                      {isDebugBundleGenerating ? "正在生成" : "选择场景"}
+                    </DropdownMenuLabel>
+                    {DEBUG_MATERIAL_BUNDLE_OPTIONS.map((option) => (
+                      <DropdownMenuItem
+                        key={option.scenario}
+                        onClick={() => onDebugMaterialBundleScenario(option.scenario)}
+                        disabled={isDebugBundleGenerating}
+                      >
+                        <span className="min-w-0 truncate">{option.label}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
               </>
-            ) : onDebugFillCurrentGap ? (
-              <DropdownMenuItem onClick={onDebugFillCurrentGap}>
-                <FlaskConical className="h-4 w-4" />
-                一键补资料
-              </DropdownMenuItem>
             ) : null}
             {onExportConversationImage ? (
               <DropdownMenuItem onClick={onExportConversationImage}>

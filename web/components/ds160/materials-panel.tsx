@@ -8,6 +8,7 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -117,7 +118,7 @@ function ExpectedFindings({ material }: { material: UploadedMaterial }) {
 
   return (
     <div className="space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">调试 oracle</div>
+      <div className="text-xs font-medium text-muted-foreground">核验线索</div>
       <div className="space-y-2">
         {material.expected_findings.map((finding, index) => (
           <div
@@ -156,15 +157,20 @@ function MaterialGrid({
         >
           <div className="aspect-[4/3] border-b border-border p-3">
             <MaterialPreview material={material} />
-            <div className="absolute right-3 top-3 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="absolute right-3 top-3">
               <Dialog>
                 <DialogTrigger asChild>
-                  <Button size="icon" variant="secondary" className="h-8 w-8 rounded-full shadow-sm">
+                  <Button
+                    size="icon"
+                    variant="secondary"
+                    className="h-8 w-8 rounded-full shadow-sm"
+                    aria-label="查看材料详情"
+                  >
                     <Info className="h-4 w-4" />
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="max-h-[86vh] max-w-3xl overflow-hidden rounded-3xl p-0">
-                  <div className="grid max-h-[86vh] min-w-0 overflow-y-auto md:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                <DialogContent className="max-h-[86vh] max-w-[min(1180px,calc(100vw-2rem))] overflow-hidden rounded-3xl p-0 sm:max-w-[min(1180px,calc(100vw-2rem))]">
+                  <div className="grid max-h-[86vh] min-w-0 overflow-y-auto lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
                     <div className="min-w-0 bg-muted/30 p-4 md:p-6">
                       <div className="aspect-[3/4] overflow-hidden rounded-2xl border border-border bg-background">
                         <MaterialPreview material={material} />
@@ -175,13 +181,16 @@ function MaterialGrid({
                         <DialogTitle className="break-all text-lg font-semibold leading-snug md:text-xl">
                           {material.name}
                         </DialogTitle>
+                        <DialogDescription>
+                          查看材料正文、提取字段和核验线索。
+                        </DialogDescription>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <Badge variant="outline">
                             {material.kind === "pdf" ? "PDF" : material.kind === "image" ? "图片" : "文件"}
                           </Badge>
                           {material.synthetic_bundle_id ? (
-                            <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">
-                              Synthetic
+                            <Badge variant="outline">
+                              材料包
                             </Badge>
                           ) : null}
                           <span className="break-words text-xs leading-5 text-muted-foreground">
@@ -256,8 +265,8 @@ function MaterialGrid({
               </Badge>
             </div>
             {material.synthetic_bundle_id ? (
-              <Badge className="w-fit bg-amber-100 text-amber-800 hover:bg-amber-100">
-                调试材料包
+              <Badge variant="outline" className="w-fit">
+                材料包
               </Badge>
             ) : null}
             <div className="rounded-xl bg-muted/30 px-3 py-2">
@@ -278,7 +287,7 @@ function MaterialGrid({
             ) : null}
             <div className="pt-1">
               <span className="text-xs font-medium text-primary">
-                悬停右上角可查看详情
+                打开详情可查看正文
               </span>
             </div>
           </div>

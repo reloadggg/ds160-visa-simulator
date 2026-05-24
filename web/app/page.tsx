@@ -84,13 +84,7 @@ function Workbench() {
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,
-    handleDebugFillCurrentGap,
-    handleDebugFillNormalData,
-    handleDebugFillSchoolMismatch,
-    handleDebugFillIdentityMismatch,
-    handleDebugFillFundingShortfall,
-    handleDebugFillSponsorEquityGap,
-    handleDebugFillClaimVsDocument,
+    handleDebugMaterialBundleScenario,
     handleClearHistory,
     handleRestoreSession,
   } = useSessionWorkbench()
@@ -115,13 +109,8 @@ function Workbench() {
           onPause={handlePause}
           onEndSession={handleEndSession}
           onReset={handleReset}
-          onDebugFillCurrentGap={handleDebugFillCurrentGap}
-          onDebugFillNormalData={handleDebugFillNormalData}
-          onDebugFillSchoolMismatch={handleDebugFillSchoolMismatch}
-          onDebugFillIdentityMismatch={handleDebugFillIdentityMismatch}
-          onDebugFillFundingShortfall={handleDebugFillFundingShortfall}
-          onDebugFillSponsorEquityGap={handleDebugFillSponsorEquityGap}
-          onDebugFillClaimVsDocument={handleDebugFillClaimVsDocument}
+          onDebugMaterialBundleScenario={handleDebugMaterialBundleScenario}
+          isDebugBundleGenerating={isDebugBundleGenerating}
           onExportConversationImage={handleExportConversationImage}
         />
       )
@@ -243,13 +232,7 @@ function Workbench() {
                 onCopySessionId={handleCopySessionId}
                 onExportSession={handleExportSession}
                 onExportConversationImage={handleExportConversationImage}
-                onDebugFillCurrentGap={handleDebugFillCurrentGap}
-                onDebugFillNormalData={handleDebugFillNormalData}
-                onDebugFillSchoolMismatch={handleDebugFillSchoolMismatch}
-                onDebugFillIdentityMismatch={handleDebugFillIdentityMismatch}
-                onDebugFillFundingShortfall={handleDebugFillFundingShortfall}
-                onDebugFillSponsorEquityGap={handleDebugFillSponsorEquityGap}
-                onDebugFillClaimVsDocument={handleDebugFillClaimVsDocument}
+                onDebugMaterialBundleScenario={handleDebugMaterialBundleScenario}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
               />

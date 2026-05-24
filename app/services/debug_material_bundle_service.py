@@ -499,11 +499,16 @@ class DebugMaterialBundleService:
         passport_number: str = SYNTHETIC_PASSPORT_NUMBER,
     ) -> SyntheticDocumentSpec:
         text = (
-            "DS-160 Confirmation Page\n"
-            f"Full name: {SYNTHETIC_APPLICANT_NAME}\n"
-            f"Passport number: {passport_number}\n"
-            "Travel purpose: STUDENT (F1)\n"
-            "Application location: U.S. Consulate Example Post\n"
+            "U.S. Department of State\n"
+            "Online Nonimmigrant Visa Application (DS-160) Confirmation\n"
+            "Application ID: AA00EXAMPLE\n"
+            "Confirmation No.: EXM20260524001\n"
+            "Applicant Name Provided: TEST APPLICANT\n"
+            f"Passport/Travel Document Number: {passport_number}\n"
+            "Purpose of Trip to U.S.: STUDENT (F1)\n"
+            "Intended Date of Arrival: 15 AUG 2026\n"
+            "Application Location: U.S. Consulate Example Post\n"
+            "Barcode Area: [machine readable confirmation barcode omitted]\n"
         )
         return SyntheticDocumentSpec(
             document_type="ds160",
@@ -522,11 +527,18 @@ class DebugMaterialBundleService:
         passport_number: str = SYNTHETIC_PASSPORT_NUMBER,
     ) -> SyntheticDocumentSpec:
         text = (
-            "Passport Bio Page\n"
-            f"Full name: {SYNTHETIC_APPLICANT_NAME}\n"
-            f"Passport number: {passport_number}\n"
+            "PASSPORT BIOGRAPHIC PAGE - OCR TEXT\n"
+            "Type: P\n"
+            f"Passport No.: {passport_number}\n"
+            "Surname: TEST\n"
+            "Given Names: APPLICANT\n"
+            f"Full Name: {SYNTHETIC_APPLICANT_NAME}\n"
             f"Nationality: {SYNTHETIC_NATIONALITY}\n"
-            "Date of birth: 2001-01-15\n"
+            "Date of Birth: 15 JAN 2001\n"
+            "Place of Birth: EXAMPLE CITY\n"
+            "Issued On: 20 FEB 2023\n"
+            "Date of Expiry: 19 FEB 2033\n"
+            "MRZ: P<EXAMPLELAND<<TEST<<APPLICANT<<<<<<<<<<<<<<\n"
         )
         return SyntheticDocumentSpec(
             document_type="passport_bio",
@@ -546,12 +558,24 @@ class DebugMaterialBundleService:
         first_year_cost_usd: str = "68000",
     ) -> SyntheticDocumentSpec:
         text = (
-            "Form I-20\n"
+            "U.S. Department of Homeland Security\n"
+            "Certificate of Eligibility for Nonimmigrant Student Status (F-1)\n"
             f"SEVIS ID: {SYNTHETIC_SEVIS_ID}\n"
-            f"School name: {school_name}\n"
-            f"Program: {SYNTHETIC_PROGRAM_NAME}\n"
-            "Education level: Master's\n"
-            f"First year cost: USD {first_year_cost_usd}\n"
+            f"Student Name: {SYNTHETIC_APPLICANT_NAME}\n"
+            "Country of Birth: EXAMPLELAND\n"
+            "School Information\n"
+            f"School Name: {school_name}\n"
+            "School Code: EXM214F00000000\n"
+            f"Program of Study: {SYNTHETIC_PROGRAM_NAME}\n"
+            "Education Level: Master's\n"
+            "Program Start Date: 26 AUG 2026\n"
+            "Program End Date: 20 MAY 2028\n"
+            "Financials - Estimated average costs for 9 months\n"
+            "Tuition and Fees: USD 42000\n"
+            "Living Expenses: USD 21000\n"
+            "Other Costs: USD 5000\n"
+            f"First Year Cost Total: USD {first_year_cost_usd}\n"
+            "Funding Listed by School: Family Funds\n"
         )
         return SyntheticDocumentSpec(
             document_type="i20",
@@ -571,12 +595,17 @@ class DebugMaterialBundleService:
         school_name: str = SYNTHETIC_SCHOOL_NAME,
     ) -> SyntheticDocumentSpec:
         text = (
-            "Admission Letter\n"
+            f"{school_name}\n"
+            "Office of Graduate Admission\n"
+            "Admission Notice\n"
+            "Date: 18 MAR 2026\n"
             f"Student: {SYNTHETIC_APPLICANT_NAME}\n"
-            f"School name: {school_name}\n"
+            f"School Name: {school_name}\n"
             f"Program: {SYNTHETIC_PROGRAM_NAME}\n"
             "Term: Fall 2026\n"
-            "Admission status: admitted as a full-time student\n"
+            "Enrollment Status: admitted as a full-time student\n"
+            "Campus: Main Campus\n"
+            "This notice confirms admission only; tuition billing is issued separately.\n"
         )
         return SyntheticDocumentSpec(
             document_type="admission_letter",
@@ -595,12 +624,19 @@ class DebugMaterialBundleService:
     def _funding_document(self, *, available_funds_usd: str) -> SyntheticDocumentSpec:
         parent_a, parent_b = SYNTHETIC_PARENT_NAMES
         text = (
-            "Parent Funding Certificate\n"
-            "Primary source: parents\n"
-            f"Sponsor: {parent_a} and {parent_b}\n"
-            f"Available funds: USD {available_funds_usd}\n"
-            "Account type: demand deposit and fixed deposit\n"
-            f"Applicant: {SYNTHETIC_APPLICANT_NAME}\n"
+            "Example Commercial Bank\n"
+            "Certificate of Deposit Balance - OCR Extract\n"
+            "Certificate No.: ECB-2026-0510-0007\n"
+            "Issue Date: 10 MAY 2026\n"
+            f"Account Holder: {parent_a}; {parent_b}\n"
+            "Primary Source of Support: parents\n"
+            "Sponsor Relationship: parents\n"
+            f"Student Beneficiary: {SYNTHETIC_APPLICANT_NAME}\n"
+            "Currency: USD\n"
+            f"Available Balance: USD {available_funds_usd}\n"
+            "Account Type: savings deposit and time deposit\n"
+            "Funds Status: available without lien or hold as of issue date\n"
+            "Bank Officer: EXAMPLE BANK OFFICER\n"
         )
         return SyntheticDocumentSpec(
             document_type="funding_proof",
@@ -616,15 +652,21 @@ class DebugMaterialBundleService:
     def _equity_funding_document(self) -> SyntheticDocumentSpec:
         parent_a, parent_b = SYNTHETIC_PARENT_NAMES
         text = (
-            "Parent Funding Certificate\n"
-            "Primary source: parents\n"
-            f"Sponsor: {parent_a} and {parent_b}\n"
-            "Available funds: USD 82000\n"
-            "Funding source: family company equity transfer proceeds\n"
-            f"Company equity ownership: {parent_a} holds 38% shares in "
+            "Example Commercial Bank\n"
+            "Incoming Remittance and Balance Summary - OCR Extract\n"
+            "Statement Ref.: ECB-IR-2026-0412-019\n"
+            "Issue Date: 10 MAY 2026\n"
+            f"Account Holder: {parent_a}; {parent_b}\n"
+            "Primary Source of Support: parents\n"
+            "Sponsor Relationship: parents\n"
+            f"Student Beneficiary: {SYNTHETIC_APPLICANT_NAME}\n"
+            "Available Balance: USD 82000\n"
+            "Recent Credit: USD 76500 received on 12 APR 2026\n"
+            "Remittance Memo: family company equity transfer proceeds\n"
+            f"Company Name on Memo: {SYNTHETIC_COMPANY_NAME}\n"
+            f"Equity Ownership Statement on Cover Sheet: {parent_a} holds 38% shares in "
             f"{SYNTHETIC_COMPANY_NAME}\n"
-            "Transfer received date: 2026-04-12\n"
-            f"Applicant: {SYNTHETIC_APPLICANT_NAME}\n"
+            "Account Type: savings deposit\n"
         )
         return SyntheticDocumentSpec(
             document_type="funding_proof",
@@ -644,12 +686,15 @@ class DebugMaterialBundleService:
     def _relationship_document(self) -> SyntheticDocumentSpec:
         parent_a, parent_b = SYNTHETIC_PARENT_NAMES
         text = (
-            "Household Register / Birth Relationship Certificate\n"
-            f"Applicant: {SYNTHETIC_APPLICANT_NAME}\n"
-            f"Parent 1: {parent_a}\n"
-            f"Parent 2: {parent_b}\n"
-            f"Relationship: {parent_a} and {parent_b} are parents of applicant.\n"
-            "Purpose: F-1 student visa funding relationship verification\n"
+            "Household Register Extract / Notarial Birth Relationship OCR\n"
+            "Document No.: HR-EXAMPLE-2026-0321\n"
+            "Applicant: TEST APPLICANT\n"
+            f"Father: {parent_a}\n"
+            f"Mother: {parent_b}\n"
+            "Relationship: parents\n"
+            "Household Address: 100 Example Road, Example City\n"
+            "Notary Office: Example City Notary Office\n"
+            "Seal/Signature: visible on scanned copy\n"
         )
         return SyntheticDocumentSpec(
             document_type="relationship_proof_between_applicant_and_sponsors",
@@ -875,8 +920,9 @@ class DebugMaterialBundleService:
         return text[:240]
 
     def _safe_material_text(self, text: str) -> str:
+        normalized_text = text.casefold()
         for marker in ORACLE_TEXT_MARKERS:
-            if marker in text:
+            if marker.casefold() in normalized_text:
                 raise ValueError(f"synthetic material contains oracle marker: {marker}")
         return text
 

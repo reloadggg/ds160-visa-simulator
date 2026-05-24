@@ -21,6 +21,7 @@ import {
   uploadRagFile,
 } from "@/lib/api/client"
 import { getApiBaseUrl } from "@/lib/api/config"
+import { getDebugMaterialBundleOption } from "@/lib/debug-material-bundles"
 import {
   getMockRequiredPackage,
   isMockMode,
@@ -219,19 +220,19 @@ function describeDebugBundleEvent(event: DebugMaterialBundleStreamEvent): string
     case "accepted":
       return "已收到材料包生成请求。"
     case "debug_bundle_started":
-      return `开始生成${event.data.scenario_label ?? "调试材料包"}，预计 ${event.data.document_count ?? 0} 份材料。`
+      return `开始生成${event.data.scenario_label ?? "材料包"}，预计 ${event.data.document_count ?? 0} 份材料。`
     case "document_created":
       return `已生成材料：${event.data.document_type_label ?? event.data.filename ?? "材料" }。`
     case "evidence_written":
-      return truncateProgressLine(`已写入结构化字段：${Object.keys(event.data.fields ?? {}).join("、") || "字段待确认"}。`)
+      return truncateProgressLine(`已整理字段：${Object.keys(event.data.fields ?? {}).join("、") || "字段待确认"}。`)
     case "profile_recomputed":
-      return "已根据材料重新计算申请人档案。"
+      return "已根据材料刷新申请人档案。"
     case "gate_refreshed":
-      return "已刷新材料门控状态。"
+      return "已更新材料清单状态。"
     case "document_review_started":
-      return "开始进行材料交叉核验。"
+      return "开始核对材料之间的关键细节。"
     case "governor_decided":
-      return `已完成本轮裁决：${humanizeBackendText(event.data.governor_decision ?? "") || "状态待确认"}。`
+      return `已得到下一步状态：${humanizeBackendText(event.data.governor_decision ?? "") || "待确认"}。`
     case "final":
       return "材料包生成完成。"
     case "error":
@@ -279,8 +280,8 @@ function debugBundleDocumentToMaterial(
 
 function buildDebugBundleFinalMessage(bundle: DebugMaterialBundleResponse): string {
   const documentNames = bundle.documents.map((document) => document.document_type_label ?? document.filename)
-  const findingCount = bundle.expected_findings.length
-  return `${bundle.scenario_label}已生成：${formatRequestedDocuments(documentNames)}。材料正文和字段已写入材料库；预期缺陷 ${findingCount} 条只作为调试 oracle 展示，不进入材料正文。`
+  const option = getDebugMaterialBundleOption(bundle.scenario)
+  return `已生成${option.label}：${formatRequestedDocuments(documentNames)}。材料已写入材料库，可以直接打开查看正文和提取字段。`
 }
 
 function inferAttachmentKind(file: Pick<File, "name" | "type">): AttachmentKind {
@@ -2181,16 +2182,16 @@ export function useSessionWorkbench() {
       if (mockMode) {
         appendMessage({
           role: "system",
-          content: "[Mock] 已生成一组调试材料包，并写入材料库。",
+          content: "[Mock] 已生成一组材料包，并写入材料库。",
         })
-        setSettingsFeedback("Mock 调试材料包已生成。")
+        setSettingsFeedback("Mock 材料包已生成。")
         return
       }
 
       const progressLines: string[] = []
       const progressMessageId = appendMessage({
         role: "system",
-        content: "正在生成调试材料包...",
+        content: `正在生成${getDebugMaterialBundleOption(scenario).label}...`,
         status: "sending",
       })
       const updateProgress = (line: string) => {
@@ -2200,7 +2201,7 @@ export function useSessionWorkbench() {
       }
 
       setIsDebugBundleGenerating(true)
-      setSettingsFeedback("正在生成调试材料包...")
+      setSettingsFeedback("正在生成材料包...")
       setDebugBundleProgress([])
       try {
         const result = await createDebugMaterialBundleStream(
@@ -2265,38 +2266,13 @@ export function useSessionWorkbench() {
     ],
   )
 
+  const handleDebugMaterialBundleScenario = useCallback(
+    (scenario: DebugMaterialBundleScenario) => runDebugMaterialBundle(scenario),
+    [runDebugMaterialBundle],
+  )
+
   const handleDebugFillCurrentGap = useCallback(
     () => runDebugMaterialBundle("normal_f1_bundle"),
-    [runDebugMaterialBundle],
-  )
-
-  const handleDebugFillNormalData = useCallback(
-    () => runDebugMaterialBundle("normal_f1_bundle"),
-    [runDebugMaterialBundle],
-  )
-
-  const handleDebugFillSchoolMismatch = useCallback(
-    () => runDebugMaterialBundle("school_mismatch_bundle"),
-    [runDebugMaterialBundle],
-  )
-
-  const handleDebugFillIdentityMismatch = useCallback(
-    () => runDebugMaterialBundle("identity_mismatch_bundle"),
-    [runDebugMaterialBundle],
-  )
-
-  const handleDebugFillFundingShortfall = useCallback(
-    () => runDebugMaterialBundle("funding_shortfall_bundle"),
-    [runDebugMaterialBundle],
-  )
-
-  const handleDebugFillSponsorEquityGap = useCallback(
-    () => runDebugMaterialBundle("sponsor_chain_gap_bundle"),
-    [runDebugMaterialBundle],
-  )
-
-  const handleDebugFillClaimVsDocument = useCallback(
-    () => runDebugMaterialBundle("claim_vs_document_bundle"),
     [runDebugMaterialBundle],
   )
 
@@ -2404,13 +2380,8 @@ export function useSessionWorkbench() {
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,
+    handleDebugMaterialBundleScenario,
     handleDebugFillCurrentGap,
-    handleDebugFillNormalData,
-    handleDebugFillSchoolMismatch,
-    handleDebugFillIdentityMismatch,
-    handleDebugFillFundingShortfall,
-    handleDebugFillSponsorEquityGap,
-    handleDebugFillClaimVsDocument,
     handleClearHistory,
     handleRestoreSession,
   }

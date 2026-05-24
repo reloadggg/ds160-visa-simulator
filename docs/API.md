@@ -188,6 +188,8 @@ Request:
 
 生成一整套 synthetic 调试材料，并触发材料变更后的主流程刷新。默认关闭，需要 `ALLOW_DEBUG_FILL=true`；不要在公开生产环境开启。
 
+材料正文模拟真实文件/OCR 文本，例如 DS-160 确认页、护照首页、I-20、录取信、银行证明和亲属关系证明；字段缺陷只通过材料之间的值差异、金额缺口、资金链证据缺口或用户 claim 与材料不一致体现。
+
 Request:
 
 ```json
@@ -220,7 +222,7 @@ Response shape:
       "filename": "debug_i20.txt",
       "document_type": "i20",
       "document_type_label": "I-20",
-      "raw_text": "Form I-20...",
+      "raw_text": "U.S. Department of Homeland Security\nCertificate of Eligibility for Nonimmigrant Student Status (F-1)...",
       "fields": {
         "/education/school_name": "Example University"
       },
@@ -251,9 +253,9 @@ Response shape:
 }
 ```
 
-调试 oracle 隔离规则：
+测试参考隔离规则：
 
-- `expected_findings` 只给 API 调试面板和前端材料详情展示。
+- `expected_findings` 只给 API 调试响应和前端材料详情里的“核验线索”展示。
 - `expected_findings`、`*_bundle` 场景名、bundle id 不进入 document review prompt/context。
 - `DocumentRecord.raw_text`、`DocumentChunk.text`、`EvidenceItem.excerpt` 不应包含 `Issue:`、`Missing:`、`Expected:`、`Defect:` 或 `This conflicts with` 这类答案提示。
 - document review 必须基于材料字段、材料正文和用户 claim 自行识别缺陷。

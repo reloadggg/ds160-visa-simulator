@@ -18,6 +18,11 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { PROJECT_INFO } from "@/lib/project-info"
+import {
+  DEBUG_MATERIAL_BUNDLE_OPTIONS,
+  DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO,
+  getDebugMaterialBundleOption,
+} from "@/lib/debug-material-bundles"
 import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw, Upload, Github, ExternalLink } from "lucide-react"
 import {
   AlertDialog,
@@ -30,7 +35,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import type { ModelListItem, RagStatus, RagUploadMetadata, UserModelConfig } from "@/lib/api/types"
+import type {
+  DebugMaterialBundleScenario,
+  ModelListItem,
+  RagStatus,
+  RagUploadMetadata,
+  UserModelConfig,
+} from "@/lib/api/types"
 
 const VISA_FAMILY_OPTIONS = [
   { value: "f1", label: "F-1" },
@@ -71,13 +82,7 @@ interface SettingsPanelProps {
   onCopySessionId: () => void
   onExportSession: () => void
   onExportConversationImage: () => void
-  onDebugFillCurrentGap: () => void
-  onDebugFillNormalData?: () => void
-  onDebugFillSchoolMismatch?: () => void
-  onDebugFillIdentityMismatch?: () => void
-  onDebugFillFundingShortfall?: () => void
-  onDebugFillSponsorEquityGap?: () => void
-  onDebugFillClaimVsDocument?: () => void
+  onDebugMaterialBundleScenario: (scenario: DebugMaterialBundleScenario) => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
 }
@@ -105,19 +110,16 @@ export function SettingsPanel({
   onCopySessionId,
   onExportSession,
   onExportConversationImage,
-  onDebugFillCurrentGap,
-  onDebugFillNormalData,
-  onDebugFillSchoolMismatch,
-  onDebugFillIdentityMismatch,
-  onDebugFillFundingShortfall,
-  onDebugFillSponsorEquityGap,
-  onDebugFillClaimVsDocument,
+  onDebugMaterialBundleScenario,
   onResetCurrentSession,
   onClearHistory,
 }: SettingsPanelProps) {
   const ragFileInputRef = useRef<HTMLInputElement | null>(null)
   const [ragUploadFile, setRagUploadFile] = useState<File | null>(null)
   const [ragUploadForm, setRagUploadForm] = useState(EMPTY_RAG_UPLOAD_FORM)
+  const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
+    useState<DebugMaterialBundleScenario>(DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO)
+  const selectedDebugBundleOption = getDebugMaterialBundleOption(selectedDebugBundleScenario)
   const updateModelConfig = (patch: Partial<UserModelConfig>) => {
     onUserModelConfigChange({
       ...userModelConfig,
@@ -152,6 +154,9 @@ export function SettingsPanel({
     })
     setRagUploadFile(null)
     setRagUploadForm(EMPTY_RAG_UPLOAD_FORM)
+  }
+  const handleDebugBundleSubmit = () => {
+    onDebugMaterialBundleScenario(selectedDebugBundleScenario)
   }
 
   const ragStatusLabel = (() => {
@@ -537,60 +542,53 @@ export function SettingsPanel({
               <Camera className="h-4 w-4" />
               导出完整会话长截图
             </Button>
-            <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-2">
+            <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-foreground">材料包</div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    选择一组可写入材料库的合成材料，用来测试核验、追问和报告。
+                  </div>
+                </div>
+                <Badge variant="outline">synthetic</Badge>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="debug-material-bundle-scenario">场景</Label>
+                <Select
+                  value={selectedDebugBundleScenario}
+                  onValueChange={(value) =>
+                    setSelectedDebugBundleScenario(value as DebugMaterialBundleScenario)
+                  }
+                >
+                  <SelectTrigger id="debug-material-bundle-scenario" className="w-full">
+                    <SelectValue placeholder="选择材料包场景" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DEBUG_MATERIAL_BUNDLE_OPTIONS.map((option) => (
+                      <SelectItem key={option.scenario} value={option.scenario}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="min-h-10 text-xs leading-5 text-muted-foreground">
+                  {selectedDebugBundleOption.description}
+                </div>
+              </div>
+
               <Button
                 variant="outline"
-                className="w-full justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-                onClick={onDebugFillNormalData ?? onDebugFillCurrentGap}
+                className="w-full justify-start"
+                onClick={handleDebugBundleSubmit}
                 disabled={!sessionId || isDebugBundleGenerating}
               >
                 <FlaskConical className={isDebugBundleGenerating ? "h-4 w-4 animate-pulse" : "h-4 w-4"} />
-                {isDebugBundleGenerating ? "正在生成材料包" : "调试：生成正常材料包"}
+                {isDebugBundleGenerating ? "正在生成材料包" : `生成${selectedDebugBundleOption.shortLabel}`}
               </Button>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <Button
-                  variant="outline"
-                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-                  onClick={onDebugFillSchoolMismatch ?? onDebugFillCurrentGap}
-                  disabled={!sessionId || isDebugBundleGenerating}
-                >
-                  缺陷：学校冲突
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-                  onClick={onDebugFillIdentityMismatch ?? onDebugFillCurrentGap}
-                  disabled={!sessionId || isDebugBundleGenerating}
-                >
-                  缺陷：身份号码
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-                  onClick={onDebugFillFundingShortfall ?? onDebugFillCurrentGap}
-                  disabled={!sessionId || isDebugBundleGenerating}
-                >
-                  缺陷：资金不足
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-                  onClick={onDebugFillSponsorEquityGap ?? onDebugFillCurrentGap}
-                  disabled={!sessionId || isDebugBundleGenerating}
-                >
-                  缺陷：股权资金链
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start border-amber-300 bg-white text-amber-800 hover:bg-amber-100 hover:text-amber-900"
-                  onClick={onDebugFillClaimVsDocument ?? onDebugFillCurrentGap}
-                  disabled={!sessionId || isDebugBundleGenerating}
-                >
-                  缺陷：口头矛盾
-                </Button>
-              </div>
+
               {debugBundleProgress.length ? (
-                <div className="max-h-44 overflow-y-auto rounded-md border border-amber-200 bg-white px-3 py-2 text-xs leading-5 text-amber-900">
+                <div className="max-h-44 overflow-y-auto rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
                   {debugBundleProgress.slice(-8).map((line, index) => (
                     <div key={`${line}-${index}`} className="break-words">
                       {line}
