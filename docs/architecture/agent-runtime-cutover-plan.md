@@ -103,12 +103,15 @@ AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true | false
 - `graph_canary`：按 session hash 百分比让 graph 写用户可见回复；未命中走 legacy。
 - `graph`：graph 是默认主流程，legacy 只保留回滚。
 
-上线默认：
+当前上线默认：
 
 ```text
-AGENT_RUNTIME=legacy
+AGENT_RUNTIME=graph
 AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true
+AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=false
 ```
+
+`AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=false` 表示 graph 已接管事务和响应映射，但 graph 内部 adjudication 仍使用 deterministic safe path；真实 typed adjudicator 需要 live smoke 和 provider 指标通过后再单独开启。
 
 ## 兼容输出合同
 

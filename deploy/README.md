@@ -36,16 +36,17 @@ docker compose ps
 curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
 ```
 
-## Agent Runtime Canary
+## Agent Runtime
 
-默认保持旧主流程：
+当前默认由 graph 接管主流程，legacy 保留为回滚路径：
 
 ```env
-AGENT_RUNTIME=legacy
+AGENT_RUNTIME=graph
 AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true
+AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=false
 ```
 
-上线观察顺序：
+如需重新做小流量观察，可以按以下顺序：
 
 ```bash
 # 1. 旁路观察，用户可见回复仍由 legacy 写入。
