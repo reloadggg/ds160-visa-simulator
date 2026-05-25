@@ -6,6 +6,17 @@ from app.db.models import SessionRecord
 from app.domain.document_types import normalize_document_type
 
 
+INTERNAL_DEBUG_METADATA_KEYS = {
+    "expected_findings",
+    "synthetic_bundle_id",
+    "debug_bundle_scenario",
+    "debug_bundle_scenario_label",
+    "scenario_label",
+    "debug_fill_scenario",
+    "debug_fill_scenario_label",
+}
+
+
 class GraphCaseStateBuilder:
     """Build the graph case snapshot without calling models or mutating records."""
 
@@ -146,7 +157,7 @@ class GraphCaseStateBuilder:
                     or "",
                     "status": self._string_or_none(getattr(document, "status", None)),
                     "document_type": document_type,
-                    "artifact_json": artifact,
+                    "artifact": self._public_document_artifact(artifact),
                 }
             )
         return sorted(
@@ -171,7 +182,9 @@ class GraphCaseStateBuilder:
                     "page_number": getattr(chunk, "page_number", None),
                     "text_excerpt": self._excerpt(text),
                     "text_length": len(text),
-                    "metadata": self._payload(getattr(chunk, "metadata_json", None)),
+                    "metadata": self._sanitize_metadata(
+                        self._payload(getattr(chunk, "metadata_json", None))
+                    ),
                 }
             )
         return sorted(
@@ -212,7 +225,9 @@ class GraphCaseStateBuilder:
                         self._string_or_none(getattr(item, "excerpt", None)) or ""
                     ),
                     "confidence": getattr(item, "confidence", None),
-                    "metadata": self._payload(getattr(item, "metadata_json", None)),
+                    "metadata": self._sanitize_metadata(
+                        self._payload(getattr(item, "metadata_json", None))
+                    ),
                 }
             )
         return sorted(
@@ -335,6 +350,58 @@ class GraphCaseStateBuilder:
     def _tail_payloads(self, value: Any) -> list[dict[str, Any]]:
         return self._list_payload(value)[-self.max_history_items :]
 
+    def _public_document_artifact(self, artifact: dict[str, Any]) -> dict[str, Any]:
+        assessment = self._payload(artifact.get("document_assessment"))
+        metadata = self._payload(artifact.get("metadata"))
+        public_metadata: dict[str, Any] = {}
+        if bool(metadata.get("debug_material_bundle")):
+            public_metadata["debug_material_bundle"] = True
+        if bool(metadata.get("debug_fill")):
+            public_metadata["debug_fill"] = True
+
+        payload: dict[str, Any] = {
+            "status": self._string_or_none(artifact.get("status")),
+            "source_type": self._string_or_none(artifact.get("source_type")),
+            "document_type": (
+                normalize_document_type(artifact.get("document_type"))
+                or self._string_or_none(artifact.get("document_type"))
+            ),
+            "document_type_candidates": self._normalize_document_types(
+                artifact.get("document_type_candidates") or []
+            ),
+            "relevance": self._string_or_none(artifact.get("relevance")),
+            "supported_claims": self._string_list(artifact.get("supported_claims")),
+            "counts_toward_gate": artifact.get("counts_toward_gate"),
+            "metadata": public_metadata,
+        }
+        if assessment:
+            payload["document_assessment"] = {
+                "document_type": (
+                    normalize_document_type(assessment.get("document_type"))
+                    or self._string_or_none(assessment.get("document_type"))
+                ),
+                "document_type_candidates": self._normalize_document_types(
+                    assessment.get("document_type_candidates") or []
+                ),
+                "relevance": self._string_or_none(assessment.get("relevance")),
+                "supported_claims": self._string_list(
+                    assessment.get("supported_claims")
+                ),
+                "confidence": assessment.get("confidence"),
+                "relevant": assessment.get("relevant"),
+                "counts_toward_gate": assessment.get("counts_toward_gate"),
+            }
+        return self._drop_empty_values(payload)
+
+    def _sanitize_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return self._drop_empty_values(
+            {
+                key: value
+                for key, value in metadata.items()
+                if key not in INTERNAL_DEBUG_METADATA_KEYS
+            }
+        )
+
     def _normalize_document_types(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -351,6 +418,23 @@ class GraphCaseStateBuilder:
         if self.max_text_excerpt_chars <= 0:
             return ""
         return value[: self.max_text_excerpt_chars]
+
+    def _drop_empty_values(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in payload.items()
+            if value not in (None, "", [], {})
+        }
+
+    def _string_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        normalized: list[str] = []
+        for item in value:
+            text = self._string_or_none(item)
+            if text is not None and text not in normalized:
+                normalized.append(text)
+        return normalized
 
     def _payload(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):

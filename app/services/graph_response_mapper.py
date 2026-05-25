@@ -229,6 +229,8 @@ class GraphResponseMapper:
                 "run_id": state.run_id,
                 "assistant_message_author": final_response.assistant_message_author,
                 "guard_status": final_response.guard_status,
+                "trigger": state.trigger,
+                "material_change_reason": state.material_change_reason,
             }
         )
         return TurnRecord.create(
@@ -259,9 +261,12 @@ class GraphResponseMapper:
             "prompt_pack_id": "ds160.graph_runtime",
             "prompt_version": state.schema_version,
             "graph_run_id": state.run_id,
+            "graph_trigger": state.trigger,
             "assistant_message_author": final_response.assistant_message_author,
             "guard_status": final_response.guard_status,
         }
+        if state.material_change_reason is not None:
+            payload["material_change_reason"] = state.material_change_reason
         for event in reversed(events):
             if event.event_type != "adjudication_completed":
                 continue
@@ -282,6 +287,8 @@ class GraphResponseMapper:
         return {
             "schema_version": state.schema_version,
             "run_id": state.run_id,
+            "trigger": state.trigger,
+            "material_change_reason": state.material_change_reason,
             "event_count": len(events),
             "event_types": [event.event_type for event in events],
             "guard_status": final_response.guard_status,

@@ -1,15 +1,17 @@
 from collections.abc import Generator
+import json
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import settings as settings_module
 from app.db.base import Base
 from app.db.evidence_models import EvidenceItemRecord
-from app.db.models import DocumentRecord, SessionRecord
+from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
+from app.domain.agent_runtime import GraphRunResult
 from app.main import app
 from app.services.capability_orchestrator import CapabilityOrchestrator
 
@@ -163,6 +165,227 @@ def test_claim_vs_document_bundle_fallback_detects_claim_history_conflict(
     serialized_context = str(review_context)
     assert "expected_findings" not in serialized_context
     assert "claim_vs_document_bundle" not in serialized_context
+
+
+def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+
+    def legacy_refresh_must_not_run(self, record, *, reason: str) -> dict:
+        raise AssertionError("legacy material refresh should not run in graph mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        legacy_refresh_must_not_run,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "school_mismatch_bundle"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scenario"] == "school_mismatch_bundle"
+    assert payload["turn_decision"]["decision"] == "continue_interview"
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+        record = db.get(SessionRecord, session_id)
+        review_context = CapabilityOrchestrator(db)._build_document_review_context(
+            session_id=session_id,
+            dynamic_turn_context={
+                "profile_snapshot": record.profile_json if record else {},
+                "declared_family": record.declared_family if record else None,
+            },
+            evidence_digest={},
+            focus_thread={},
+            advisory_context={},
+            gate_progress=record.gate_status_json if record else {},
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "graph_runtime_adapter"
+    metadata = assistant_turn.metadata_json
+    assert metadata["agent_runtime"] == "graph"
+    assert metadata["selected_public_runtime"] == "graph"
+    assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
+    assert metadata["prompt_trace"]["material_change_reason"] == "materials_updated"
+    serialized_graph_metadata = str(
+        {
+            "prompt_trace": metadata.get("prompt_trace"),
+            "graph_events": metadata.get("graph_events"),
+            "graph_trace": metadata.get("graph_trace"),
+            "document_review": metadata.get("document_review"),
+        }
+    )
+    assert "expected_findings" not in serialized_graph_metadata
+    assert "school_mismatch_bundle" not in serialized_graph_metadata
+    assert "学校材料冲突包" not in serialized_graph_metadata
+    assert "dbg-bundle-" not in serialized_graph_metadata
+    serialized_review_context = str(review_context)
+    assert "expected_findings" not in serialized_review_context
+    assert "school_mismatch_bundle" not in serialized_review_context
+    assert "学校材料冲突包" not in serialized_review_context
+    assert "dbg-bundle-" not in serialized_review_context
+
+
+def test_debug_material_bundle_typed_graph_prompt_does_not_leak_oracle_context(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(
+        settings_module.settings,
+        "agent_runtime_typed_adjudication_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.settings.agent_runtime_typed_adjudication_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key, declared_family=None: (
+            object(),
+            {
+                "provider": "openai_compatible",
+                "model": "gpt-5.4",
+                "reasoning_effort": "high",
+            },
+        ),
+    )
+    captured_prompts: list[str] = []
+
+    class CapturingAgent:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def run_sync(self, prompt: str):
+            captured_prompts.append(prompt)
+
+            class Result:
+                output = GraphRunResult(
+                    assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
+                    assistant_message_author="adjudication_agent",
+                    decision="continue_interview",
+                )
+
+            return Result()
+
+    monkeypatch.setattr("app.services.graph_adjudication_node.Agent", CapturingAgent)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "school_mismatch_bundle"},
+    )
+
+    assert response.status_code == 200
+    assert len(captured_prompts) == 1
+    prompt_payload = json.loads(captured_prompts[0])
+    assert prompt_payload["user"] == "materials_updated"
+    serialized_prompt = captured_prompts[0]
+    assert "debug_material_bundle" in serialized_prompt
+    assert "expected_findings" not in serialized_prompt
+    assert "synthetic_bundle_id" not in serialized_prompt
+    assert "dbg-bundle-" not in serialized_prompt
+    assert "debug_bundle_scenario" not in serialized_prompt
+    assert "school_mismatch_bundle" not in serialized_prompt
+    assert "学校材料冲突包" not in serialized_prompt
+
+
+def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_material_change",
+        lambda self, record, *, reason: (_ for _ in ()).throw(
+            RuntimeError("graph material refresh exploded")
+        ),
+    )
+
+    def fake_legacy_refresh(self, record, *, reason: str) -> dict:
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        record.current_focus_json = {
+            "owner": "interviewer_runtime_service",
+            "kind": "interview_question",
+            "question": "Please continue with your study plan.",
+        }
+        record.interviewer_state_json = {
+            "owner": "interviewer_runtime_service",
+            "status": "continue_interview",
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "current_focus": record.current_focus_json,
+        }
+        return {
+            "assistant_message": "Please continue with your study plan.",
+            "governor_decision": "continue_interview",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "document_review": {},
+            "runtime_view_state": {},
+            "prompt_trace": {},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        fake_legacy_refresh,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "claim_vs_document_bundle"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant_message"] == "Please continue with your study plan."
+
+    with db_session_factory() as db:
+        documents = db.query(DocumentRecord).filter_by(session_id=session_id).all()
+        evidence = db.query(EvidenceItemRecord).filter_by(session_id=session_id).all()
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert len(documents) == len(payload["documents"])
+    assert len(evidence) >= len(payload["documents"])
+    assert any(turn.source == "debug_material_bundle" for turn in turns)
+    assistant_turn = next(turn for turn in turns if turn.role == "assistant")
+    assert assistant_turn.source == "interviewer_runtime_service"
+    assert assistant_turn.metadata_json["graph_runtime_error"] == {
+        "status": "error",
+        "agent_runtime": "graph",
+        "selected_public_runtime": "graph",
+        "error_type": "RuntimeError",
+        "error_message": "graph material refresh exploded",
+        "fallback_runtime": "legacy",
+    }
 
 
 def test_debug_material_bundle_rejects_unknown_scenario(

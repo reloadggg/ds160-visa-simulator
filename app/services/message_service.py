@@ -107,16 +107,18 @@ class MessageService:
             return {}
 
         try:
-            interview_response = self.interviewer_runtime.refresh_after_material_change(
+            graph_shadow = self._run_material_change_graph_shadow(record, reason=reason)
+            runtime_mode = self._select_public_runtime(record.session_id)
+            response = self._run_material_change_public_runtime(
+                runtime_mode,
                 record,
                 reason=reason,
+                graph_shadow=graph_shadow,
             )
-            response = self.gate_runtime.merge_interview_response(
-                interview_response,
-                record,
-            )
+            self._attach_graph_shadow(response, graph_shadow)
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
+            self._strip_internal_runtime_fields(response)
             self.session_repo.save(record)
             return response
         except Exception:
@@ -192,6 +194,50 @@ class MessageService:
             response["selected_public_runtime"] = "legacy"
         return response
 
+    def _run_material_change_public_runtime(
+        self,
+        runtime_mode: PublicRuntimeMode,
+        record,
+        *,
+        reason: str,
+        graph_shadow: dict | None,
+    ) -> dict:
+        if runtime_mode == "graph":
+            try:
+                response = self.graph_runtime.run_material_change(
+                    record,
+                    reason=self._graph_material_change_reason(reason),
+                )
+            except Exception as exc:
+                if not settings.agent_runtime_fail_open_to_legacy:
+                    raise
+                response = self._run_legacy_material_change(record, reason=reason)
+                response["graph_runtime_error"] = {
+                    "status": "error",
+                    "agent_runtime": settings.agent_runtime,
+                    "selected_public_runtime": "graph",
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "fallback_runtime": "legacy",
+                }
+                return response
+            response["selected_public_runtime"] = "graph"
+            self._apply_graph_response_state(record, response)
+            return self.gate_runtime.merge_interview_response(response, record)
+
+        response = self._run_legacy_material_change(record, reason=reason)
+        if graph_shadow:
+            response["agent_runtime"] = settings.agent_runtime
+            response["selected_public_runtime"] = "legacy"
+        return response
+
+    def _run_legacy_material_change(self, record, *, reason: str) -> dict:
+        interview_response = self.interviewer_runtime.refresh_after_material_change(
+            record,
+            reason=reason,
+        )
+        return self.gate_runtime.merge_interview_response(interview_response, record)
+
     def _run_graph_shadow(
         self,
         record,
@@ -226,6 +272,51 @@ class MessageService:
             "turn_decision": dict(shadow_response.get("turn_decision", {}) or {}),
             "prompt_trace": dict(shadow_response.get("prompt_trace", {}) or {}),
         }
+
+    def _run_material_change_graph_shadow(
+        self,
+        record,
+        *,
+        reason: str,
+    ) -> dict | None:
+        if settings.agent_runtime != "graph_shadow":
+            return None
+        if not settings.agent_runtime_trace_enabled:
+            return None
+        try:
+            shadow_response = self.graph_runtime.run_material_change(
+                record,
+                reason=self._graph_material_change_reason(reason),
+            )
+        except Exception as exc:
+            if not settings.agent_runtime_fail_open_to_legacy:
+                raise
+            return {
+                "status": "error",
+                "agent_runtime": "graph_shadow",
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            }
+        return {
+            "status": "completed",
+            "agent_runtime": "graph_shadow",
+            "graph_run_id": shadow_response.get("graph_run_id"),
+            "graph_trace": dict(shadow_response.get("graph_trace", {}) or {}),
+            "graph_events": list(shadow_response.get("graph_events", []) or []),
+            "turn_decision": dict(shadow_response.get("turn_decision", {}) or {}),
+            "prompt_trace": dict(shadow_response.get("prompt_trace", {}) or {}),
+        }
+
+    def _graph_material_change_reason(self, reason: str) -> str:
+        normalized = reason.strip()
+        if normalized.startswith("debug_fill:"):
+            document_type = normalized.removeprefix("debug_fill:").strip()
+            return f"material_added:{document_type}" if document_type else "material_added"
+        if normalized.startswith("debug_material_bundle:"):
+            return "materials_updated"
+        if normalized.startswith("document_parsed:"):
+            return "document_parsed"
+        return "materials_updated"
 
     def _attach_graph_shadow(
         self,

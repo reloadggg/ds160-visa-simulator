@@ -135,6 +135,7 @@ def test_graph_response_mapper_returns_legacy_compatible_fields() -> None:
         "prompt_pack_id": "ds160.graph_runtime",
         "prompt_version": "agent-runtime.v1",
         "graph_run_id": "run-map",
+        "graph_trigger": "user_turn",
         "assistant_message_author": "adjudication_agent",
         "guard_status": "passed",
         "provider": "openai",

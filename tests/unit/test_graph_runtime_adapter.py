@@ -170,3 +170,54 @@ def test_graph_runtime_adapter_typed_adjudication_missing_model_falls_back(
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_graph_runtime_adapter_runs_material_change_without_user_turn(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'graph-runtime-material-change.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            record = SessionRecord(
+                session_id="sess-graph-material-change",
+                phase_state="interview",
+                declared_family="f1",
+                current_governor_decision="continue_interview",
+                gate_status_json=build_initial_gate_status(
+                    declared_family="f1",
+                    required_documents=[],
+                    scenario_key="student",
+                ),
+                profile_json={"profile_id": "profile-sess-graph-material-change"},
+                runtime_trace_json=[],
+                score_history_json=[],
+                governor_history_json=[],
+                interviewer_state_json={},
+                current_focus_json={},
+            )
+            db.add(record)
+            db.flush()
+
+            payload = GraphRuntimeAdapter(db).run_material_change(
+                record,
+                reason="debug_fill:i20",
+            )
+
+        assert payload["agent_runtime"] == "graph"
+        assert payload["graph_runtime_engine"] == "langgraph"
+        assert payload["turn_record"].get("user_turn_id") is None
+        assert payload["turn_record"]["user_input"] == "debug_fill:i20"
+        assert payload["prompt_trace"]["graph_trigger"] == "material_change"
+        assert payload["prompt_trace"]["material_change_reason"] == "debug_fill:i20"
+        assert payload["graph_trace"]["trigger"] == "material_change"
+        assert payload["graph_trace"]["material_change_reason"] == "debug_fill:i20"
+        accepted_event = payload["graph_events"][0]
+        assert accepted_event["payload"]["trigger"] == "material_change"
+        assert accepted_event["payload"]["material_change_reason"] == "debug_fill:i20"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

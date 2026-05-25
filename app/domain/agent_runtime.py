@@ -75,6 +75,7 @@ GraphEventType = Literal[
     "final",
     "error",
 ]
+GraphTrigger = Literal["user_turn", "material_change"]
 
 
 class RetryBudget(BaseModel):
@@ -298,6 +299,8 @@ class DS160GraphState(BaseModel):
     schema_version: GraphSchemaVersion = "agent-runtime.v1"
     session_id: str
     run_id: str
+    trigger: GraphTrigger = "user_turn"
+    material_change_reason: str | None = None
     client_turn_id: str | None = None
     user_turn: dict[str, Any] = Field(default_factory=dict)
     case_state: dict[str, Any] = Field(default_factory=dict)
@@ -317,6 +320,20 @@ class DS160GraphState(BaseModel):
         if not normalized:
             raise ValueError("graph state ids must not be empty")
         return normalized
+
+    @field_validator("material_change_reason")
+    @classmethod
+    def normalize_material_change_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_material_change_trigger(self) -> "DS160GraphState":
+        if self.trigger == "material_change" and self.material_change_reason is None:
+            raise ValueError("material_change trigger requires material_change_reason")
+        return self
 
     @model_validator(mode="after")
     def validate_final_response_citations(self) -> "DS160GraphState":

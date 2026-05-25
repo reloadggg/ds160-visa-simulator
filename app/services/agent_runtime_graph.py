@@ -71,6 +71,8 @@ class DeterministicDS160TurnGraph:
         session_id: str,
         run_id: str,
         message_text: str,
+        trigger: str = "user_turn",
+        material_change_reason: str | None = None,
         client_turn_id: str | None = None,
         citation_bundle: CitationBundle | None = None,
         retry_budget: RetryBudget | None = None,
@@ -78,6 +80,8 @@ class DeterministicDS160TurnGraph:
         state = DS160GraphState(
             session_id=session_id,
             run_id=run_id,
+            trigger=trigger,  # type: ignore[arg-type]
+            material_change_reason=material_change_reason,
             client_turn_id=client_turn_id,
             user_turn={"content": message_text},
             citation_bundle=citation_bundle or CitationBundle(),
@@ -87,7 +91,11 @@ class DeterministicDS160TurnGraph:
             "accepted",
             state=state,
             sequence=0,
-            payload={"client_turn_id": client_turn_id},
+            payload={
+                "client_turn_id": client_turn_id,
+                "trigger": trigger,
+                "material_change_reason": material_change_reason,
+            },
         )
         result = self.compiled_graph.invoke(
             {

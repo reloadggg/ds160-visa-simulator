@@ -192,3 +192,96 @@ def test_graph_case_state_builder_does_not_depend_on_legacy_orchestrators() -> N
 
     assert not hasattr(builder, "capability_orchestrator")
     assert not hasattr(builder, "turn_projector")
+
+
+def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
+    record = SessionRecord(
+        session_id="sess-debug-sanitize",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    documents = [
+        DocumentRecord(
+            document_id="doc-debug",
+            session_id=record.session_id,
+            filename="debug_i20.txt",
+            status="parsed",
+            artifact_json={
+                "document_type": "i20",
+                "source_type": "text",
+                "metadata": {
+                    "debug_material_bundle": True,
+                    "synthetic_bundle_id": "dbg-bundle-secret",
+                    "debug_bundle_scenario": "school_mismatch_bundle",
+                    "debug_bundle_scenario_label": "学校材料冲突包",
+                },
+                "document_assessment": {
+                    "document_type": "i20",
+                    "document_type_candidates": ["i20"],
+                    "relevance": "high",
+                    "supported_claims": ["/education/school_name"],
+                    "confidence": 1.0,
+                    "relevant": True,
+                    "counts_toward_gate": True,
+                },
+            },
+        )
+    ]
+    chunks = [
+        DocumentChunkRecord(
+            chunk_id="chunk-debug",
+            document_id="doc-debug",
+            session_id=record.session_id,
+            ordinal=0,
+            page_number=1,
+            text="School Name: Example University",
+            metadata_json={
+                "synthetic_bundle_id": "dbg-bundle-secret",
+                "debug_bundle_scenario": "school_mismatch_bundle",
+            },
+        )
+    ]
+    evidence = [
+        EvidenceItemRecord(
+            evidence_id="evi-debug",
+            session_id=record.session_id,
+            document_id="doc-debug",
+            chunk_id="chunk-debug",
+            evidence_type="i20",
+            field_path="/education/school_name",
+            value="Example University",
+            excerpt="School Name: Example University",
+            confidence=1.0,
+            metadata_json={
+                "synthetic_bundle_id": "dbg-bundle-secret",
+                "debug_bundle_scenario": "school_mismatch_bundle",
+            },
+        )
+    ]
+
+    case_state = GraphCaseStateBuilder().build(
+        record,
+        [],
+        documents=documents,
+        document_chunks=chunks,
+        evidence_items=evidence,
+    )
+
+    assert case_state["documents"][0]["artifact"] == {
+        "source_type": "text",
+        "document_type": "i20",
+        "metadata": {"debug_material_bundle": True},
+        "document_assessment": {
+            "document_type": "i20",
+            "document_type_candidates": ["i20"],
+            "relevance": "high",
+            "supported_claims": ["/education/school_name"],
+            "confidence": 1.0,
+            "relevant": True,
+            "counts_toward_gate": True,
+        },
+    }
+    serialized = str(case_state)
+    assert "dbg-bundle-secret" not in serialized
+    assert "school_mismatch_bundle" not in serialized
+    assert "学校材料冲突包" not in serialized

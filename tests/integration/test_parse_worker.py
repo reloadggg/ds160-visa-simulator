@@ -3,12 +3,13 @@ import asyncio
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
 
+from app.core import settings as settings_module
 from app.db.base import Base
-from app.db.models import JobRecord, SessionRecord
+from app.db.models import JobRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
@@ -224,3 +225,131 @@ def test_parse_worker_claims_oldest_queued_job_first(
         assert first_job.job_id < second_job.job_id
         assert first_job.status == "completed"
         assert second_job.status == "queued"
+
+
+def test_parse_worker_material_refresh_uses_graph_runtime(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+
+    def legacy_refresh_must_not_run(self, record, *, reason: str) -> dict:
+        raise AssertionError("legacy material refresh should not run in graph mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        legacy_refresh_must_not_run,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="runtime_test",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    upload_response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof.pdf",
+                build_pdf_bytes("Parent sponsor bank statement for tuition"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 202
+    job_id = upload_response.json()["job_id"]
+
+    with db_session_factory() as db:
+        assert ParseWorker(db).run_once() is True
+
+    with db_session_factory() as db:
+        job = db.get(JobRecord, job_id)
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert job is not None
+    assert job.status == "completed"
+    assert assistant_turn is not None
+    assert assistant_turn.source == "graph_runtime_adapter"
+    metadata = assistant_turn.metadata_json
+    assert metadata["agent_runtime"] == "graph"
+    assert metadata["selected_public_runtime"] == "graph"
+    assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
+    assert metadata["prompt_trace"]["material_change_reason"] == "document_parsed"
+    assert metadata["turn_record"].get("user_turn_id") is None
+
+
+def test_parse_worker_keeps_completed_job_when_material_refresh_fails(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_material_change",
+        lambda self, record, *, reason: (_ for _ in ()).throw(
+            RuntimeError("graph material refresh failed after parse")
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="runtime_test",
+            required_documents=["funding_proof"],
+        )
+        db.add(record)
+        db.commit()
+
+    upload_response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "funding_proof.pdf",
+                build_pdf_bytes("Parent sponsor bank statement for tuition"),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 202
+    job_id = upload_response.json()["job_id"]
+
+    with db_session_factory() as db:
+        assert ParseWorker(db).run_once() is True
+
+    with db_session_factory() as db:
+        job = db.get(JobRecord, job_id)
+        assistant_count = db.scalar(
+            select(func.count())
+            .select_from(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+        )
+
+    assert job is not None
+    assert job.status == "completed"
+    assert assistant_count == 0

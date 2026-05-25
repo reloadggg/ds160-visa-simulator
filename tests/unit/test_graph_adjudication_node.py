@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.domain.agent_runtime import DS160GraphState, GraphRunResult
 from app.services.graph_adjudication_node import GraphAdjudicationNode
 
@@ -135,3 +137,66 @@ def test_graph_adjudication_node_accepts_legacy_factory_signature() -> None:
     )
 
     assert result.metadata["fallback_reason"] == "model_unavailable"
+
+
+def test_graph_adjudication_prompt_uses_sanitized_case_state(monkeypatch) -> None:
+    prompts: list[str] = []
+
+    class CapturingAgent:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def run_sync(self, prompt: str):
+            prompts.append(prompt)
+
+            class Result:
+                output = GraphRunResult(
+                    assistant_message="请继续说明你的学习计划。",
+                    assistant_message_author="adjudication_agent",
+                    decision="continue_interview",
+                )
+
+            return Result()
+
+    monkeypatch.setattr(
+        "app.services.graph_adjudication_node.Agent",
+        CapturingAgent,
+    )
+    state = DS160GraphState(
+        session_id="sess-graph-adjudication",
+        run_id="graph-run-sanitized-prompt",
+        case_state={
+            "documents": [
+                {
+                    "document_id": "doc-debug",
+                    "artifact": {
+                        "document_type": "i20",
+                        "metadata": {"debug_material_bundle": True},
+                    },
+                }
+            ],
+            "evidence_items": [],
+        },
+    )
+
+    result = GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object())
+    ).run(
+        state,
+        message_text="materials_updated",
+        declared_family="f1",
+    )
+
+    assert result.metadata["status"] == "completed"
+    assert len(prompts) == 1
+    prompt_payload = json.loads(prompts[0])
+    assert prompt_payload["case_state"] == state.case_state
+    assert prompt_payload["user"] == "materials_updated"
+    serialized_prompt = prompts[0]
+    assert "debug_material_bundle" in serialized_prompt
+    assert "expected_findings" not in serialized_prompt
+    assert "synthetic_bundle_id" not in serialized_prompt
+    assert "dbg-bundle-" not in serialized_prompt
+    assert "debug_bundle_scenario" not in serialized_prompt
+    assert "school_mismatch_bundle" not in serialized_prompt
+    assert "学校材料冲突包" not in serialized_prompt

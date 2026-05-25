@@ -53,12 +53,44 @@ class GraphRuntimeAdapter:
         *,
         user_turn: Any | None = None,
     ) -> dict[str, Any]:
+        return self._run_graph(
+            record,
+            message_text=message_text,
+            trigger="user_turn",
+            user_turn=user_turn,
+        )
+
+    def run_material_change(
+        self,
+        record: SessionRecord,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        return self._run_graph(
+            record,
+            message_text=reason,
+            trigger="material_change",
+            material_change_reason=reason,
+            user_turn=None,
+        )
+
+    def _run_graph(
+        self,
+        record: SessionRecord,
+        *,
+        message_text: str,
+        trigger: str,
+        material_change_reason: str | None = None,
+        user_turn: Any | None = None,
+    ) -> dict[str, Any]:
         run_id = self._build_run_id()
         user_turn_id = self._string_or_none(getattr(user_turn, "turn_id", None))
         graph = DeterministicDS160TurnGraph(
             nodes={
                 "receive_turn": self._receive_turn_node(
                     message_text=message_text,
+                    trigger=trigger,
+                    material_change_reason=material_change_reason,
                     user_turn_id=user_turn_id,
                 ),
                 "build_case_state": self._build_case_state_node(record),
@@ -73,6 +105,8 @@ class GraphRuntimeAdapter:
             run_id=run_id,
             client_turn_id=user_turn_id,
             message_text=message_text,
+            trigger=trigger,
+            material_change_reason=material_change_reason,
         )
         payload = self.response_mapper.to_message_response(state, events)
         payload["graph_runtime_engine"] = "langgraph"
@@ -144,9 +178,22 @@ class GraphRuntimeAdapter:
         self,
         *,
         message_text: str,
+        trigger: str,
+        material_change_reason: str | None,
         user_turn_id: str | None,
     ):
         def _node(state: DS160GraphState) -> DS160GraphState:
+            if trigger == "material_change":
+                return state.model_copy(
+                    update={
+                        "user_turn": {
+                            "turn_id": None,
+                            "content": message_text,
+                            "source": "material_change",
+                            "reason": material_change_reason,
+                        }
+                    }
+                )
             return state.model_copy(
                 update={
                     "user_turn": {

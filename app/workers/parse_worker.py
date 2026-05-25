@@ -56,6 +56,12 @@ class ParseWorker:
                     "material change refresh skipped because turn model is unavailable",
                     extra={"session_id": session_id, "document_id": document_id},
                 )
+            except Exception:
+                logger.exception(
+                    "material change refresh failed after parse job completed",
+                    extra={"session_id": session_id, "document_id": document_id},
+                )
+                self.db.rollback()
             return True
         except Exception:
             self.db.rollback()

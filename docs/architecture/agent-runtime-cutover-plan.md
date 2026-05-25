@@ -70,8 +70,9 @@ ResponseMapper  只做旧 API 兼容映射，不改写语义
    - 正确做法：graph 的 `final_response.decision` 是唯一决策源；旧字段只是投影。
 4. `prompt_trace`、`runtime_trace_json`、`runtime_view_state`、`turn_record` 平行表达同一件事。
    - 正确做法：graph event 是事实源，旧字段从 graph event 派生。
-5. 材料上传后直接触发完整模型主回复的隐式副作用。
-   - 正确做法：parse worker 只更新 evidence / case state；是否刷新用户主回复由 graph 明确节点决定。
+5. 材料上传后直接触发旧 runtime 主回复的隐式副作用。
+   - 正确做法：parse worker 先提交 evidence / case state；后置 material refresh 只能经 `MessageService` 的 runtime selector，graph mode 下走 `GraphRuntimeAdapter.run_material_change(...)`。
+   - refresh 失败不能把已完成 parse job 回滚为 failed。
 
 ### 可以先保留但冻结
 
@@ -249,6 +250,7 @@ graph 可追加但不能替换的字段：
 4. 新增 `POST /v1/sessions/{session_id}/runtime-traces/{run_id}` 或等价 debug endpoint。
 5. `messages/stream` 保持 `accepted -> analyzing -> final/error` 兼容，同时可附加 graph event 摘要。
 6. parse worker 默认只更新材料状态；自动 material refresh 通过 graph 显式节点执行，不再在 worker 里隐式启动旧主流程。
+7. debug fill / debug material bundle 的 material refresh 在 graph mode 下走 graph；debug 场景名进入 graph 前脱敏，避免把 `school_mismatch_bundle` 等 oracle 信号暴露给模型或 graph event。
 
 验收：
 
@@ -256,6 +258,9 @@ graph 可追加但不能替换的字段：
 - OpenAI-compatible API metadata 仍有 `turn_decision` / `prompt_trace`。
 - Next.js workbench 无需改 UI 即可显示回复。
 - replay fixture CLI 全部通过。
+- 一键补资料、材料包、parse worker 三条 material-change 入口在 graph mode 下不会调用 legacy refresh。
+- graph material refresh 只写一条 assistant turn，且 `turn_record.user_turn_id` 为空。
+- material bundle 的 `expected_findings`、scenario、bundle id 不进入 graph prompt/event/document review context。
 
 停止条件：
 
@@ -414,10 +419,19 @@ Phase A0 已落地：
 - `GraphResponseMapper` 已能把 `DS160GraphState + GraphEvent[]` 投影为旧 API 响应字段，并保留 graph trace。
 - focused tests、`compileall`、非 live 全量测试和 graph replay fixture 已通过。
 
-下一批实现进入 Phase A：
+Phase A / B 当前已落地：
 
-1. 加 `AGENT_RUNTIME=legacy|graph_shadow|graph_canary|graph` settings。
-2. 写 `GraphRuntimeAdapter`，只通过 `GraphCaseStateBuilder + DeterministicDS160TurnGraph + GraphResponseMapper` 生成 graph 旁路响应。
-3. `MessageService` 加 runtime selector，`graph_shadow` 返回 legacy response，graph 只记录 shadow trace。
-4. 写集成测试证明 shadow 不新增第二条 assistant turn、不影响 legacy rollback。
-5. 再进入 deterministic graph 主流程替换。
+- `AGENT_RUNTIME=legacy|graph_shadow|graph_canary|graph` selector 已接入 `MessageService.handle_user_turn(...)`。
+- 官方 `langgraph.graph.StateGraph` 已编译为 `CompiledStateGraph` 并由 `GraphRuntimeAdapter` 调用。
+- `graph_shadow` 返回 legacy public response，并把 graph trace 附在同一条 assistant turn metadata。
+- deterministic graph mode 已能写 public assistant turn，前端旧字段保持兼容。
+- material-change refresh 已接入 graph runtime，覆盖 debug fill、debug material bundle、parse worker。
+- parse worker 在解析 job 完成后触发 refresh；refresh 异常只记录日志，不反向污染 completed job。
+
+下一批实现进入 Phase C / D：
+
+1. 为 `AdjudicationNode` 开启真实 typed LLM 前补 live smoke：普通消息、材料包、parse worker、OpenAI-compatible。
+2. 把 `GraphKnowledgePlaneService` 的 policy/case citation 扩到 replay corpus，验证 policy claim 和 case conflict 均可溯源。
+3. 扩容 replay corpus 到至少 30 条行为 fixture，覆盖“哪里不一致”、资金不足、学校冲突、provider 失败。
+4. canary 前记录 24 小时 shadow 指标：500 rate、fallback rate、guard fail rate、missing citation rate。
+5. 只有 replay + live smoke 均通过后，才把 `AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true` 纳入 canary。

@@ -615,6 +615,146 @@ def test_debug_fill_current_gap_persists_assistant_refresh_turn(
     )
 
 
+def test_debug_fill_current_gap_graph_runtime_persists_graph_assistant_turn(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+
+    def legacy_refresh_must_not_run(self, record, *, reason: str) -> dict:
+        raise AssertionError("legacy material refresh should not run in graph mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        legacy_refresh_must_not_run,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "normal"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant_message"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert payload["turn_decision"]["decision"] == "continue_interview"
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("assistant", "graph_runtime_adapter"),
+    ]
+    metadata = turns[0].metadata_json
+    assert metadata["agent_runtime"] == "graph"
+    assert metadata["selected_public_runtime"] == "graph"
+    assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
+    assert metadata["prompt_trace"]["material_change_reason"] == "material_added:ds160"
+    assert metadata["graph_events"][0]["payload"]["trigger"] == "material_change"
+    assert (
+        metadata["graph_events"][0]["payload"]["material_change_reason"]
+        == "material_added:ds160"
+    )
+    assert metadata["graph_events"][-1]["event_type"] == "final"
+    assert metadata["turn_record"].get("user_turn_id") is None
+    assert metadata["turn_record"]["user_input"] == "material_added:ds160"
+    assert metadata["turn_record"]["assistant_turn_id"] == turns[0].turn_id
+
+
+def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
+    monkeypatch.setattr(
+        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_material_change",
+        lambda self, record, *, reason: (_ for _ in ()).throw(
+            RuntimeError("graph material refresh exploded")
+        ),
+    )
+    refresh_calls = install_material_refresh_stub(monkeypatch)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "normal"},
+    )
+
+    assert response.status_code == 200
+    assert refresh_calls == ["debug_fill:ds160"]
+    assert response.json()["assistant_message"] == "Please continue with your study plan."
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "interviewer_runtime_service"
+    assert assistant_turn.metadata_json["graph_runtime_error"] == {
+        "status": "error",
+        "agent_runtime": "graph",
+        "selected_public_runtime": "graph",
+        "error_type": "RuntimeError",
+        "error_message": "graph material refresh exploded",
+        "fallback_runtime": "legacy",
+    }
+
+
+def test_debug_fill_current_gap_graph_shadow_keeps_legacy_response(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    refresh_calls = install_material_refresh_stub(monkeypatch)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/fill-current-gap",
+        json={"scenario": "normal"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert refresh_calls == ["debug_fill:ds160"]
+    assert payload["assistant_message"] == "Please continue with your study plan."
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "interviewer_runtime_service"
+    graph_shadow = assistant_turn.metadata_json["graph_shadow"]
+    assert graph_shadow["status"] == "completed"
+    assert graph_shadow["agent_runtime"] == "graph_shadow"
+    assert graph_shadow["prompt_trace"]["graph_trigger"] == "material_change"
+    assert graph_shadow["prompt_trace"]["material_change_reason"] == "material_added:ds160"
+
+
 def test_runtime_trace_endpoint_returns_graph_events(
     client: TestClient,
     db_session_factory,
