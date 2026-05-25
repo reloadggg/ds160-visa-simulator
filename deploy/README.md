@@ -43,7 +43,7 @@ curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
 ```env
 AGENT_RUNTIME=graph
 AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true
-AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=false
+AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true
 ```
 
 如需重新做小流量观察，可以按以下顺序：
