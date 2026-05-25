@@ -179,6 +179,9 @@ def test_graph_case_state_builder_normalizes_session_turns_and_materials() -> No
     assert case_state["history_summary"]["prior_decisions"] == [
         "continue_interview"
     ]
+    assert case_state["history_summary"]["prior_question_topics"] == [
+        "program_school"
+    ]
 
 
 def test_graph_case_state_builder_projects_case_memory_from_document_artifacts() -> None:
@@ -505,6 +508,50 @@ def test_graph_case_state_builder_keeps_recent_turn_window_stable() -> None:
         "turn-8",
     ]
     assert case_state["history_summary"]["turn_count"] == 8
+
+
+def test_graph_case_state_builder_summarizes_prior_question_topics() -> None:
+    record = SessionRecord(
+        session_id="sess-topic-summary",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    turns = [
+        SimpleNamespace(
+            turn_id="turn-assistant-post-study",
+            turn_index=1,
+            session_id=record.session_id,
+            role="assistant",
+            content="毕业后你准备做什么工作？",
+            source="graph_runtime_adapter",
+            metadata_json={},
+        ),
+        SimpleNamespace(
+            turn_id="turn-assistant-post-study-variant",
+            turn_index=2,
+            session_id=record.session_id,
+            role="assistant",
+            content="毕业后你回国准备做什么岗位？",
+            source="graph_runtime_adapter",
+            metadata_json={},
+        ),
+        SimpleNamespace(
+            turn_id="turn-assistant-sponsor",
+            turn_index=3,
+            session_id=record.session_id,
+            role="assistant",
+            content="你父亲做什么工作？",
+            source="graph_runtime_adapter",
+            metadata_json={},
+        ),
+    ]
+
+    case_state = GraphCaseStateBuilder().build(record, turns)
+
+    assert case_state["history_summary"]["prior_question_topics"] == [
+        "post_study_plan",
+        "funding",
+    ]
 
 
 def test_graph_case_state_builder_uses_profile_document_snapshot_and_material_reference() -> None:

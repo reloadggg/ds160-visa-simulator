@@ -394,6 +394,45 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
     }
 
 
+def test_debug_material_bundle_refresh_error_returns_final_payload(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_refresh(self, session_id: str, *, reason: str) -> dict:
+        raise RuntimeError("session turn index conflict")
+
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.refresh_after_material_change",
+        fail_refresh,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["documents"]) >= 5
+    assert payload["main_flow_refresh_error"] == (
+        "RuntimeError: session turn index conflict"
+    )
+
+    with db_session_factory() as db:
+        documents = db.query(DocumentRecord).filter_by(session_id=session_id).all()
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert len(documents) == len(payload["documents"])
+    assert all(turn.role != "assistant" for turn in turns)
+
+
 def test_debug_material_bundle_rejects_unknown_scenario(
     client: TestClient,
 ) -> None:

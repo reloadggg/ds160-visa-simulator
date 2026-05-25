@@ -453,3 +453,84 @@ def test_graph_adjudication_repairs_repeated_question_after_material_reference(
     )
     assert result.metadata["question_repaired"] is True
     assert result.metadata["question_repair_reason"] == "repeated_recent_question"
+
+
+def test_graph_adjudication_repairs_semantically_repeated_post_study_question(
+    monkeypatch,
+) -> None:
+    repeated = GraphRunResult(
+        assistant_message="毕业后你准备回国做什么工作？",
+        assistant_message_author="adjudication_agent",
+        decision="continue_interview",
+    )
+
+    def fake_run_agent(self, *, model, runtime, state, message_text):
+        return repeated
+
+    monkeypatch.setattr(GraphAdjudicationNode, "_run_agent", fake_run_agent)
+    state = DS160GraphState(
+        session_id="sess-graph-adjudication",
+        run_id="graph-run-repair-topic-repeat",
+        case_state={
+            "case_brief": {
+                "recent_assistant_questions": [
+                    {"question": "毕业后你准备做什么工作？"},
+                    {"question": "毕业后你回国准备做什么岗位？"},
+                ],
+                "latest_user_referred_to_materials": False,
+            },
+        },
+    )
+
+    result = GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object())
+    ).run(
+        state,
+        message_text="我已经回答过你了",
+        declared_family="f1",
+    )
+
+    assert result.state.final_response is not None
+    assert result.state.final_response.assistant_message == (
+        "为什么不在国内读同类项目？"
+    )
+    assert result.metadata["question_repaired"] is True
+    assert result.metadata["question_repair_reason"] == "repeated_recent_question"
+
+
+def test_graph_adjudication_keeps_sponsor_job_distinct_from_post_study_plan(
+    monkeypatch,
+) -> None:
+    result_from_llm = GraphRunResult(
+        assistant_message="你父亲做什么工作？",
+        assistant_message_author="adjudication_agent",
+        decision="continue_interview",
+    )
+
+    def fake_run_agent(self, *, model, runtime, state, message_text):
+        return result_from_llm
+
+    monkeypatch.setattr(GraphAdjudicationNode, "_run_agent", fake_run_agent)
+    state = DS160GraphState(
+        session_id="sess-graph-adjudication",
+        run_id="graph-run-sponsor-topic",
+        case_state={
+            "case_brief": {
+                "recent_assistant_questions": [
+                    {"question": "毕业后你准备做什么工作？"}
+                ],
+            },
+        },
+    )
+
+    result = GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object())
+    ).run(
+        state,
+        message_text="由我父亲支付",
+        declared_family="f1",
+    )
+
+    assert result.state.final_response is not None
+    assert result.state.final_response.assistant_message == "你父亲做什么工作？"
+    assert "question_repaired" not in result.metadata

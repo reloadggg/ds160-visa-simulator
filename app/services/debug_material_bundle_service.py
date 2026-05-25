@@ -257,6 +257,9 @@ class DebugMaterialBundleService:
         except ModelRuntimeError as exc:
             refresh_error = exc.detail
             self.db.rollback()
+        except Exception as exc:
+            refresh_error = f"{exc.__class__.__name__}: {exc}"
+            self.db.rollback()
 
         self.db.refresh(record)
         yield DebugMaterialBundleEvent(

@@ -69,29 +69,29 @@ class SessionTurnRepository:
         commit: bool,
     ) -> SessionTurnRecord:
         if not commit:
-            record = SessionTurnRecord(
-                turn_id=self._build_turn_id(),
-                turn_index=self._next_turn_index(session_id),
+            return self._append_turn_without_commit(
                 session_id=session_id,
                 role=role,
                 content=content,
                 source=source,
-                metadata_json=metadata_json or {},
+                metadata_json=metadata_json,
             )
-            self.db.add(record)
-            self.db.flush()
-            return record
 
+        attempted_turn_index: int | None = None
         for _ in range(MAX_APPEND_RETRIES):
-            record = SessionTurnRecord(
-                turn_id=self._build_turn_id(),
-                turn_index=self._next_turn_index(session_id),
+            record = self._build_turn_record(
                 session_id=session_id,
                 role=role,
                 content=content,
                 source=source,
-                metadata_json=metadata_json or {},
+                metadata_json=metadata_json,
+                minimum_turn_index=(
+                    attempted_turn_index + 1
+                    if attempted_turn_index is not None
+                    else None
+                ),
             )
+            attempted_turn_index = record.turn_index
             self.db.add(record)
             try:
                 self.db.commit()
@@ -102,6 +102,63 @@ class SessionTurnRepository:
             return record
 
         raise RuntimeError("failed to append session turn with a stable turn_index")
+
+    def _append_turn_without_commit(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content: str,
+        source: str,
+        metadata_json: dict | None,
+    ) -> SessionTurnRecord:
+        attempted_turn_index: int | None = None
+        for _ in range(MAX_APPEND_RETRIES):
+            try:
+                with self.db.begin_nested():
+                    record = self._build_turn_record(
+                        session_id=session_id,
+                        role=role,
+                        content=content,
+                        source=source,
+                        metadata_json=metadata_json,
+                        minimum_turn_index=(
+                            attempted_turn_index + 1
+                            if attempted_turn_index is not None
+                            else None
+                        ),
+                    )
+                    attempted_turn_index = record.turn_index
+                    self.db.add(record)
+                    self.db.flush()
+                return record
+            except IntegrityError:
+                continue
+
+        raise RuntimeError("failed to append session turn with a stable turn_index")
+
+    def _build_turn_record(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content: str,
+        source: str,
+        metadata_json: dict | None,
+        minimum_turn_index: int | None = None,
+    ) -> SessionTurnRecord:
+        turn_index = self._next_turn_index(session_id)
+        if minimum_turn_index is not None:
+            turn_index = max(turn_index, minimum_turn_index)
+        return SessionTurnRecord(
+            turn_id=self._build_turn_id(),
+            turn_index=turn_index,
+            session_id=session_id,
+            role=role,
+            content=content,
+            source=source,
+            metadata_json=metadata_json or {},
+        )
 
     def _build_turn_id(self) -> str:
         return f"turn-{time_ns():020d}-{uuid4().hex[:8]}"

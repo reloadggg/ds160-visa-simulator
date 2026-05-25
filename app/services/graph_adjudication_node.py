@@ -150,8 +150,13 @@ class GraphAdjudicationNode:
             return result, {}
 
         normalized_message = self._normalize_question(result.assistant_message)
+        result_topic = self._question_topic(result.assistant_message)
         repeated = any(
             normalized_message == self._normalize_question(question)
+            or (
+                result_topic is not None
+                and result_topic == self._question_topic(question)
+            )
             for question in recent_questions
         )
         if not repeated:
@@ -162,6 +167,11 @@ class GraphAdjudicationNode:
             user_referred_to_materials=bool(
                 case_brief.get("latest_user_referred_to_materials")
             ),
+            blocked_topics={
+                topic
+                for topic in (self._question_topic(question) for question in recent_questions)
+                if topic is not None
+            },
         )
         if replacement is None:
             return result, {}
@@ -178,12 +188,14 @@ class GraphAdjudicationNode:
         recent_questions: list[str],
         *,
         user_referred_to_materials: bool,
+        blocked_topics: set[str],
     ) -> str | None:
         candidates = [
             "材料我看到了。毕业后你准备做什么工作？",
             "这个项目和你的回国工作有什么关系？",
             "为什么不在国内读同类项目？",
             "第一年费用的资金来源是什么？",
+            "你本科阶段哪部分经历最能支持这个项目？",
         ]
         if not user_referred_to_materials:
             candidates.insert(0, "毕业后你准备做什么工作？")
@@ -191,8 +203,12 @@ class GraphAdjudicationNode:
             self._normalize_question(question) for question in recent_questions
         }
         for candidate in candidates:
-            if self._normalize_question(candidate) not in normalized_recent:
-                return candidate
+            if self._normalize_question(candidate) in normalized_recent:
+                continue
+            candidate_topic = self._question_topic(candidate)
+            if candidate_topic is not None and candidate_topic in blocked_topics:
+                continue
+            return candidate
         return None
 
     def _normalize_question(self, value: str) -> str:
@@ -205,6 +221,72 @@ class GraphAdjudicationNode:
             for character in normalized
             if character not in " \t\r\n。！？!?，,：:"
         )
+
+    def _question_topic(self, value: str) -> str | None:
+        normalized = value.strip().casefold()
+        if any(
+            marker in normalized
+            for marker in (
+                "第一年费用",
+                "学费",
+                "生活费",
+                "资金",
+                "资助",
+                "父亲",
+                "母亲",
+                "父母",
+                "fund",
+                "sponsor",
+                "tuition",
+                "pay",
+            )
+        ):
+            return "funding"
+        if any(
+            marker in normalized
+            for marker in (
+                "毕业后",
+                "回国",
+                "工作",
+                "岗位",
+                "任教",
+                "career",
+                "job",
+                "return home",
+                "post-graduation",
+            )
+        ):
+            return "post_study_plan"
+        if any(
+            marker in normalized
+            for marker in (
+                "为什么选择",
+                "为什么不在国内",
+                "学校",
+                "项目",
+                "专业",
+                "program",
+                "school",
+                "major",
+            )
+        ):
+            return "program_school"
+        if any(
+            marker in normalized
+            for marker in (
+                "本科",
+                "成绩",
+                "语言",
+                "经历",
+                "academic",
+                "gpa",
+                "toefl",
+                "ielts",
+                "experience",
+            )
+        ):
+            return "academic_preparation"
+        return None
 
     def _build_instructions(self, runtime: dict[str, Any]) -> str:
         base = runtime.get("instructions") or self._fallback_instructions()

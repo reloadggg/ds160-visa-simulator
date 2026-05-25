@@ -449,9 +449,12 @@ class GraphCaseStateBuilder:
                 if document_type not in prior_requested_documents:
                     prior_requested_documents.append(document_type)
             focus = self._payload(turn_record.get("focus"))
-            question = self._string_or_none(focus.get("question"))
-            if question:
-                prior_question_topics.append(question)
+            question = self._string_or_none(focus.get("question")) or self._string_or_none(
+                turn.get("content")
+            )
+            question_topic = self._question_topic(question)
+            if question_topic and question_topic not in prior_question_topics:
+                prior_question_topics.append(question_topic)
 
         return {
             "turn_count": len(turns),
@@ -465,6 +468,74 @@ class GraphCaseStateBuilder:
             ],
             "prior_question_topics": prior_question_topics[-self.max_history_items :],
         }
+
+    def _question_topic(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().casefold()
+        if any(
+            marker in normalized
+            for marker in (
+                "第一年费用",
+                "学费",
+                "生活费",
+                "资金",
+                "资助",
+                "父亲",
+                "母亲",
+                "父母",
+                "fund",
+                "sponsor",
+                "tuition",
+                "pay",
+            )
+        ):
+            return "funding"
+        if any(
+            marker in normalized
+            for marker in (
+                "毕业后",
+                "回国",
+                "工作",
+                "岗位",
+                "任教",
+                "career",
+                "job",
+                "return home",
+                "post-graduation",
+            )
+        ):
+            return "post_study_plan"
+        if any(
+            marker in normalized
+            for marker in (
+                "为什么选择",
+                "为什么不在国内",
+                "学校",
+                "项目",
+                "专业",
+                "program",
+                "school",
+                "major",
+            )
+        ):
+            return "program_school"
+        if any(
+            marker in normalized
+            for marker in (
+                "本科",
+                "成绩",
+                "语言",
+                "经历",
+                "academic",
+                "gpa",
+                "toefl",
+                "ielts",
+                "experience",
+            )
+        ):
+            return "academic_preparation"
+        return None
 
     def _build_evidence_digest(
         self,

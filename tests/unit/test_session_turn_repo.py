@@ -148,3 +148,103 @@ def test_session_turn_repository_retries_when_turn_index_conflicts(
 
     assert second_turn.turn_index == 2
     assert [turn.turn_index for turn in turns] == [1, 2]
+
+
+def test_session_turn_repository_retries_without_committing_outer_transaction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'session-turn-nested-conflict.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        session_record = SessionRepository(db).create(
+            declared_family="f1",
+            gate_status_json={"status": "pending_documents"},
+        )
+        session_id = session_record.session_id
+        repo = SessionTurnRepository(db)
+        repo.append_user_turn(
+            session_id=session_id,
+            content="第一条说明",
+            source="chat_completions",
+        )
+
+        session_record.phase_state = "interview"
+        db.add(session_record)
+        next_indexes = iter([1, 2])
+        monkeypatch.setattr(repo, "_next_turn_index", lambda _session_id: next(next_indexes))
+
+        second_turn = repo.append_assistant_turn(
+            session_id=session_id,
+            content="第二条追问",
+            source="chat_completions",
+            commit=False,
+        )
+        second_turn_index = second_turn.turn_index
+        db.commit()
+
+    with Session(engine) as db:
+        saved_session = SessionRepository(db).get(session_id)
+        turns = SessionTurnRepository(db).list_session_turns(session_id)
+
+    assert saved_session is not None
+    assert saved_session.phase_state == "interview"
+    assert second_turn_index == 2
+    assert [turn.turn_index for turn in turns] == [1, 2]
+
+
+def test_session_turn_repository_without_commit_raises_after_stable_conflicts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'session-turn-nested-conflict-fail.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        session_record = SessionRepository(db).create(
+            declared_family="f1",
+            gate_status_json={"status": "pending_documents"},
+        )
+        session_id = session_record.session_id
+        repo = SessionTurnRepository(db)
+        repo.append_user_turn(
+            session_id=session_id,
+            content="第一条说明",
+            source="chat_completions",
+        )
+        repo.append_assistant_turn(
+            session_id=session_id,
+            content="第二条追问",
+            source="chat_completions",
+        )
+        repo.append_user_turn(
+            session_id=session_id,
+            content="第三条说明",
+            source="chat_completions",
+        )
+
+        monkeypatch.setattr(repo, "_next_turn_index", lambda _session_id: 1)
+
+        try:
+            repo.append_assistant_turn(
+                session_id=session_id,
+                content="第二条追问",
+                source="chat_completions",
+                commit=False,
+            )
+        except RuntimeError as exc:
+            assert "stable turn_index" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError")
+
+        db.rollback()
+        turns = repo.list_session_turns(session_id)
+
+    assert [turn.turn_index for turn in turns] == [1, 2, 3]
