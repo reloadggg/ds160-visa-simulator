@@ -220,6 +220,8 @@ def fake_adjudication_node(
     *,
     assistant_message: str = "请继续说明你的学习计划。",
     decision: str = "continue_interview",
+    requested_documents: list[str] | None = None,
+    next_safe_action: str = "continue_interview",
 ) -> GraphNode:
     def _node(state: DS160GraphState) -> DS160GraphState:
         budget = state.retry_budget.consume_llm_call()
@@ -228,9 +230,10 @@ def fake_adjudication_node(
             assistant_message=assistant_message,
             assistant_message_author="adjudication_agent",
             decision=decision,
+            requested_documents=list(requested_documents or []),
             used_citation_ids=citation_ids,
             guard_status="passed",
-            next_safe_action="continue_interview",
+            next_safe_action=next_safe_action,  # type: ignore[arg-type]
         )
         return state.model_copy(
             update={

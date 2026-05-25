@@ -132,18 +132,16 @@ def test_upload_only_enqueues_job_without_modifying_profile(tmp_path) -> None:
             assert document.artifact_json["status"] == "uploaded"
             assert document.artifact_json["filename"] == "funding_proof.pdf"
             assessment = DocumentAssessment.from_artifact(document.artifact_json)
-            assert assessment.document_type == "funding_proof"
-            assert assessment.document_type_candidates == ["funding_proof"]
-            assert assessment.relevance == "medium"
-            assert assessment.supported_claims == ["/funding/primary_source"]
-            assert assessment.confidence == 0.65
-            assert assessment.feedback_message == (
-                "系统识别候选类型：funding_proof。 "
-                "支持主张：/funding/primary_source。"
-            )
-            assert assessment.relevant is True
+            assert assessment.document_type is None
+            assert assessment.document_type_candidates == []
+            assert assessment.relevance == "unknown"
+            assert assessment.supported_claims == []
+            assert assessment.confidence == 0.0
+            assert assessment.feedback_message is None
+            assert assessment.relevant is None
 
             assert job is not None
+            assert job.kind == "case_understanding"
             assert job.payload_json == {"document_id": document_id}
     finally:
         Base.metadata.drop_all(bind=engine)
@@ -307,11 +305,14 @@ def test_upload_prefers_interviewer_focus_for_main_flow_feedback(
                 "supported_document_type": "ds2019",
                 "current_focus_document_type": "ds2019",
                 "message": (
-                    "这份材料对当前关键证明 ds2019 有帮助。 "
-                    "材料门控层当前最缺的关键证明是 ds160。"
+                    "这份材料已加入案例证据，候选证明点为 ds2019。"
+                    "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
                 ),
             }
             assert result.requested_documents == ["ds2019"]
+            assert result.understanding_status == "queued"
+            assert result.case_board_delta is not None
+            assert result.case_board_delta["latest_material"]["understanding_status"] == "queued"
             assert result.gate_progress == {
                 "overall_status": "waiting_for_parse",
                 "ready_count": 0,
@@ -392,6 +393,105 @@ def test_upload_uses_backend_context_text_to_infer_document_type_hint(
             assert result.document_type == "ds2019"
             assert result.document_assessment is not None
             assert result.document_assessment.document_type_hint == "ds2019"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_upload_feedback_does_not_use_gate_primary_as_case_focus(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'file-service-no-gate-focus.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    class StubMultimodal:
+        def assess_document(self, **kwargs):
+            from app.services.multimodal_extraction_service import (
+                MultimodalUploadAssessment,
+                UploadDocumentTypeCandidate,
+            )
+
+            return MultimodalUploadAssessment(
+                document_type_candidates=[
+                    UploadDocumentTypeCandidate(
+                        document_type="relationship_proof_between_applicant_and_sponsors",
+                        confidence=0.82,
+                    )
+                ],
+                relevance="medium",
+                supported_claims=["/funding/sponsor_relationship"],
+                confidence=0.82,
+            )
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-existing",
+                    declared_family="f1",
+                    gate_status_json={
+                        "declared_family": "f1",
+                        "scenario_key": "legacy-gate-focus",
+                        "status": "pending_documents",
+                        "required_documents": [
+                            {"document_type": "funding_proof"},
+                        ],
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            service = FileService(db)
+            monkeypatch.setattr(service, "multimodal", StubMultimodal())
+            result = service.upload(
+                "sess-existing",
+                "family-proof.png",
+                b"fake-image-bytes",
+                "image/png",
+            )
+
+            assert result.main_flow_feedback == {
+                "status": "helpful",
+                "supported_document_type": (
+                    "relationship_proof_between_applicant_and_sponsors"
+                ),
+                "current_focus_document_type": (
+                    "relationship_proof_between_applicant_and_sponsors"
+                ),
+                "message": (
+                    "这份材料已加入案例证据，候选证明点为 "
+                    "relationship_proof_between_applicant_and_sponsors。"
+                    "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
+                ),
+            }
+            assert result.document_assessment is not None
+            assert result.document_assessment.counts_toward_gate is False
+            assert result.case_board_delta is not None
+            assert result.case_board_delta["latest_material"]["document_type"] == (
+                "relationship_proof_between_applicant_and_sponsors"
+            )
+            assert result.evidence_cards == [
+                {
+                    "evidence_id": f"pending-{result.document_id}-0",
+                    "source_type": "uploaded_file",
+                    "document_id": result.document_id,
+                    "excerpt": "候选支持主张：/funding/sponsor_relationship",
+                    "claim_refs": ["/funding/sponsor_relationship"],
+                    "confidence": 0.82,
+                    "metadata": {
+                        "status": "pending_understanding",
+                        "document_type": (
+                            "relationship_proof_between_applicant_and_sponsors"
+                        ),
+                    },
+                }
+            ]
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

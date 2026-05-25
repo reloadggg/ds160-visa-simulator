@@ -9,6 +9,7 @@ from app.domain.runtime import GateOverallStatus
 from app.platform.turn_record import TurnRecord
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.case_memory_service import CaseMemoryService
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.graph_runtime_adapter import GraphRuntimeAdapter
 from app.services.interviewer_runtime_service import InterviewerRuntimeService
@@ -41,6 +42,7 @@ class MessageService:
         self.interviewer_runtime = InterviewerRuntimeService(db)
         self.graph_runtime = GraphRuntimeAdapter(db)
         self.session_read_model = SessionReadModelService(db)
+        self.case_memory = CaseMemoryService(db)
 
     def handle_user_turn(self, session_id: str, message_text: str) -> dict:
         record = self.session_repo.get(session_id)
@@ -58,6 +60,7 @@ class MessageService:
                 metadata_json={"phase_state": record.phase_state},
                 commit=False,
             )
+            self._capture_user_turn_claims(record.session_id, user_turn, message_text)
 
             if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
                 response = self.gate_runtime.build_gate_response(record)
@@ -91,6 +94,24 @@ class MessageService:
             self.db.rollback()
             raise
 
+    def _capture_user_turn_claims(
+        self,
+        session_id: str,
+        user_turn: SessionTurnRecord,
+        message_text: str,
+    ) -> None:
+        claims = self.case_memory.extract_explicit_user_turn_claims(
+            turn_id=user_turn.turn_id,
+            message_text=message_text,
+        )
+        if not claims:
+            return
+        self.case_memory.add_user_turn_claims(
+            session_id=session_id,
+            turn_id=user_turn.turn_id,
+            claims=claims,
+        )
+
     def refresh_after_material_change(
         self,
         session_id: str,
@@ -116,8 +137,7 @@ class MessageService:
                 graph_shadow=graph_shadow,
             )
             self._attach_graph_shadow(response, graph_shadow)
-            assistant_turn = self._append_assistant_turn(record, response)
-            self._sync_runtime_view_contract(record, response, assistant_turn)
+            self._sync_material_refresh_response_state(record, response, reason=reason)
             self._strip_internal_runtime_fields(response)
             self.session_repo.save(record)
             return response
@@ -316,6 +336,8 @@ class MessageService:
             return "materials_updated"
         if normalized.startswith("document_parsed:"):
             return "document_parsed"
+        if normalized.startswith("case_understanding:"):
+            return "case_understanding"
         return "materials_updated"
 
     def _attach_graph_shadow(
@@ -548,6 +570,129 @@ class MessageService:
         elif runtime_view_state.get("source_turn_id") == assistant_turn.turn_id:
             metadata["runtime_view_state"] = runtime_view_state
         assistant_turn.metadata_json = metadata
+
+    def _sync_material_refresh_response_state(
+        self,
+        record,
+        response: dict,
+        *,
+        reason: str,
+    ) -> None:
+        runtime_view_state = dict(response.get("runtime_view_state", {}) or {})
+        if not runtime_view_state:
+            runtime_view_state = self._build_material_refresh_runtime_view_state(
+                record,
+                response,
+            )
+        response["governor_decision"] = (
+            response.get("governor_decision")
+            or runtime_view_state.get("governor_decision")
+            or record.current_governor_decision
+        )
+        response["requested_documents"] = list(
+            response.get("requested_documents", [])
+            or runtime_view_state.get("requested_documents", [])
+            or []
+        )
+        response["remaining_required_documents"] = list(
+            response.get("remaining_required_documents", [])
+            or runtime_view_state.get("remaining_required_documents", [])
+            or []
+        )
+        response["turn_decision"] = dict(response.get("turn_decision", {}) or {})
+        if not response["turn_decision"] and response.get("governor_decision"):
+            response["turn_decision"] = {"decision": response["governor_decision"]}
+        response["document_review"] = dict(response.get("document_review", {}) or {})
+        response["prompt_trace"] = dict(response.get("prompt_trace", {}) or {})
+        response["runtime_view_state"] = runtime_view_state
+
+        refresh_metadata = {
+            "reason": reason,
+            "sanitized_reason": self._graph_material_change_reason(reason),
+            "agent_runtime": response.get("agent_runtime"),
+            "selected_public_runtime": response.get("selected_public_runtime"),
+            "governor_decision": response.get("governor_decision"),
+            "turn_decision": dict(response.get("turn_decision", {}) or {}),
+            "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+            "graph_run_id": response.get("graph_run_id"),
+            "graph_trace": dict(response.get("graph_trace", {}) or {}),
+            "graph_events": list(response.get("graph_events", []) or []),
+            "graph_shadow": response.get("graph_shadow"),
+            "graph_runtime_error": response.get("graph_runtime_error"),
+            "runtime_view_state": runtime_view_state,
+            "assistant_turn_created": False,
+        }
+        refresh_metadata = {
+            key: value
+            for key, value in refresh_metadata.items()
+            if value not in ({}, [], None)
+        }
+        interviewer_state = dict(record.interviewer_state_json or {})
+        interviewer_state["last_material_refresh"] = refresh_metadata
+        record.interviewer_state_json = interviewer_state
+        response["material_refresh"] = {
+            **refresh_metadata,
+            "assistant_turn_created": False,
+        }
+
+    def _build_material_refresh_runtime_view_state(
+        self,
+        record,
+        response: dict,
+    ) -> dict:
+        interviewer_state = dict(record.interviewer_state_json or {})
+        current_focus = dict(record.current_focus_json or {})
+        turn_decision = dict(response.get("turn_decision", {}) or {})
+        decision = (
+            response.get("governor_decision")
+            or turn_decision.get("decision")
+            or interviewer_state.get("governor_decision")
+            or interviewer_state.get("decision")
+            or record.current_governor_decision
+        )
+        requested_documents = list(
+            response.get("requested_documents", [])
+            or interviewer_state.get("requested_documents", [])
+            or []
+        )
+        remaining_required_documents = list(
+            response.get("remaining_required_documents", [])
+            or interviewer_state.get("remaining_required_documents", [])
+            or []
+        )
+        return {
+            "source_turn_id": None,
+            "decision": decision,
+            "governor_decision": decision,
+            "public_status": interviewer_state.get("public_status") or decision,
+            "risk_level": interviewer_state.get("risk_level"),
+            "current_focus": current_focus,
+            "current_key_question": (
+                interviewer_state.get("current_key_question")
+                or current_focus.get("question")
+            ),
+            "current_key_proof": (
+                interviewer_state.get("current_key_proof")
+                or current_focus.get("document_type")
+                or (requested_documents[0] if requested_documents else None)
+            ),
+            "current_risk_code": (
+                interviewer_state.get("current_risk_code")
+                or current_focus.get("risk_code")
+            ),
+            "requested_documents": requested_documents,
+            "remaining_required_documents": remaining_required_documents,
+            "allowed_next_actions": list(
+                interviewer_state.get("allowed_next_actions", []) or []
+            ),
+            "advisory_context": dict(
+                response.get("advisory_context", {})
+                or interviewer_state.get("advisory_context", {})
+                or {}
+            ),
+            "document_review": dict(response.get("document_review", {}) or {}),
+            "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+        }
 
     def _finalize_turn_record(
         self,

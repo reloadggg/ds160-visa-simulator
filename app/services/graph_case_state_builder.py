@@ -40,6 +40,9 @@ USER_MATERIAL_REFERENCE_MARKERS = (
     "已经提供",
     "已提供",
 )
+CASE_MEMORY_USER_CLAIMS_KEY = "case_memory_claims"
+CASE_MEMORY_USER_EVIDENCE_KEY = "case_memory_evidence_cards"
+CASE_MEMORY_TOMBSTONE_KEY = "case_memory_tombstone"
 
 
 class GraphCaseStateBuilder:
@@ -95,6 +98,14 @@ class GraphCaseStateBuilder:
             "documents": normalized_documents,
             "document_chunks": normalized_chunks,
             "evidence_items": normalized_evidence,
+            "case_memory": self._build_case_memory_snapshot(
+                normalized_documents,
+                normalized_turns,
+            ),
+            "case_board": self._build_case_board(
+                normalized_documents,
+                normalized_turns,
+            ),
             "evidence_digest": self._build_evidence_digest(
                 documents=normalized_documents,
                 evidence_items=normalized_evidence,
@@ -164,6 +175,12 @@ class GraphCaseStateBuilder:
             "turn_record": turn_record,
             "runtime_view_state": self._payload(metadata.get("runtime_view_state")),
             "prompt_trace": self._payload(metadata.get("prompt_trace")),
+            CASE_MEMORY_USER_CLAIMS_KEY: self._list_payload(
+                metadata.get(CASE_MEMORY_USER_CLAIMS_KEY)
+            ),
+            CASE_MEMORY_USER_EVIDENCE_KEY: self._list_payload(
+                metadata.get(CASE_MEMORY_USER_EVIDENCE_KEY)
+            ),
         }
 
     def _normalize_documents(self, documents: list[Any]) -> list[dict[str, Any]]:
@@ -194,6 +211,113 @@ class GraphCaseStateBuilder:
         return sorted(
             normalized,
             key=lambda item: (item["filename"], item["document_id"] or ""),
+        )
+
+    def _build_case_memory_snapshot(
+        self,
+        documents: list[dict[str, Any]],
+        turns: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        claims_by_id: dict[str, dict[str, Any]] = {}
+        evidence_by_id: dict[str, dict[str, Any]] = {}
+        proof_by_id: dict[str, dict[str, Any]] = {}
+        conflicts_by_id: dict[str, dict[str, Any]] = {}
+        next_move: dict[str, Any] = {}
+
+        for document in documents:
+            if document.get("status") in {"deleted", "tombstoned"}:
+                continue
+            artifact = self._payload(document.get("artifact"))
+            tombstone = self._payload(artifact.get(CASE_MEMORY_TOMBSTONE_KEY))
+            if tombstone.get("status") == "tombstoned":
+                continue
+            result = self._payload(artifact.get("material_understanding_result"))
+            for evidence in self._list_payload(result.get("evidence_cards")):
+                evidence_id = self._string_or_none(evidence.get("evidence_id"))
+                if evidence_id:
+                    evidence_by_id[evidence_id] = evidence
+            for claim in self._list_payload(result.get("extracted_claims")):
+                claim_id = self._string_or_none(claim.get("claim_id"))
+                if claim_id:
+                    claims_by_id[claim_id] = claim
+            for proof_point in self._list_payload(result.get("proof_points")):
+                proof_point_id = self._string_or_none(
+                    proof_point.get("proof_point_id")
+                )
+                if proof_point_id:
+                    proof_by_id[proof_point_id] = proof_point
+            for conflict in self._list_payload(result.get("conflicts")):
+                conflict_id = self._string_or_none(conflict.get("conflict_id"))
+                if conflict_id:
+                    conflicts_by_id[conflict_id] = conflict
+            if not next_move:
+                suggested_followups = self._list_payload(
+                    result.get("suggested_followups")
+                )
+                if suggested_followups:
+                    next_move = suggested_followups[0]
+
+        for turn in turns or []:
+            metadata = self._payload(turn.get("metadata"))
+            for evidence in self._list_payload(
+                metadata.get(CASE_MEMORY_USER_EVIDENCE_KEY)
+            ):
+                evidence_id = self._string_or_none(evidence.get("evidence_id"))
+                if evidence_id:
+                    evidence_by_id[evidence_id] = evidence
+            for claim in self._list_payload(metadata.get(CASE_MEMORY_USER_CLAIMS_KEY)):
+                claim_id = self._string_or_none(claim.get("claim_id"))
+                if claim_id:
+                    claims_by_id[claim_id] = claim
+
+        claims_by_id, generated_conflicts = self._apply_case_memory_conflicts(
+            claims_by_id,
+            evidence_by_id,
+        )
+        for conflict in generated_conflicts:
+            conflict_id = self._string_or_none(conflict.get("conflict_id"))
+            if conflict_id:
+                conflicts_by_id.setdefault(conflict_id, conflict)
+        if conflicts_by_id:
+            next_move = self._next_move_from_conflict(
+                sorted(conflicts_by_id.values(), key=lambda item: item.get("conflict_id") or "")[0]
+            )
+
+        snapshot = {
+            "claims": list(claims_by_id.values())[-self.max_history_items :],
+            "evidence_cards": list(evidence_by_id.values())[-self.max_history_items :],
+            "proof_points": list(proof_by_id.values())[-self.max_history_items :],
+            "conflicts": list(conflicts_by_id.values())[-self.max_history_items :],
+        }
+        if next_move:
+            snapshot["next_move"] = next_move
+        return snapshot
+
+    def _build_case_board(
+        self,
+        documents: list[dict[str, Any]],
+        turns: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        case_memory = self._build_case_memory_snapshot(documents, turns)
+        latest_material: dict[str, Any] = {}
+        for document in reversed(documents):
+            if document.get("status") in {"deleted", "tombstoned"}:
+                continue
+            artifact = self._payload(document.get("artifact"))
+            tombstone = self._payload(artifact.get(CASE_MEMORY_TOMBSTONE_KEY))
+            if tombstone.get("status") == "tombstoned":
+                continue
+            delta = self._payload(artifact.get("case_board_delta"))
+            material = self._payload(delta.get("latest_material"))
+            if material:
+                latest_material = material
+                break
+        return self._drop_empty_values(
+            {
+                "schema_version": "case_board.v1",
+                "latest_material": latest_material,
+                **case_memory,
+            }
         )
 
     def _normalize_document_chunks(self, chunks: list[Any]) -> list[dict[str, Any]]:
@@ -557,6 +681,21 @@ class GraphCaseStateBuilder:
             ),
             "relevance": self._string_or_none(artifact.get("relevance")),
             "supported_claims": self._string_list(artifact.get("supported_claims")),
+            "understanding_status": self._string_or_none(
+                artifact.get("understanding_status")
+            ),
+            "case_board_delta": self._sanitize_public_payload(
+                self._payload(artifact.get("case_board_delta"))
+            ),
+            "material_understanding_result": self._sanitize_public_payload(
+                self._payload(artifact.get("material_understanding_result"))
+            ),
+            "material_understanding_job": self._sanitize_public_payload(
+                self._payload(artifact.get("material_understanding_job"))
+            ),
+            CASE_MEMORY_TOMBSTONE_KEY: self._payload(
+                artifact.get(CASE_MEMORY_TOMBSTONE_KEY)
+            ),
             "counts_toward_gate": artifact.get("counts_toward_gate"),
             "metadata": public_metadata,
         }
@@ -588,6 +727,25 @@ class GraphCaseStateBuilder:
             }
         )
 
+    def _sanitize_public_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return self._drop_empty_values(
+                {
+                    key: self._sanitize_public_payload(item)
+                    for key, item in value.items()
+                    if key not in INTERNAL_DEBUG_METADATA_KEYS
+                }
+            )
+        if isinstance(value, list):
+            return [
+                item
+                for item in (
+                    self._sanitize_public_payload(item) for item in value
+                )
+                if item not in (None, "", [], {})
+            ]
+        return value
+
     def _normalize_document_types(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -598,6 +756,131 @@ class GraphCaseStateBuilder:
             document_type = normalize_document_type(item) or item.strip()
             if document_type and document_type not in normalized:
                 normalized.append(document_type)
+        return normalized
+
+    def _apply_case_memory_conflicts(
+        self,
+        claims_by_id: dict[str, dict[str, Any]],
+        evidence_by_id: dict[str, dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for claim in claims_by_id.values():
+            field_path = self._string_or_none(claim.get("field_path"))
+            value = self._string_or_none(claim.get("value"))
+            if field_path is None or value is None:
+                continue
+            grouped.setdefault(field_path, []).append(claim)
+
+        updated = {claim_id: dict(claim) for claim_id, claim in claims_by_id.items()}
+        conflicts: list[dict[str, Any]] = []
+        for field_path, claims in grouped.items():
+            distinct_values = {
+                self._normalize_claim_value(str(claim.get("value"))): str(
+                    claim.get("value")
+                )
+                for claim in claims
+                if self._string_or_none(claim.get("value")) is not None
+            }
+            if len(distinct_values) <= 1:
+                continue
+            evidence_ids = self._evidence_ids_for_claims(claims, evidence_by_id)
+            conflict_id = self._field_conflict_id(field_path)
+            for claim in claims:
+                claim_id = self._string_or_none(claim.get("claim_id"))
+                if claim_id is None:
+                    continue
+                own_evidence = set(self._string_list(claim.get("supporting_evidence_ids")))
+                own_evidence.update(self._evidence_ids_for_claim(claim_id, evidence_by_id))
+                conflicting = [
+                    evidence_id
+                    for evidence_id in evidence_ids
+                    if evidence_id not in own_evidence
+                ]
+                if not conflicting:
+                    continue
+                payload = dict(updated[claim_id])
+                payload["status"] = "contradicted"
+                payload["conflicting_evidence_ids"] = self._dedupe_strings(
+                    [
+                        *self._string_list(payload.get("conflicting_evidence_ids")),
+                        *own_evidence,
+                        *conflicting,
+                    ]
+                )
+                updated[claim_id] = payload
+            conflicts.append(
+                {
+                    "conflict_id": conflict_id,
+                    "claim_ids": [
+                        claim_id
+                        for claim_id in (
+                            self._string_or_none(claim.get("claim_id"))
+                            for claim in claims
+                        )
+                        if claim_id is not None
+                    ],
+                    "evidence_ids": evidence_ids,
+                    "summary": (
+                        f"{field_path} has conflicting values: "
+                        f"{', '.join(distinct_values.values())}."
+                    ),
+                    "severity": "medium",
+                    "suggested_followup": (
+                        "Ask the applicant to reconcile the stated answer with "
+                        "the uploaded evidence."
+                    ),
+                }
+            )
+        return updated, conflicts
+
+    def _next_move_from_conflict(self, conflict: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "move_type": "clarify_conflict",
+            "question": self._string_or_none(conflict.get("suggested_followup"))
+            or "Please clarify the inconsistency between your answer and the uploaded evidence.",
+            "reason": self._string_or_none(conflict.get("summary"))
+            or "Case memory contains conflicting claims.",
+            "claim_refs": self._string_list(conflict.get("claim_ids")),
+            "evidence_refs": self._string_list(conflict.get("evidence_ids")),
+        }
+
+    def _evidence_ids_for_claims(
+        self,
+        claims: list[dict[str, Any]],
+        evidence_by_id: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        evidence_ids: list[str] = []
+        for claim in claims:
+            claim_id = self._string_or_none(claim.get("claim_id"))
+            evidence_ids.extend(self._string_list(claim.get("supporting_evidence_ids")))
+            evidence_ids.extend(self._string_list(claim.get("conflicting_evidence_ids")))
+            if claim_id is not None:
+                evidence_ids.extend(self._evidence_ids_for_claim(claim_id, evidence_by_id))
+        return self._dedupe_strings(evidence_ids)
+
+    def _evidence_ids_for_claim(
+        self,
+        claim_id: str,
+        evidence_by_id: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        return [
+            evidence_id
+            for evidence_id, evidence in evidence_by_id.items()
+            if claim_id in self._string_list(evidence.get("claim_refs"))
+        ]
+
+    def _field_conflict_id(self, field_path: str) -> str:
+        normalized = field_path.strip("/").replace("/", "-").replace("_", "-")
+        return f"conflict-{normalized or 'unknown'}"
+
+    def _normalize_claim_value(self, value: str) -> str:
+        return " ".join(value.strip().casefold().split())
+
+    def _dedupe_strings(self, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            if value and value not in normalized:
+                normalized.append(value)
         return normalized
 
     def _excerpt(self, value: str) -> str:

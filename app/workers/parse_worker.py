@@ -9,8 +9,13 @@ from app.db.session import SessionLocal
 from sqlalchemy.orm import Session
 
 from app.repositories.document_repo import DocumentRepository
+from app.repositories.evidence_repo import EvidenceRepository
+from app.domain.evidence import DocumentAssessment, EvidenceItem
+from app.services.case_memory_service import CaseMemoryService
+from app.services.file_service import CASE_UNDERSTANDING_JOB_KIND
 from app.services.document_pipeline import DocumentPipelineService
 from app.services.gate_runtime_service import GateRuntimeService
+from app.services.material_understanding_service import MaterialUnderstandingService
 from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
 from app.services.runtime_errors import ModelRuntimeError
@@ -25,11 +30,16 @@ class ParseWorker:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.documents = DocumentRepository(db)
+        self.evidence = EvidenceRepository(db)
         self.pipeline = DocumentPipelineService(db)
         self.recompute = ProfileRecomputeService(db)
+        self.material_understanding = MaterialUnderstandingService()
+        self.case_memory = CaseMemoryService(db)
 
     def run_once(self) -> bool:
-        job = self.documents.claim_next_job("gate_parse")
+        job = self.documents.claim_next_job(CASE_UNDERSTANDING_JOB_KIND)
+        if job is None:
+            job = self.documents.claim_next_job("gate_parse")
         if job is None:
             return False
 
@@ -40,16 +50,38 @@ class ParseWorker:
 
         try:
             self.pipeline.process_document(document_id)
+            document = self.documents.get_document(document_id)
+            if document is None:
+                raise LookupError(f"Document not found after processing: {document_id}")
+            artifact = dict(document.artifact_json or {})
+            understanding_job = self.material_understanding.understand(
+                job_id=job_id,
+                document_id=document_id,
+                session_id=session_id,
+                filename=document.filename,
+                raw_bytes=document.raw_bytes,
+                source_type=artifact.get("source_type", "unknown"),
+                document_assessment=DocumentAssessment.from_artifact(artifact),
+                legacy_evidence_items=[
+                    self._evidence_item_from_record(record)
+                    for record in self.evidence.list_document_evidence(document_id)
+                ],
+                case_memory=self.case_memory.build_board(session_id),
+            )
+            self.case_memory.upsert_material_understanding(
+                document_id=document_id,
+                job=understanding_job,
+            )
             self.recompute.recompute_session(session_id, save=False)
             completed_job = self.db.get(JobRecord, job_id)
             if completed_job is not None:
-                completed_job.status = "completed"
+                completed_job.status = understanding_job.status
             GateRuntimeService(self.db).refresh_session(session_id, save=False)
             self.db.commit()
             try:
                 MessageService(self.db).refresh_after_material_change(
                     session_id,
-                    reason=f"document_parsed:{document_id}",
+                    reason=f"case_understanding:{document_id}",
                 )
             except ModelRuntimeError:
                 logger.warning(
@@ -70,6 +102,20 @@ class ParseWorker:
                 failed_job.status = "failed"
             self.db.commit()
             raise
+
+    def _evidence_item_from_record(self, record) -> EvidenceItem:
+        return EvidenceItem(
+            evidence_id=record.evidence_id,
+            session_id=record.session_id,
+            document_id=record.document_id,
+            chunk_id=record.chunk_id,
+            evidence_type=record.evidence_type,
+            field_path=record.field_path,
+            value=record.value,
+            excerpt=record.excerpt,
+            confidence=record.confidence,
+            metadata=record.metadata_json or {},
+        )
 
 
 def parse_worker_inline_enabled() -> bool:

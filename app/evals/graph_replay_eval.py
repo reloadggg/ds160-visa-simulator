@@ -74,6 +74,12 @@ class GraphReplayEvaluator:
         checks = [
             self._check_final_response_author(state),
             self._check_final_event(events),
+            self._check_chat_not_blocked_by_gate(state),
+            self._check_replay_records_case_memory(state),
+            self._check_case_board_records_next_move(state),
+            self._check_conflict_specific_clarification(state),
+            self._check_high_risk_not_waiting_for_full_package(state),
+            self._check_ocr_not_used_for_applicant_image(state),
             self._check_public_claim_citations(state),
             self._check_policy_claims_use_official_citations(state),
             self._check_case_claims_use_case_evidence_citations(state),
@@ -91,6 +97,158 @@ class GraphReplayEvaluator:
             passed=all(check.passed for check in checks),
             checks=checks,
         )
+
+    def _check_chat_not_blocked_by_gate(self, state: DS160GraphState) -> GraphReplayCheck:
+        case_state = self._payload(state.case_state)
+        if not case_state.get("assert_chat_starts_without_materials"):
+            return GraphReplayCheck("chat_not_blocked_by_gate", True)
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck("chat_not_blocked_by_gate", False, "missing final response")
+        if response.decision == "need_more_evidence":
+            return GraphReplayCheck(
+                "chat_not_blocked_by_gate",
+                False,
+                "no-material replay should not be blocked by Gate readiness",
+            )
+        message = response.assistant_message.casefold()
+        blocked_markers = ("must upload", "材料齐", "补齐材料", "waiting_for_parse")
+        if any(marker.casefold() in message for marker in blocked_markers):
+            return GraphReplayCheck(
+                "chat_not_blocked_by_gate",
+                False,
+                "assistant message still frames chat as material-gated",
+            )
+        return GraphReplayCheck("chat_not_blocked_by_gate", True)
+
+    def _check_replay_records_case_memory(self, state: DS160GraphState) -> GraphReplayCheck:
+        case_state = self._payload(state.case_state)
+        if not case_state.get("assert_case_memory"):
+            return GraphReplayCheck("case_memory_recorded", True)
+        case_memory = self._payload(case_state.get("case_memory"))
+        claims = self._list_payload(case_memory.get("claims"))
+        evidence_cards = self._list_payload(case_memory.get("evidence_cards"))
+        if not claims or not evidence_cards:
+            return GraphReplayCheck(
+                "case_memory_recorded",
+                False,
+                "replay must record claims and evidence cards",
+            )
+        return GraphReplayCheck("case_memory_recorded", True)
+
+    def _check_case_board_records_next_move(self, state: DS160GraphState) -> GraphReplayCheck:
+        case_state = self._payload(state.case_state)
+        if not case_state.get("assert_case_board_next_move"):
+            return GraphReplayCheck("case_board_next_move", True)
+        case_board = self._payload(case_state.get("case_board"))
+        latest_material = self._payload(case_board.get("latest_material"))
+        next_move = self._payload(case_board.get("next_move"))
+        if not latest_material:
+            return GraphReplayCheck(
+                "case_board_next_move",
+                False,
+                "case board missing latest material",
+            )
+        if not next_move:
+            return GraphReplayCheck(
+                "case_board_next_move",
+                False,
+                "case board missing next move",
+            )
+        return GraphReplayCheck("case_board_next_move", True)
+
+    def _check_conflict_specific_clarification(
+        self,
+        state: DS160GraphState,
+    ) -> GraphReplayCheck:
+        case_state = self._payload(state.case_state)
+        if not case_state.get("assert_conflict_specific_clarification"):
+            return GraphReplayCheck("conflict_specific_clarification", True)
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck(
+                "conflict_specific_clarification",
+                False,
+                "missing final response",
+            )
+        conflicts = self._list_payload(
+            self._payload(case_state.get("case_memory")).get("conflicts")
+        )
+        if not conflicts:
+            return GraphReplayCheck(
+                "conflict_specific_clarification",
+                False,
+                "fixture expected a case-memory conflict",
+            )
+        if response.next_safe_action != "ask_clarification":
+            return GraphReplayCheck(
+                "conflict_specific_clarification",
+                False,
+                "conflict replay should ask a clarification",
+            )
+        message = response.assistant_message.casefold()
+        conflict_terms = ("self", "parents", "fund", "资金", "父母", "自费")
+        if not any(term in message for term in conflict_terms):
+            return GraphReplayCheck(
+                "conflict_specific_clarification",
+                False,
+                "clarification does not mention the concrete conflict",
+            )
+        return GraphReplayCheck("conflict_specific_clarification", True)
+
+    def _check_high_risk_not_waiting_for_full_package(
+        self,
+        state: DS160GraphState,
+    ) -> GraphReplayCheck:
+        case_state = self._payload(state.case_state)
+        if not case_state.get("assert_high_risk_without_full_package"):
+            return GraphReplayCheck("high_risk_without_full_package", True)
+        response = state.final_response
+        if response is None:
+            return GraphReplayCheck(
+                "high_risk_without_full_package",
+                False,
+                "missing final response",
+            )
+        if response.decision not in {"high_risk_review", "simulated_refusal"}:
+            return GraphReplayCheck(
+                "high_risk_without_full_package",
+                False,
+                f"unexpected decision={response.decision}",
+            )
+        if response.requested_documents:
+            return GraphReplayCheck(
+                "high_risk_without_full_package",
+                False,
+                "high-risk simulation should not require a complete material package",
+            )
+        return GraphReplayCheck("high_risk_without_full_package", True)
+
+    def _check_ocr_not_used_for_applicant_image(
+        self,
+        state: DS160GraphState,
+    ) -> GraphReplayCheck:
+        case_state = self._payload(state.case_state)
+        if not case_state.get("assert_ocr_not_used"):
+            return GraphReplayCheck("ocr_not_used_for_applicant_image", True)
+        documents = self._list_payload(case_state.get("documents"))
+        for document in documents:
+            artifact = self._payload(document.get("artifact"))
+            if artifact.get("source_type") != "image":
+                continue
+            parser_name = str(
+                artifact.get("parser_name")
+                or artifact.get("source_type")
+                or ""
+            ).casefold()
+            raw_text = str(document.get("raw_text") or "").casefold()
+            if "ocr" in parser_name or "tesseract" in parser_name or "ocr" in raw_text:
+                return GraphReplayCheck(
+                    "ocr_not_used_for_applicant_image",
+                    False,
+                    "image replay still carries OCR parser/text markers",
+                )
+        return GraphReplayCheck("ocr_not_used_for_applicant_image", True)
 
     def _check_final_response_author(self, state: DS160GraphState) -> GraphReplayCheck:
         response = state.final_response
@@ -308,6 +466,16 @@ class GraphReplayEvaluator:
                 f"message repeated {repeated_count} times",
             )
         return GraphReplayCheck("repeated_template", True)
+
+    def _payload(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        return {}
+
+    def _list_payload(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
 
 
 class GraphReplayFixture:

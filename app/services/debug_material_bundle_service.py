@@ -8,6 +8,15 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.db.models import DocumentRecord, SessionTurnRecord
+from app.domain.case_memory import (
+    CaseClaim,
+    DocumentTypeCandidate,
+    EvidenceCard,
+    InterviewNextMove,
+    MaterialUnderstandingJob,
+    MaterialUnderstandingResult,
+    ProofPoint,
+)
 from app.domain.contracts import (
     ApplicantProfile,
     FieldProvenanceRecord,
@@ -286,6 +295,9 @@ class DebugMaterialBundleService:
             ),
             "runtime_view_state": dict(
                 main_flow_response.get("runtime_view_state", {}) or {}
+            ),
+            "material_refresh": dict(
+                main_flow_response.get("material_refresh", {}) or {}
             ),
             "phase_state": record.phase_state,
             "gate_status": record.gate_status_json,
@@ -792,6 +804,34 @@ class DebugMaterialBundleService:
             )
             for field_path, value in document_spec.fields.items()
         ]
+        material_result = self._material_understanding_result(
+            document=document,
+            bundle_id=bundle_id,
+            bundle_spec=bundle_spec,
+            document_spec=document_spec,
+            evidence_items=evidence_items,
+        )
+        artifact = dict(document.artifact_json or {})
+        artifact["understanding_status"] = "completed"
+        artifact["material_understanding_job"] = MaterialUnderstandingJob(
+            job_id=f"debug-bundle-{document.document_id}",
+            document_id=document.document_id,
+            status="completed",
+            trigger="debug_bundle",
+            result=material_result,
+        ).model_dump(mode="json", exclude_none=True)
+        artifact["material_understanding_result"] = material_result.model_dump(
+            mode="json"
+        )
+        artifact["evidence_cards"] = [
+            item.model_dump(mode="json") for item in material_result.evidence_cards
+        ]
+        artifact["case_board_delta"] = self._case_board_delta(
+            document=document,
+            document_spec=document_spec,
+            result=material_result,
+        )
+        document.artifact_json = artifact
         self.evidence.replace_document_result(
             document.document_id,
             [chunk],
@@ -816,6 +856,123 @@ class DebugMaterialBundleService:
             },
             len(evidence_items),
         )
+
+    def _material_understanding_result(
+        self,
+        *,
+        document: DocumentRecord,
+        bundle_id: str,
+        bundle_spec: DebugMaterialBundleSpec,
+        document_spec: SyntheticDocumentSpec,
+        evidence_items: list[EvidenceItem],
+    ) -> MaterialUnderstandingResult:
+        evidence_cards = [
+            EvidenceCard(
+                evidence_id=item.evidence_id,
+                source_type="debug_material",
+                document_id=document.document_id,
+                page_number=1,
+                excerpt=item.excerpt,
+                claim_refs=[self._claim_id(document.document_id, item.field_path)],
+                confidence=item.confidence,
+                metadata={
+                    "filename": document.filename,
+                    "field_path": item.field_path,
+                    "synthetic_bundle_id": bundle_id,
+                    "debug_bundle_scenario": bundle_spec.scenario,
+                },
+            )
+            for item in evidence_items
+        ]
+        claims = [
+            CaseClaim(
+                claim_id=self._claim_id(document.document_id, item.field_path),
+                field_path=item.field_path,
+                value=item.value,
+                status="documented",
+                supporting_evidence_ids=[item.evidence_id],
+                confidence=item.confidence,
+                metadata={
+                    "document_id": document.document_id,
+                    "filename": document.filename,
+                    "synthetic_bundle_id": bundle_id,
+                    "debug_bundle_scenario": bundle_spec.scenario,
+                },
+            )
+            for item in evidence_items
+        ]
+        proof_points = [
+            ProofPoint(
+                proof_point_id=f"proof-{document.document_id}-{index}",
+                visa_family="unknown",
+                question=f"请说明 {field_path} 如何支持你的签证计划。",
+                status="supported",
+                why_it_matters="调试材料包提供了一个可核验的案例事实。",
+                claim_refs=[claim.claim_id],
+                evidence_refs=list(claim.supporting_evidence_ids),
+                metadata={"debug_material_bundle": True},
+            )
+            for index, (field_path, claim) in enumerate(
+                zip(document_spec.fields.keys(), claims)
+            )
+        ]
+        return MaterialUnderstandingResult(
+            document_type_candidates=[
+                DocumentTypeCandidate(
+                    document_type=document_spec.document_type,
+                    confidence=1.0,
+                )
+            ],
+            evidence_cards=evidence_cards,
+            extracted_claims=claims,
+            proof_points=proof_points,
+            suggested_followups=[
+                InterviewNextMove(
+                    move_type="ask",
+                    question="材料已经加入案例理解。请继续说明它和你的签证计划有什么关系。",
+                    reason="调试材料包已作为案例证据写入 Case Memory。",
+                    claim_refs=[claim.claim_id for claim in claims[:3]],
+                    evidence_refs=[item.evidence_id for item in evidence_cards[:3]],
+                )
+            ],
+            confidence=1.0,
+        )
+
+    def _case_board_delta(
+        self,
+        *,
+        document: DocumentRecord,
+        document_spec: SyntheticDocumentSpec,
+        result: MaterialUnderstandingResult,
+    ) -> dict[str, Any]:
+        return {
+            "latest_material": {
+                "document_id": document.document_id,
+                "filename": document.filename,
+                "understanding_status": "completed",
+                "document_type": document_spec.document_type,
+                "document_type_candidates": [
+                    item.model_dump(mode="json")
+                    for item in result.document_type_candidates
+                ],
+                "supported_claims": list(document_spec.fields.keys()),
+                "confidence": result.confidence,
+                "unknowns": [],
+            },
+            "evidence_cards": [
+                item.model_dump(mode="json") for item in result.evidence_cards
+            ],
+            "claims": [item.model_dump(mode="json") for item in result.extracted_claims],
+            "open_proof_points": [
+                item.model_dump(mode="json") for item in result.proof_points
+            ],
+            "conflicts": [],
+            "next_move": result.suggested_followups[0].model_dump(mode="json"),
+        }
+
+    def _claim_id(self, document_id: str, field_path: str) -> str:
+        normalized = field_path.strip("/").replace("/", "-").replace("_", "-")
+        return f"claim-{document_id}-{normalized or 'unknown'}"
 
     def _write_synthetic_turns(
         self,

@@ -1,0 +1,74 @@
+{
+  "fixture_id": "ocr-not-used-for-applicant-image",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-image-no-ocr",
+    "run_id": "run-image-no-ocr",
+    "user_turn": {
+      "content": "I uploaded an image of my document."
+    },
+    "case_state": {
+      "assert_ocr_not_used": true,
+      "documents": [
+        {
+          "document_id": "doc-image",
+          "filename": "i20.png",
+          "status": "uploaded",
+          "artifact": {
+            "source_type": "image",
+            "parser_name": "multimodal_required",
+            "understanding_status": "queued"
+          }
+        }
+      ],
+      "case_memory": {
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": []
+      },
+      "case_board": {
+        "schema_version": "case_board.v1"
+      }
+    },
+    "final_response": {
+      "assistant_message": "我会用材料理解结果更新案例，先继续说明你的学习计划。",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [],
+      "used_citation_ids": [],
+      "guard_status": "passed",
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-image-no-ocr",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-image-no-ocr",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "我会用材料理解结果更新案例，先继续说明你的学习计划。",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "ocr_not_used_for_applicant_image"
+    ]
+  }
+}

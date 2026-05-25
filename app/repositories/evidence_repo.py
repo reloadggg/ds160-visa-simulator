@@ -59,3 +59,9 @@ class EvidenceRepository:
             EvidenceItemRecord.session_id == session_id
         )
         return list(self.db.scalars(statement).all())
+
+    def list_document_evidence(self, document_id: str) -> list[EvidenceItemRecord]:
+        statement = select(EvidenceItemRecord).where(
+            EvidenceItemRecord.document_id == document_id
+        )
+        return list(self.db.scalars(statement).all())

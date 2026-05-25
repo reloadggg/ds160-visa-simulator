@@ -136,6 +136,20 @@ def test_extract_returns_none_for_unsupported_document_type() -> None:
     assert result is None
 
 
+def test_assessment_does_not_infer_document_type_from_filename_when_model_unavailable() -> None:
+    service = MultimodalExtractionService()
+
+    assessment = service.assess_document(
+        filename="funding_proof_bank_statement.png",
+        raw_bytes=build_png_bytes(),
+        source_type=DocumentSourceType.IMAGE,
+    )
+
+    assert assessment.document_type_candidates == []
+    assert assessment.supported_claims == []
+    assert assessment.relevance == "unknown"
+
+
 def test_service_auto_enables_when_model_credentials_are_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

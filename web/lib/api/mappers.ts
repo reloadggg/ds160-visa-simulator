@@ -2,6 +2,13 @@ import type {
   AllowedAction,
   AllowedActionCode,
   BackendDocumentAssessment,
+  BackendCaseBoardDelta,
+  BackendCaseClaim,
+  BackendCaseConflict,
+  BackendCaseDocumentTypeCandidate,
+  BackendCaseEvidenceCard,
+  BackendCaseProofPoint,
+  BackendInterviewNextMove,
   BackendFileFeedback,
   BackendFileUploadResponse,
   BackendGateProgress,
@@ -12,6 +19,13 @@ import type {
   BackendSessionGateStatus,
   BackendUserReport,
   DocumentAssessment,
+  CaseBoardDelta,
+  CaseClaim,
+  CaseConflict,
+  CaseDocumentTypeCandidate,
+  CaseEvidenceCard,
+  CaseProofPoint,
+  InterviewNextMove,
   FileFeedback,
   FileUploadResponse,
   InterviewReviewResponse,
@@ -62,10 +76,10 @@ const DOCUMENT_LABELS: Record<string, string> = {
 
 const INTERVIEW_STATUS_LABELS: Record<string, string> = {
   continue_interview: "继续面签问答",
-  need_more_evidence: "建议补充证明材料",
+  need_more_evidence: "建议补强证据链",
   route_correction: "签证类型/目的需纠正",
   verify_key_issue: "关键事实待核实",
-  waiting_key_proof: "待补齐关键证据",
+  waiting_key_proof: "待核验关键证据",
   high_risk_review: "高风险复核建议",
   simulated_refusal: "模拟结果：建议拒签",
   status_pending: "状态待确认",
@@ -73,10 +87,10 @@ const INTERVIEW_STATUS_LABELS: Record<string, string> = {
 
 const BACKEND_TEXT_LABELS: Record<string, string> = {
   continue_interview: "继续面签问答",
-  need_more_evidence: "建议补充证明材料",
+  need_more_evidence: "建议补强证据链",
   route_correction: "签证类型/目的需纠正",
   verify_key_issue: "关键事实待核实",
-  waiting_key_proof: "待补齐关键证据",
+  waiting_key_proof: "待核验关键证据",
   high_risk_review: "高风险复核建议",
   simulated_refusal: "模拟结果：建议拒签",
   high_risk: "高风险",
@@ -431,6 +445,153 @@ function mapDocumentAssessment(
   }
 }
 
+function toFieldLabel(fieldPath?: string | null): string | null {
+  if (!fieldPath) {
+    return null
+  }
+  return BACKEND_TEXT_LABELS[fieldPath] ?? humanizeBackendText(fieldPath)
+}
+
+function mapCaseDocumentTypeCandidate(
+  item: BackendCaseDocumentTypeCandidate,
+): CaseDocumentTypeCandidate | null {
+  if (!item.document_type) {
+    return null
+  }
+  return {
+    document_type: item.document_type,
+    document_type_label: nullableDocumentLabel(item.document_type),
+    confidence: item.confidence ?? null,
+  }
+}
+
+function mapCaseEvidenceCard(
+  item: BackendCaseEvidenceCard,
+): CaseEvidenceCard | null {
+  if (!item.evidence_id || !item.excerpt) {
+    return null
+  }
+  return {
+    evidence_id: item.evidence_id,
+    source_type: item.source_type,
+    document_id: item.document_id ?? null,
+    page_number: item.page_number ?? null,
+    excerpt: humanizeBackendText(item.excerpt),
+    visual_anchor: item.visual_anchor ?? null,
+    claim_refs: normalizeStringList(item.claim_refs),
+    confidence: item.confidence ?? null,
+    metadata: item.metadata,
+  }
+}
+
+function mapCaseClaim(item: BackendCaseClaim): CaseClaim | null {
+  if (!item.claim_id || !item.field_path) {
+    return null
+  }
+  return {
+    claim_id: item.claim_id,
+    field_path: item.field_path,
+    field_label: toFieldLabel(item.field_path),
+    value:
+      typeof item.value === "string" ? humanizeBackendText(item.value) : null,
+    status: item.status ?? "unknown",
+    supporting_evidence_ids: normalizeStringList(item.supporting_evidence_ids),
+    conflicting_evidence_ids: normalizeStringList(item.conflicting_evidence_ids),
+    confidence: item.confidence ?? null,
+    metadata: item.metadata,
+  }
+}
+
+function mapCaseProofPoint(item: BackendCaseProofPoint): CaseProofPoint | null {
+  if (!item.proof_point_id || !item.question || !item.why_it_matters) {
+    return null
+  }
+  return {
+    proof_point_id: item.proof_point_id,
+    visa_family: item.visa_family,
+    question: humanizeBackendText(item.question),
+    status: item.status ?? "partial",
+    why_it_matters: humanizeBackendText(item.why_it_matters),
+    claim_refs: normalizeStringList(item.claim_refs),
+    evidence_refs: normalizeStringList(item.evidence_refs),
+    metadata: item.metadata,
+  }
+}
+
+function mapCaseConflict(item: BackendCaseConflict): CaseConflict | null {
+  if (!item.conflict_id || !item.summary) {
+    return null
+  }
+  return {
+    conflict_id: item.conflict_id,
+    claim_ids: normalizeStringList(item.claim_ids),
+    evidence_ids: normalizeStringList(item.evidence_ids),
+    summary: humanizeBackendText(item.summary),
+    severity: item.severity,
+    suggested_followup: humanizeBackendText(item.suggested_followup) || null,
+  }
+}
+
+function mapInterviewNextMove(
+  item?: BackendInterviewNextMove | null,
+): InterviewNextMove | null {
+  if (!item?.question || !item.reason) {
+    return null
+  }
+  return {
+    move_type: item.move_type ?? "ask",
+    question: humanizeBackendText(item.question),
+    reason: humanizeBackendText(item.reason),
+    claim_refs: normalizeStringList(item.claim_refs),
+    evidence_refs: normalizeStringList(item.evidence_refs),
+  }
+}
+
+function compactMapped<TInput, TOutput>(
+  values: TInput[] | undefined,
+  mapper: (value: TInput) => TOutput | null,
+): TOutput[] {
+  return (values ?? []).map(mapper).filter((value): value is TOutput => value !== null)
+}
+
+function mapCaseBoardDelta(
+  delta?: BackendCaseBoardDelta | null,
+): CaseBoardDelta | null {
+  if (!delta) {
+    return null
+  }
+  const latest = delta.latest_material
+  const candidates = compactMapped(
+    latest?.document_type_candidates,
+    mapCaseDocumentTypeCandidate,
+  )
+  return {
+    latest_material: latest
+      ? {
+          document_id: latest.document_id ?? null,
+          filename: latest.filename ?? null,
+          understanding_status: latest.understanding_status ?? null,
+          document_type: latest.document_type ?? null,
+          document_type_label: nullableDocumentLabel(latest.document_type),
+          document_type_candidates: candidates,
+          relevance: latest.relevance ?? null,
+          supported_claims: normalizeStringList(latest.supported_claims),
+          confidence: latest.confidence ?? null,
+          feedback_message: humanizeBackendText(latest.feedback_message) || null,
+          unknowns: normalizeStringList(latest.unknowns).map(humanizeBackendText),
+        }
+      : null,
+    evidence_cards: compactMapped(delta.evidence_cards, mapCaseEvidenceCard),
+    claims: compactMapped(delta.claims, mapCaseClaim),
+    open_proof_points: compactMapped(
+      delta.open_proof_points ?? delta.proof_points,
+      mapCaseProofPoint,
+    ),
+    conflicts: compactMapped(delta.conflicts, mapCaseConflict),
+    next_move: mapInterviewNextMove(delta.next_move),
+  }
+}
+
 export function mapSession(payload: BackendSession): Session {
   return {
     session_id: payload.session_id,
@@ -477,6 +638,7 @@ export function mapMessageResponse(
 
 export function mapUserReport(payload: BackendUserReport): UserReport {
   const currentKeyProof = payload.current_key_proof ?? null
+  const caseBoard = mapCaseBoardDelta(payload.case_board)
   const requestedDocuments = Array.from(
     new Set(
       mapMissingEvidence(payload.missing_evidence, currentKeyProof).map(
@@ -525,6 +687,7 @@ export function mapUserReport(payload: BackendUserReport): UserReport {
     ),
     requested_documents: requestedDocuments,
     requested_document_labels: requestedDocuments.map(toDocumentLabel),
+    case_board: caseBoard,
     advisory_context: payload.advisory_context,
     prompt_trace: payload.prompt_trace,
     turn_decision: payload.turn_decision,
@@ -573,6 +736,8 @@ export function mapFileUploadResponse(
   const remainingRequiredDocuments = payload.remaining_required_documents ?? []
   const mainFlowFeedback = mapFileFeedback(payload.main_flow_feedback)
   const documentAssessment = mapDocumentAssessment(payload.document_assessment)
+  const caseBoardDelta = mapCaseBoardDelta(payload.case_board_delta)
+  const evidenceCards = compactMapped(payload.evidence_cards, mapCaseEvidenceCard)
   const documentTypeCandidates = normalizeStringList(
     payload.document_type_candidates,
   )
@@ -590,6 +755,7 @@ export function mapFileUploadResponse(
     document_status: payload.document_status,
     job_id: payload.job_id,
     job_status: payload.job_status,
+    understanding_status: payload.understanding_status ?? null,
     document_type: payload.document_type,
     document_type_label: nullableDocumentLabel(payload.document_type),
     document_assessment: documentAssessment,
@@ -601,6 +767,8 @@ export function mapFileUploadResponse(
     feedback_message: humanizeBackendText(feedbackMessage) || null,
     relevant: payload.relevant,
     main_flow_feedback: mainFlowFeedback,
+    evidence_cards: evidenceCards,
+    case_board_delta: caseBoardDelta,
     requested_documents: requestedDocuments,
     requested_document_labels: requestedDocuments.map(toDocumentLabel),
     remaining_required_documents: remainingRequiredDocuments,

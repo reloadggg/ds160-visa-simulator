@@ -212,3 +212,60 @@ def test_graph_replay_fixture_file_loads_and_evaluates() -> None:
     assert fixture.fixture_id == "school-mismatch-where"
     assert fixture.expected["checks"]
     assert result.passed is True
+
+
+def test_graph_replay_eval_passes_ai_native_required_scenarios() -> None:
+    evaluator = GraphReplayEvaluator()
+    fixture_paths = [
+        "fixtures/graph_replay/no_material_chat_starts.json",
+        "fixtures/graph_replay/visual_i20_updates_case_memory.json",
+        "fixtures/graph_replay/funding_claim_conflict.json",
+        "fixtures/graph_replay/high_risk_simulation_without_full_package.json",
+        "fixtures/graph_replay/ocr_not_used_for_applicant_image.json",
+    ]
+
+    results = [
+        evaluator.evaluate_fixture_file(path)
+        for path in fixture_paths
+    ]
+
+    assert [result.fixture_id for result in results] == [
+        "no-material-chat-starts",
+        "visual-i20-updates-case-memory",
+        "funding-claim-conflict",
+        "high-risk-simulation-without-full-package",
+        "ocr-not-used-for-applicant-image",
+    ]
+    assert all(result.passed for result in results)
+
+
+def test_graph_replay_eval_flags_gate_blocking_no_material_chat() -> None:
+    state = DS160GraphState(
+        session_id="sess-1",
+        run_id="run-1",
+        case_state={"assert_chat_starts_without_materials": True},
+        final_response=GraphRunResult(
+            assistant_message="请先补齐材料再继续。",
+            decision="need_more_evidence",
+            requested_documents=["i20"],
+        ),
+    )
+    events = [
+        DeterministicDS160TurnGraph()._event(
+            "final",
+            state=state,
+            sequence=0,
+            payload={"final_response": state.final_response.model_dump(mode="json")},
+        )
+    ]
+
+    result = GraphReplayEvaluator().evaluate(
+        fixture_id="gate-blocked-no-material-chat",
+        state=state,
+        events=events,
+    )
+
+    assert result.passed is False
+    assert "chat_not_blocked_by_gate" in {
+        check.name for check in result.failed_checks
+    }

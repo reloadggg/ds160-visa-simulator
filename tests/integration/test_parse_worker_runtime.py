@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import SessionRecord
+from app.db.models import DocumentRecord, SessionRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
@@ -100,28 +100,38 @@ def test_parse_worker_runtime_automatically_processes_uploaded_documents(
         },
     )
     assert upload_response.status_code == 202
+    document_id = upload_response.json()["document_id"]
 
     with db_session_factory() as db:
         waiting = db.get(SessionRecord, session_id)
         assert waiting is not None
         assert waiting.phase_state == "interview"
-        assert waiting.gate_status_json["status"] == "waiting_for_parse"
+        assert waiting.gate_status_json["status"] == "pending_documents"
 
     deadline = time.monotonic() + 2.0
-    ready_status = None
-    ready_phase = None
+    completed_status = None
+    completed_phase = None
+    understanding_status = None
     while time.monotonic() < deadline:
         with db_session_factory() as db:
             record = db.get(SessionRecord, session_id)
+            document = db.get(DocumentRecord, document_id)
             assert record is not None
-            ready_phase = record.phase_state
-            ready_status = record.gate_status_json["status"]
-            if ready_phase == "interview" and ready_status == "ready_for_interview":
+            assert document is not None
+            completed_phase = record.phase_state
+            completed_status = record.gate_status_json["status"]
+            understanding_status = document.artifact_json.get("understanding_status")
+            if (
+                completed_phase == "interview"
+                and completed_status == "pending_documents"
+                and understanding_status == "completed"
+            ):
                 break
         time.sleep(0.05)
 
-    assert ready_phase == "interview"
-    assert ready_status == "ready_for_interview"
+    assert completed_phase == "interview"
+    assert completed_status == "pending_documents"
+    assert understanding_status == "completed"
 
 
 @pytest.mark.asyncio

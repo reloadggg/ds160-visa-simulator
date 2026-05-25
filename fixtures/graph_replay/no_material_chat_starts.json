@@ -1,0 +1,73 @@
+{
+  "fixture_id": "no-material-chat-starts",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-no-material",
+    "run_id": "run-no-material",
+    "user_turn": {
+      "content": "I want to study computer science in the U.S."
+    },
+    "case_state": {
+      "assert_chat_starts_without_materials": true,
+      "session": {
+        "declared_family": "f1"
+      },
+      "case_memory": {
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": []
+      },
+      "case_board": {
+        "schema_version": "case_board.v1",
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": []
+      },
+      "gate_progress": {
+        "overall_status": "pending_documents",
+        "documents": []
+      }
+    },
+    "final_response": {
+      "assistant_message": "为什么选择去美国读计算机科学？",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [],
+      "used_citation_ids": [],
+      "guard_status": "passed",
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-no-material",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-no-material",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "为什么选择去美国读计算机科学？",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "chat_not_blocked_by_gate"
+    ]
+  }
+}

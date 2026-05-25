@@ -8,6 +8,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.db.models import DocumentRecord, SessionRecord
 from app.db.session import get_db
+from app.domain.case_memory import (
+    CaseClaim,
+    CaseConflict,
+    DocumentTypeCandidate,
+    EvidenceCard,
+    MaterialUnderstandingResult,
+    ProofPoint,
+)
 from app.domain.runtime import build_initial_gate_status
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.main import app
@@ -73,7 +81,7 @@ def test_session_export_returns_json_without_document_bytes(
                 filename="bank-statement.png",
                 status="parsed",
                 raw_bytes=b"binary-image-content",
-                raw_text="OCR extracted sponsor bank balance text",
+                raw_text="Material understanding sponsor bank balance text",
                 artifact_json={
                     "source_type": "image",
                     "document_type": "funding_proof",
@@ -98,7 +106,7 @@ def test_session_export_returns_json_without_document_bytes(
             "document_id": "doc-export-1",
             "filename": "bank-statement.png",
             "status": "parsed",
-            "extracted_text": "OCR extracted sponsor bank balance text",
+            "extracted_text": "Material understanding sponsor bank balance text",
             "artifact": {
                 "source_type": "image",
                 "document_type": "funding_proof",
@@ -301,7 +309,119 @@ def test_reports_api_keeps_interviewer_focus_when_gate_review_state_outpaces_run
     assert payload["interview_status"] == "waiting_key_proof"
     assert payload["current_key_proof"] == "funding_proof"
     assert payload["missing_evidence"] == ["funding_proof"]
-    assert payload["recommended_improvements"] == ["优先补充 funding_proof，再继续面谈。"]
+    assert payload["recommended_improvements"] == [
+        "围绕 funding_proof 说明事实来源；如果有材料，可作为证据补充上传。"
+    ]
+
+
+def test_reports_api_projects_case_memory_from_material_understanding(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    material_result = MaterialUnderstandingResult(
+        document_type_candidates=[
+            DocumentTypeCandidate(document_type="i20", confidence=0.92)
+        ],
+        evidence_cards=[
+            EvidenceCard(
+                evidence_id="ev-school",
+                source_type="uploaded_file",
+                document_id="doc-case-memory",
+                excerpt="School Name: Example University",
+                claim_refs=["claim-school"],
+                confidence=0.93,
+            ),
+            EvidenceCard(
+                evidence_id="ev-parent-bank",
+                source_type="uploaded_file",
+                document_id="doc-case-memory",
+                excerpt="Parent sponsor balance",
+                claim_refs=["claim-funding"],
+                confidence=0.86,
+            ),
+        ],
+        extracted_claims=[
+            CaseClaim(
+                claim_id="claim-school",
+                field_path="/education/school_name",
+                value="Example University",
+                status="documented",
+                supporting_evidence_ids=["ev-school"],
+                confidence=0.93,
+            ),
+            CaseClaim(
+                claim_id="claim-funding",
+                field_path="/funding/primary_source",
+                value="self",
+                status="contradicted",
+                conflicting_evidence_ids=["ev-parent-bank"],
+                confidence=0.86,
+            ),
+        ],
+        proof_points=[
+            ProofPoint(
+                proof_point_id="proof-funding-source",
+                visa_family="f1",
+                question="Who will pay for your study?",
+                status="partial",
+                why_it_matters="Funding source must be credible.",
+            )
+        ],
+        conflicts=[
+            CaseConflict(
+                conflict_id="conflict-funding-source",
+                claim_ids=["claim-funding"],
+                evidence_ids=["ev-parent-bank"],
+                summary="用户说自费，但材料显示父母资助。",
+                severity="high",
+                suggested_followup="请澄清资金来源。",
+            )
+        ],
+        confidence=0.88,
+    )
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        db.add(
+            DocumentRecord(
+                document_id="doc-case-memory",
+                session_id=session_id,
+                filename="i20.png",
+                status="parsed",
+                raw_bytes=b"image",
+                raw_text="",
+                artifact_json={
+                    "material_understanding_result": material_result.model_dump(
+                        mode="json"
+                    ),
+                    "case_board_delta": {
+                        "latest_material": {
+                            "document_id": "doc-case-memory",
+                            "filename": "i20.png",
+                            "understanding_status": "completed",
+                        }
+                    },
+                },
+            )
+        )
+        db.add(record)
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/reports/user")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["case_board"]["claims"][0]["claim_id"] == "claim-funding"
+    assert "用户说自费，但材料显示父母资助。" in payload["risk_points"]
+    assert payload["risk_level"] == "high"
+    assert payload["missing_evidence"][0] == "proof-funding-source"
+    assert "请澄清资金来源。" in payload["recommended_improvements"]
 
 
 def test_user_report_can_derive_runtime_view_state_from_ledger_when_state_is_empty(

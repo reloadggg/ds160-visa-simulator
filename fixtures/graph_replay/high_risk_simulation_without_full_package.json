@@ -1,0 +1,114 @@
+{
+  "fixture_id": "high-risk-simulation-without-full-package",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-high-risk",
+    "run_id": "run-high-risk",
+    "user_turn": {
+      "content": "Can you simulate the refusal risk now?"
+    },
+    "case_state": {
+      "assert_high_risk_without_full_package": true,
+      "gate_progress": {
+        "overall_status": "pending_documents",
+        "missing_count": 3,
+        "documents": [
+          {
+            "document_type": "ds160",
+            "status": "missing"
+          }
+        ]
+      },
+      "case_memory": {
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": []
+      },
+      "score_history_tail": [
+        {
+          "risk_flags": [
+            {
+              "code": "misrepresentation_risk"
+            }
+          ],
+          "missing_evidence": [
+            "ds160",
+            "passport_bio"
+          ]
+        }
+      ]
+    },
+    "citation_bundle": {
+      "citations": [
+        {
+          "citation_id": "cite-risk-admission",
+          "source_type": "case_evidence",
+          "source_authority": "user_provided",
+          "source_id": "source-session",
+          "document_id": "turn-risk",
+          "chunk_id": "chunk-risk",
+          "span_start": 0,
+          "span_end": 50,
+          "content_hash": "sha256:risk",
+          "quote_or_summary": "Applicant admitted prior inconsistent submission.",
+          "retrieved_at": "2026-05-25T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-risk"
+          ]
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "你已说明曾提交不一致信息，这会触发高风险复核。即使材料包不完整，我也可以先按未知项保留的方式模拟风险；下一步请解释不一致原因。",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "high_risk_review",
+      "requested_documents": [],
+      "public_claims": [
+        {
+          "claim_id": "claim-risk",
+          "claim_type": "case_evidence",
+          "text": "申请人承认曾提交不一致信息。",
+          "citation_ids": [
+            "cite-risk-admission"
+          ]
+        }
+      ],
+      "used_citation_ids": [
+        "cite-risk-admission"
+      ],
+      "guard_status": "passed",
+      "next_safe_action": "ask_clarification"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-high-risk",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-high-risk",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "你已说明曾提交不一致信息，这会触发高风险复核。",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "high_risk_review"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "high_risk_without_full_package"
+    ]
+  }
+}

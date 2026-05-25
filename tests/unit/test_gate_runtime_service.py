@@ -83,7 +83,11 @@ def test_refresh_session_marks_uploaded_funding_proof_waiting_for_parse(
                     session_id="sess-1",
                     filename="funding_proof.txt",
                     status="uploaded",
-                    artifact_json={"status": "uploaded", "filename": "funding_proof.txt"},
+                    artifact_json={
+                        "status": "uploaded",
+                        "filename": "funding_proof.txt",
+                        "document_type": "funding_proof",
+                    },
                 )
             )
             db.add(
@@ -279,7 +283,11 @@ def test_build_gate_support_reports_primary_missing_document_without_blocking(
                     session_id="sess-1",
                     filename="passport_bio.txt",
                     status="uploaded",
-                    artifact_json={"status": "uploaded", "filename": "passport_bio.txt"},
+                    artifact_json={
+                        "status": "uploaded",
+                        "filename": "passport_bio.txt",
+                        "document_type": "passport_bio",
+                    },
                 )
             )
             db.commit()
@@ -587,6 +595,7 @@ def test_refresh_session_marks_all_required_documents_ready_after_parse(
                             "status": "parsed",
                             "filename": filename,
                             "source_type": "text",
+                            "document_type": filename.removesuffix(".txt"),
                         },
                     )
                 )
@@ -674,6 +683,15 @@ def test_matches_document_type_prefers_uploaded_document_type_metadata(
 
             assert service._matches_document_type(document, "funding_proof") is False
             assert service._matches_document_type(document, "passport_bio") is True
+
+            document.filename = "funding_proof-final.pdf"
+            document.artifact_json = {
+                "status": "uploaded",
+                "filename": "funding_proof-final.pdf",
+            }
+
+            assert service._matches_document_type(document, "funding_proof") is False
+            assert service._matches_document_type(document, "passport_bio") is False
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

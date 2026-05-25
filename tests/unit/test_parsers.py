@@ -4,7 +4,6 @@ from io import BytesIO
 
 import fitz
 from docx import Document
-from PIL import Image
 
 from app.integrations.parsers import extract_text, parse_document
 
@@ -76,21 +75,13 @@ def test_parse_docx_returns_paragraph_segments() -> None:
     assert parsed.segments[1].text == "Program: Computer Science"
 
 
-def test_parse_image_uses_ocr(monkeypatch) -> None:
-    image = Image.new("RGB", (320, 80), "white")
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
-    monkeypatch.setattr(
-        "app.integrations.parsers.pytesseract.image_to_string",
-        lambda image: "Parent sponsor bank statement",
-    )
-
-    parsed = parse_document("funding.png", buffer.getvalue())
+def test_parse_image_does_not_ocr_applicant_material() -> None:
+    parsed = parse_document("funding.png", b"not-an-actual-image")
 
     assert parsed.source_type.value == "image"
-    assert parsed.parser_name == "pytesseract"
-    assert len(parsed.segments) == 1
-    assert parsed.segments[0].text == "Parent sponsor bank statement"
+    assert parsed.parser_name == "multimodal_required"
+    assert parsed.segments == []
+    assert parsed.full_text == ""
 
 
 def test_extract_text_wraps_parse_document_full_text() -> None:

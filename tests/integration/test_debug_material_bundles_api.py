@@ -3,7 +3,7 @@ import json
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import settings as settings_module
@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.domain.agent_runtime import GraphRunResult
 from app.main import app
 from app.services.capability_orchestrator import CapabilityOrchestrator
+from app.services.llm_node_runner import LLMNodeRequest, LLMNodeResponse
 
 
 @pytest.fixture()
@@ -192,16 +193,23 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     assert response.status_code == 200
     payload = response.json()
     assert payload["scenario"] == "school_mismatch_bundle"
-    assert payload["turn_decision"]["decision"] == "continue_interview"
+    assert payload["turn_decision"]["decision"] == "high_risk_review"
+    assert payload["turn_decision"]["next_safe_action"] == "ask_clarification"
+    assert payload["material_refresh"]["assistant_turn_created"] is False
+    assert payload["material_refresh"]["prompt_trace"]["graph_trigger"] == "material_change"
+    assert (
+        payload["material_refresh"]["prompt_trace"]["material_change_reason"]
+        == "materials_updated"
+    )
 
     with db_session_factory() as db:
-        assistant_turn = db.scalar(
-            select(SessionTurnRecord)
+        assistant_count = db.scalar(
+            select(func.count())
+            .select_from(SessionTurnRecord)
             .where(
                 SessionTurnRecord.session_id == session_id,
                 SessionTurnRecord.role == "assistant",
             )
-            .order_by(SessionTurnRecord.turn_index)
         )
         record = db.get(SessionRecord, session_id)
         review_context = CapabilityOrchestrator(db)._build_document_review_context(
@@ -216,11 +224,12 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
             gate_progress=record.gate_status_json if record else {},
         )
 
-    assert assistant_turn is not None
-    assert assistant_turn.source == "graph_runtime_adapter"
-    metadata = assistant_turn.metadata_json
+    assert assistant_count == 0
+    assert record is not None
+    metadata = record.interviewer_state_json["last_material_refresh"]
     assert metadata["agent_runtime"] == "graph"
     assert metadata["selected_public_runtime"] == "graph"
+    assert metadata["governor_decision"] == "high_risk_review"
     assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
     assert metadata["prompt_trace"]["material_change_reason"] == "materials_updated"
     serialized_graph_metadata = str(
@@ -269,23 +278,21 @@ def test_debug_material_bundle_typed_graph_prompt_does_not_leak_oracle_context(
     )
     captured_prompts: list[str] = []
 
-    class CapturingAgent:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
+    def fake_run(self, request: LLMNodeRequest) -> LLMNodeResponse:
+        captured_prompts.append(request.prompt)
+        return LLMNodeResponse(
+            output=GraphRunResult(
+                assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
+                assistant_message_author="adjudication_agent",
+                decision="continue_interview",
+            ),
+            metadata={},
+        )
 
-        def run_sync(self, prompt: str):
-            captured_prompts.append(prompt)
-
-            class Result:
-                output = GraphRunResult(
-                    assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
-                    assistant_message_author="adjudication_agent",
-                    decision="continue_interview",
-                )
-
-            return Result()
-
-    monkeypatch.setattr("app.services.graph_adjudication_node.Agent", CapturingAgent)
+    monkeypatch.setattr(
+        "app.services.llm_node_runner.PydanticAILLMNodeRunner.run",
+        fake_run,
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -376,9 +383,8 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
     assert len(documents) == len(payload["documents"])
     assert len(evidence) >= len(payload["documents"])
     assert any(turn.source == "debug_material_bundle" for turn in turns)
-    assistant_turn = next(turn for turn in turns if turn.role == "assistant")
-    assert assistant_turn.source == "interviewer_runtime_service"
-    assert assistant_turn.metadata_json["graph_runtime_error"] == {
+    assert all(turn.role != "assistant" for turn in turns)
+    assert payload["material_refresh"]["graph_runtime_error"] == {
         "status": "error",
         "agent_runtime": "graph",
         "selected_public_runtime": "graph",

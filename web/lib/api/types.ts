@@ -312,6 +312,7 @@ export interface UserReport {
   recommended_improvements: string[]
   requested_documents: string[]
   requested_document_labels: string[]
+  case_board?: CaseBoardDelta | null
   advisory_context?: Record<string, unknown>
   prompt_trace?: Record<string, unknown>
   turn_decision?: Record<string, unknown>
@@ -324,6 +325,87 @@ export interface FileFeedback {
   current_focus_document_type?: string | null
   current_focus_document_label?: string | null
   message?: string | null
+}
+
+export interface CaseDocumentTypeCandidate {
+  document_type: string
+  document_type_label?: string | null
+  confidence?: number | null
+}
+
+export interface CaseEvidenceCard {
+  evidence_id: string
+  source_type?: string
+  document_id?: string | null
+  page_number?: number | null
+  excerpt: string
+  visual_anchor?: string | null
+  claim_refs: string[]
+  confidence?: number | null
+  metadata?: Record<string, unknown>
+}
+
+export interface CaseClaim {
+  claim_id: string
+  field_path: string
+  field_label?: string | null
+  value?: string | null
+  status: string
+  supporting_evidence_ids: string[]
+  conflicting_evidence_ids: string[]
+  confidence?: number | null
+  metadata?: Record<string, unknown>
+}
+
+export interface CaseProofPoint {
+  proof_point_id: string
+  visa_family?: string
+  question: string
+  status: string
+  why_it_matters: string
+  claim_refs: string[]
+  evidence_refs: string[]
+  metadata?: Record<string, unknown>
+}
+
+export interface CaseConflict {
+  conflict_id: string
+  claim_ids: string[]
+  evidence_ids: string[]
+  summary: string
+  severity?: string
+  suggested_followup?: string | null
+}
+
+export interface InterviewNextMove {
+  move_type: string
+  question: string
+  reason: string
+  claim_refs: string[]
+  evidence_refs: string[]
+}
+
+export interface CaseBoardLatestMaterial {
+  document_id?: string | null
+  filename?: string | null
+  understanding_status?: string | null
+  document_type?: string | null
+  document_type_label?: string | null
+  document_type_candidates?: CaseDocumentTypeCandidate[]
+  relevance?: DocumentRelevance | null
+  supported_claims?: string[]
+  confidence?: number | null
+  feedback_message?: string | null
+  unknowns?: string[]
+}
+
+export interface CaseBoardDelta {
+  latest_material?: CaseBoardLatestMaterial | null
+  evidence_cards: CaseEvidenceCard[]
+  claims: CaseClaim[]
+  open_proof_points: CaseProofPoint[]
+  conflicts: CaseConflict[]
+  next_move?: InterviewNextMove | null
 }
 
 export interface DocumentAssessment {
@@ -348,6 +430,7 @@ export interface FileUploadResponse {
   document_status?: string
   job_id?: string
   job_status?: string
+  understanding_status?: string | null
   document_type?: string | null
   document_type_label?: string | null
   document_assessment?: DocumentAssessment | null
@@ -359,6 +442,8 @@ export interface FileUploadResponse {
   feedback_message?: string | null
   relevant?: boolean | null
   main_flow_feedback?: FileFeedback | null
+  evidence_cards: CaseEvidenceCard[]
+  case_board_delta?: CaseBoardDelta | null
   requested_documents: string[]
   requested_document_labels: string[]
   remaining_required_documents: string[]
@@ -454,10 +539,17 @@ export interface UploadedMaterial {
   status_label: string
   document_id?: string
   document_status?: string
+  understanding_status?: string | null
   document_type?: string | null
   document_type_label?: string | null
   relevance?: DocumentRelevance | null
   feedback_message?: string | null
+  evidence_cards?: CaseEvidenceCard[]
+  claims?: CaseClaim[]
+  proof_points?: CaseProofPoint[]
+  conflicts?: CaseConflict[]
+  next_move?: InterviewNextMove | null
+  case_board_delta?: CaseBoardDelta | null
   requested_document_labels?: string[]
   current_focus_document_label?: string | null
   counts_toward_gate?: boolean | null
@@ -565,6 +657,7 @@ export interface BackendUserReport {
   current_key_question?: string | null
   current_key_proof?: string | null
   current_risk_code?: string | null
+  case_board?: BackendCaseBoardDelta | null
   missing_evidence?: Array<
     string | { id?: string; code?: string; name?: string; priority?: string }
   >
@@ -580,6 +673,85 @@ export interface BackendFileFeedback {
   supported_document_type?: string | null
   current_focus_document_type?: string | null
   message?: string | null
+}
+
+export interface BackendCaseDocumentTypeCandidate {
+  document_type?: string
+  confidence?: number | null
+}
+
+export interface BackendCaseEvidenceCard {
+  evidence_id?: string
+  source_type?: string
+  document_id?: string | null
+  page_number?: number | null
+  excerpt?: string
+  visual_anchor?: string | null
+  claim_refs?: string[]
+  confidence?: number | null
+  metadata?: Record<string, unknown>
+}
+
+export interface BackendCaseClaim {
+  claim_id?: string
+  field_path?: string
+  value?: string | null
+  status?: string
+  supporting_evidence_ids?: string[]
+  conflicting_evidence_ids?: string[]
+  confidence?: number | null
+  metadata?: Record<string, unknown>
+}
+
+export interface BackendCaseProofPoint {
+  proof_point_id?: string
+  visa_family?: string
+  question?: string
+  status?: string
+  why_it_matters?: string
+  claim_refs?: string[]
+  evidence_refs?: string[]
+  metadata?: Record<string, unknown>
+}
+
+export interface BackendCaseConflict {
+  conflict_id?: string
+  claim_ids?: string[]
+  evidence_ids?: string[]
+  summary?: string
+  severity?: string
+  suggested_followup?: string | null
+}
+
+export interface BackendInterviewNextMove {
+  move_type?: string
+  question?: string
+  reason?: string
+  claim_refs?: string[]
+  evidence_refs?: string[]
+}
+
+export interface BackendCaseBoardLatestMaterial {
+  document_id?: string | null
+  filename?: string | null
+  understanding_status?: string | null
+  document_type?: string | null
+  document_type_candidates?: BackendCaseDocumentTypeCandidate[]
+  relevance?: DocumentRelevance | null
+  supported_claims?: string[]
+  confidence?: number | null
+  feedback_message?: string | null
+  unknowns?: string[]
+}
+
+export interface BackendCaseBoardDelta {
+  latest_material?: BackendCaseBoardLatestMaterial | null
+  evidence_cards?: BackendCaseEvidenceCard[]
+  claims?: BackendCaseClaim[]
+  open_proof_points?: BackendCaseProofPoint[]
+  proof_points?: BackendCaseProofPoint[]
+  conflicts?: BackendCaseConflict[]
+  next_move?: BackendInterviewNextMove | null
 }
 
 export interface BackendDocumentAssessment {
@@ -601,6 +773,7 @@ export interface BackendFileUploadResponse {
   document_status?: string
   job_id?: string
   job_status?: string
+  understanding_status?: string | null
   document_type?: string | null
   document_assessment?: BackendDocumentAssessment | null
   document_type_candidates?: string[]
@@ -610,6 +783,8 @@ export interface BackendFileUploadResponse {
   feedback_message?: string | null
   relevant?: boolean | null
   main_flow_feedback?: BackendFileFeedback | null
+  evidence_cards?: BackendCaseEvidenceCard[]
+  case_board_delta?: BackendCaseBoardDelta | null
   requested_documents?: string[]
   remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null

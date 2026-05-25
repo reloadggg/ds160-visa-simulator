@@ -9,7 +9,7 @@ import fitz
 
 from app.core import settings as settings_module
 from app.db.base import Base
-from app.db.models import JobRecord, SessionRecord, SessionTurnRecord
+from app.db.models import DocumentRecord, JobRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
@@ -118,6 +118,11 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
         },
     )
     assert upload_response.status_code == 202
+    upload_payload = upload_response.json()
+    assert upload_payload["understanding_status"] == "queued"
+    assert upload_payload["case_board_delta"]["latest_material"][
+        "understanding_status"
+    ] == "queued"
 
     assert first_response.status_code == 200
     assert first_response.json()["governor_decision"] in {
@@ -131,7 +136,9 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     )
 
     assert pre_worker_response.status_code == 200
-    assert pre_worker_response.json()["gate_progress"]["overall_status"] == "waiting_for_parse"
+    assert pre_worker_response.json()["gate_progress"]["overall_status"] == (
+        "pending_documents"
+    )
 
     with db_session_factory() as db:
         while ParseWorker(db).run_once():
@@ -139,9 +146,11 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
 
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
+        document = db.get(DocumentRecord, upload_response.json()["document_id"])
         assert record is not None
+        assert document is not None
         assert record.phase_state == "interview"
-        assert record.gate_status_json["status"] == "ready_for_interview"
+        assert record.gate_status_json["status"] == "pending_documents"
         assert record.current_governor_decision == "continue_interview"
         assert record.interviewer_state_json["decision"] == "continue_interview"
         assert record.current_focus_json == {
@@ -149,6 +158,11 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
             "kind": "interview_question",
             "question": "What is the purpose of your travel?",
         }
+        assert document.artifact_json["understanding_status"] == "completed"
+        assert "material_understanding_result" in document.artifact_json
+        assert document.artifact_json["case_board_delta"]["claims"][0]["field_path"] == (
+            "/funding/primary_source"
+        )
 
     post_worker_response = client.post(
         f"/v1/sessions/{session_id}/messages",
@@ -227,7 +241,7 @@ def test_parse_worker_claims_oldest_queued_job_first(
         assert second_job.status == "queued"
 
 
-def test_parse_worker_material_refresh_uses_graph_runtime(
+def test_parse_worker_material_refresh_updates_graph_state_without_assistant_turn(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -274,25 +288,26 @@ def test_parse_worker_material_refresh_uses_graph_runtime(
 
     with db_session_factory() as db:
         job = db.get(JobRecord, job_id)
-        assistant_turn = db.scalar(
-            select(SessionTurnRecord)
+        assistant_count = db.scalar(
+            select(func.count())
+            .select_from(SessionTurnRecord)
             .where(
                 SessionTurnRecord.session_id == session_id,
                 SessionTurnRecord.role == "assistant",
             )
-            .order_by(SessionTurnRecord.turn_index)
         )
+        record = db.get(SessionRecord, session_id)
 
     assert job is not None
     assert job.status == "completed"
-    assert assistant_turn is not None
-    assert assistant_turn.source == "graph_runtime_adapter"
-    metadata = assistant_turn.metadata_json
-    assert metadata["agent_runtime"] == "graph"
-    assert metadata["selected_public_runtime"] == "graph"
-    assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
-    assert metadata["prompt_trace"]["material_change_reason"] == "document_parsed"
-    assert metadata["turn_record"].get("user_turn_id") is None
+    assert assistant_count == 0
+    assert record is not None
+    material_refresh = record.interviewer_state_json["last_material_refresh"]
+    assert material_refresh["agent_runtime"] == "graph"
+    assert material_refresh["selected_public_runtime"] == "graph"
+    assert material_refresh["prompt_trace"]["graph_trigger"] == "material_change"
+    assert material_refresh["prompt_trace"]["material_change_reason"] == "case_understanding"
+    assert material_refresh["assistant_turn_created"] is False
 
 
 def test_parse_worker_keeps_completed_job_when_material_refresh_fails(

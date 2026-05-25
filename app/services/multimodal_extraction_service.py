@@ -99,6 +99,7 @@ class MultimodalExtractionService:
         configured_api_key = api_key or os.getenv("OPENAI_API_KEY")
         explicit_enabled = os.getenv("MULTIMODAL_EXTRACTION_ENABLED")
         self.invoke_model = invoke_model or self._invoke_http
+        self._uses_default_http = invoke_model is None
         self.model_name = (
             model_name
             or os.getenv("MULTIMODAL_EXTRACTION_MODEL")
@@ -128,7 +129,7 @@ class MultimodalExtractionService:
             return None
         if not self.enabled:
             return None
-        if self.invoke_model is self._invoke_http and (not self.base_url or not self.api_key):
+        if self._uses_default_http and (not self.base_url or not self.api_key):
             return None
 
         payload = self._build_payload(
@@ -157,9 +158,7 @@ class MultimodalExtractionService:
         if source_type not in {DocumentSourceType.PDF, DocumentSourceType.IMAGE}:
             return MultimodalUploadAssessment()
 
-        can_call_model = self.enabled and not (
-            self.invoke_model is self._invoke_http and (not self.base_url or not self.api_key)
-        )
+        can_call_model = self.can_call_model()
         if can_call_model:
             payload = self._build_assessment_payload(
                 filename=filename,
@@ -329,6 +328,18 @@ class MultimodalExtractionService:
             ],
         }
 
+    def can_call_model(self) -> bool:
+        return self.enabled and not (
+            self._uses_default_http and (not self.base_url or not self.api_key)
+        )
+
+    def build_visual_content_parts(
+        self,
+        raw_bytes: bytes,
+        source_type: DocumentSourceType,
+    ) -> list[dict[str, Any]]:
+        return self._build_image_parts(raw_bytes, source_type)
+
     def _build_image_parts(
         self,
         raw_bytes: bytes,
@@ -393,7 +404,7 @@ class MultimodalExtractionService:
         filename: str,
         document_type_hint: str | None,
     ) -> MultimodalUploadAssessment:
-        normalized_filename = filename.lower()
+        del filename
         candidates: list[UploadDocumentTypeCandidate] = []
         if document_type_hint in SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES:
             candidates.append(
@@ -402,16 +413,6 @@ class MultimodalExtractionService:
                     confidence=0.9,
                 )
             )
-        for document_type in SUPPORTED_UPLOAD_ASSESSMENT_DOCUMENT_TYPES:
-            if document_type in normalized_filename and not any(
-                item.document_type == document_type for item in candidates
-            ):
-                candidates.append(
-                    UploadDocumentTypeCandidate(
-                        document_type=document_type,
-                        confidence=0.65,
-                    )
-                )
         if not candidates:
             return MultimodalUploadAssessment()
         top_candidate = candidates[0]

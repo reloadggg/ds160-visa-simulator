@@ -15,9 +15,11 @@ class ReportService:
         runtime_view_state: dict[str, Any] | None = None,
         interviewer_state_json: dict | None = None,
         current_focus_json: dict | None = None,
+        case_board: dict[str, Any] | None = None,
     ) -> dict:
         interviewer_state_json = interviewer_state_json or {}
         runtime_view_state = self._runtime_view_state_payload(runtime_view_state)
+        case_board_payload = self._case_board_payload(case_board)
         has_runtime_turn = bool(runtime_view_state.get("source_turn_id"))
         effective_interviewer_state = self._effective_interviewer_state(
             runtime_view_state=runtime_view_state,
@@ -36,6 +38,7 @@ class ReportService:
             profile_json=profile_json,
             interviewer_state_json=effective_interviewer_state,
             current_focus_json=current_focus_json,
+            case_board=case_board_payload,
         )
         interview_status = self._resolve_public_status(
             governor_decision=governor_decision,
@@ -48,10 +51,14 @@ class ReportService:
             profile_json=profile_json,
             interviewer_state_json=effective_interviewer_state,
             current_focus_json=current_focus_json,
+            case_board=case_board_payload,
         )
+        case_strengths = self._case_strengths(case_board_payload)
+        case_risk_points = self._case_risk_points(case_board_payload)
         risk_level = self._resolve_risk_level(
             interview_status=interview_status,
             interviewer_state_json=effective_interviewer_state,
+            case_board=case_board_payload,
         )
         current_key_question = effective_interviewer_state.get("current_key_question")
         current_key_proof = effective_interviewer_state.get("current_key_proof")
@@ -82,7 +89,7 @@ class ReportService:
             effective_interviewer_state=effective_interviewer_state,
         )
 
-        outcome_label = "需补强关键证据"
+        outcome_label = "需核验关键事实"
         summary = self._waiting_key_proof_summary(current_key_proof)
         recommended_improvements = [self._waiting_key_proof_recommendation(current_key_proof)]
         if interview_status == InterviewStateStatus.SIMULATED_REFUSAL.value:
@@ -96,7 +103,7 @@ class ReportService:
                 if current_risk_code
                 else "当前面谈已识别出高风险事项，需先完成复核。"
             )
-            recommended_improvements = ["围绕高风险点补充解释或关键证明。"]
+            recommended_improvements = ["围绕高风险点补充解释或可引用证据。"]
         elif interview_status == InterviewStateStatus.VERIFY_KEY_ISSUE.value:
             outcome_label = "需核验关键问题"
             summary = (
@@ -118,6 +125,11 @@ class ReportService:
             summary = "当前已进入正式 interview 阶段，可继续回答后续问题。"
             recommended_improvements = ["继续回答后续问题，并保持叙事一致。"]
 
+        recommended_improvements = self._merge_recommendations(
+            recommended_improvements,
+            case_board_payload,
+        )
+
         return {
             "session_id": session_id,
             "visa_family": visa_family,
@@ -125,8 +137,8 @@ class ReportService:
             "interview_status": interview_status,
             "outcome_label": outcome_label,
             "summary": summary,
-            "strengths": ["已完成基本签证家族识别"],
-            "risk_points": [],
+            "strengths": case_strengths or ["已完成基本签证家族识别"],
+            "risk_points": case_risk_points,
             "missing_evidence": missing_evidence,
             "remaining_required_documents": remaining_required_documents,
             "risk_level": risk_level,
@@ -139,6 +151,7 @@ class ReportService:
             "advisory_context": advisory_context,
             "document_review": document_review,
             "prompt_trace": prompt_trace,
+            "case_board": case_board_payload,
         }
 
     def internal_report(
@@ -154,11 +167,13 @@ class ReportService:
         governor_history: list | None = None,
         interviewer_state_json: dict | None = None,
         current_focus_json: dict | None = None,
+        case_board: dict[str, Any] | None = None,
     ) -> dict:
         interviewer_state_json = interviewer_state_json or {}
         current_focus_json = current_focus_json or {}
         runtime_ledger_payload = self._runtime_ledger_payload(runtime_ledger)
         runtime_view_state_payload = self._runtime_view_state_payload(runtime_view_state)
+        case_board_payload = self._case_board_payload(case_board)
         runtime_trace_payload = self._legacy_event_payloads(
             runtime_ledger_payload,
             event_type="trace",
@@ -207,6 +222,7 @@ class ReportService:
                 or interviewer_state_json.get("document_review", {})
                 or {}
             ),
+            "case_board": case_board_payload,
         }
 
     def _runtime_ledger_payload(
@@ -224,6 +240,14 @@ class ReportService:
         if not isinstance(runtime_view_state, dict):
             return {}
         return dict(runtime_view_state)
+
+    def _case_board_payload(
+        self,
+        case_board: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(case_board, dict):
+            return {}
+        return dict(case_board)
 
     def _effective_interviewer_state(
         self,
@@ -291,8 +315,19 @@ class ReportService:
         profile_json: dict,
         interviewer_state_json: dict,
         current_focus_json: dict,
+        case_board: dict[str, Any],
     ) -> list[str]:
+        del profile_json
         missing_evidence: list[str] = []
+        for proof in self._list_payload(case_board.get("proof_points")):
+            if not isinstance(proof, dict):
+                continue
+            if proof.get("status") not in {"missing", "partial", "contradicted"}:
+                continue
+            proof_code = self._proof_point_code(proof)
+            if proof_code and proof_code not in missing_evidence:
+                missing_evidence.append(proof_code)
+
         requested_documents = interviewer_state_json.get("requested_documents", [])
         for document_type in requested_documents:
             if document_type and document_type not in missing_evidence:
@@ -315,13 +350,13 @@ class ReportService:
 
     def _waiting_key_proof_summary(self, current_key_proof: str | None) -> str:
         if current_key_proof:
-            return f"当前最关键的证明点是 {current_key_proof}，请优先补强。"
-        return "当前材料主线可识别，但关键证据尚不完整。"
+            return f"当前最关键的待证明点是 {current_key_proof}，可以继续说明，也可以上传对应证据。"
+        return "当前案例主线可继续推进，但仍有关键事实需要被材料或回答支持。"
 
     def _waiting_key_proof_recommendation(self, current_key_proof: str | None) -> str:
         if current_key_proof:
-            return f"优先补充 {current_key_proof}，再继续面谈。"
-        return "补充关键证明后继续面谈。"
+            return f"围绕 {current_key_proof} 说明事实来源；如果有材料，可作为证据补充上传。"
+        return "继续回答关键问题，并用材料或事实细节补强证据链。"
 
     def _resolve_public_status(
         self,
@@ -353,10 +388,20 @@ class ReportService:
         *,
         interview_status: str,
         interviewer_state_json: dict,
+        case_board: dict[str, Any],
     ) -> str:
         risk_level = interviewer_state_json.get("risk_level")
         if risk_level:
             return risk_level
+        conflicts = [
+            item
+            for item in self._list_payload(case_board.get("conflicts"))
+            if isinstance(item, dict)
+        ]
+        if any(item.get("severity") == "high" for item in conflicts):
+            return "high"
+        if conflicts:
+            return "medium"
         if interview_status in {
             InterviewStateStatus.HIGH_RISK_REVIEW.value,
             InterviewStateStatus.SIMULATED_REFUSAL.value,
@@ -365,3 +410,76 @@ class ReportService:
         if interview_status == InterviewStateStatus.VERIFY_KEY_ISSUE.value:
             return "medium"
         return "none"
+
+    def _case_strengths(self, case_board: dict[str, Any]) -> list[str]:
+        strengths: list[str] = []
+        for claim in self._list_payload(case_board.get("claims")):
+            if not isinstance(claim, dict):
+                continue
+            if claim.get("status") != "documented":
+                continue
+            field_path = str(claim.get("field_path") or "").strip()
+            value = str(claim.get("value") or "").strip()
+            if not field_path:
+                continue
+            text = f"{field_path} 已有材料证据支持"
+            if value:
+                text = f"{text}：{value}"
+            if text not in strengths:
+                strengths.append(text)
+        return strengths[:5]
+
+    def _case_risk_points(self, case_board: dict[str, Any]) -> list[str]:
+        points: list[str] = []
+        for conflict in self._list_payload(case_board.get("conflicts")):
+            if not isinstance(conflict, dict):
+                continue
+            summary = str(conflict.get("summary") or "").strip()
+            if summary and summary not in points:
+                points.append(summary)
+        for claim in self._list_payload(case_board.get("claims")):
+            if not isinstance(claim, dict) or claim.get("status") != "contradicted":
+                continue
+            field_path = str(claim.get("field_path") or "").strip()
+            value = str(claim.get("value") or "").strip()
+            text = f"{field_path} 存在证据冲突" if field_path else "存在证据冲突"
+            if value:
+                text = f"{text}：{value}"
+            if text not in points:
+                points.append(text)
+        return points[:5]
+
+    def _merge_recommendations(
+        self,
+        recommendations: list[str],
+        case_board: dict[str, Any],
+    ) -> list[str]:
+        merged = list(recommendations)
+        for conflict in self._list_payload(case_board.get("conflicts")):
+            if not isinstance(conflict, dict):
+                continue
+            followup = str(conflict.get("suggested_followup") or "").strip()
+            if followup and followup not in merged:
+                merged.append(followup)
+        for proof in self._list_payload(case_board.get("proof_points")):
+            if not isinstance(proof, dict):
+                continue
+            if proof.get("status") not in {"missing", "partial", "contradicted"}:
+                continue
+            question = str(proof.get("question") or "").strip()
+            if not question:
+                continue
+            text = f"围绕待证明点补强证据链：{question}"
+            if text not in merged:
+                merged.append(text)
+        return merged[:6]
+
+    def _proof_point_code(self, proof: dict[str, Any]) -> str | None:
+        for key in ("proof_point_id", "question"):
+            value = proof.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _list_payload(self, value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []

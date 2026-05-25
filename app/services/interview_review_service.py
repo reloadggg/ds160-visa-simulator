@@ -176,16 +176,16 @@ class InterviewReviewService:
             or ["已完成部分问答和材料提交，可作为下一轮练习基础。"],
             refusal_or_risk_reasons=(risk_points[:6] or ([outcome_reason] if is_refusal else [])),
             missing_or_weak_evidence=missing_evidence[:6]
-            or ["暂无明确缺失材料，但仍建议核对核心材料是否覆盖签证类型要求。"],
+            or ["暂无明确缺失项，但仍建议核对核心事实是否有材料或回答支撑。"],
             conversation_issues=[
                 "回答需要更直接，优先说明事实、资金来源、学习计划和回国约束。"
             ],
             document_findings=document_findings,
             improvement_plan=recommended_improvements[:6]
-            or ["按当前缺口补齐关键材料后，再进行一轮完整模拟。"],
+            or ["按当前薄弱证明点补强事实和证据后，再进行一轮完整模拟。"],
             next_practice_focus=[
                 "用 1-2 句话回答签证官问题，不展开成材料清单。",
-                "确保每个关键说法都能被材料或 OCR 文本支持。",
+                "确保每个关键说法都能被材料内容或案例证据支持。",
             ],
         )
 

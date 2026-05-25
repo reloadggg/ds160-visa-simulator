@@ -9,6 +9,8 @@ from app.domain.evidence import DocumentAssessment
 from app.domain.runtime import GateOverallStatus
 from app.repositories.session_repo import SessionRepository
 
+UNDERSTANDING_JOB_KINDS = {"case_understanding", "gate_parse"}
+
 
 class GateRuntimeService:
     def __init__(self, db: Session) -> None:
@@ -56,7 +58,7 @@ class GateRuntimeService:
             matched_jobs = [
                 job
                 for job in jobs
-                if job.kind == "gate_parse"
+                if job.kind in UNDERSTANDING_JOB_KINDS
                 and any(
                     job.payload_json.get("document_id") == document.document_id
                     for document in matched_documents
@@ -209,11 +211,15 @@ class GateRuntimeService:
                 return True
         if has_explicit_document_type:
             return False
-
-        filename = document.filename.lower()
-        return document_type in filename
+        return False
 
     def _counts_toward_gate(self, document: DocumentRecord) -> bool:
+        artifact = dict(document.artifact_json or {})
+        tombstone = artifact.get("case_memory_tombstone")
+        if document.status in {"deleted", "tombstoned"}:
+            return False
+        if isinstance(tombstone, dict) and tombstone.get("status") == "tombstoned":
+            return False
         if DocumentAssessment.from_artifact(document.artifact_json).counts_toward_gate is False:
             return False
         return True

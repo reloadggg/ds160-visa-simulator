@@ -83,15 +83,16 @@ def test_f1_gate_review_runtime_progresses_from_pending_to_ready(
         assert created.phase_state == "intake"
         assert created.gate_status_json["status"] == "pending_documents"
 
-    for filename, raw_bytes in [
-        ("ds160.pdf", build_pdf_bytes("Completed DS-160 form draft")),
-        ("passport_bio.pdf", build_pdf_bytes("Passport biographic page")),
-        ("i20.pdf", build_pdf_bytes("Form I-20 issued by school")),
-        ("admission_letter.pdf", build_pdf_bytes("University admission letter")),
-        ("funding_proof.pdf", build_pdf_bytes("Parent sponsor bank statement for tuition")),
+    for document_type, filename, raw_bytes in [
+        ("ds160", "ds160.pdf", build_pdf_bytes("Completed DS-160 form draft")),
+        ("passport_bio", "passport_bio.pdf", build_pdf_bytes("Passport biographic page")),
+        ("i20", "i20.pdf", build_pdf_bytes("Form I-20 issued by school")),
+        ("admission_letter", "admission_letter.pdf", build_pdf_bytes("University admission letter")),
+        ("funding_proof", "funding_proof.pdf", build_pdf_bytes("Parent sponsor bank statement for tuition")),
     ]:
         upload_response = client.post(
             f"/v1/sessions/{session_id}/files",
+            data={"document_type": document_type},
             files={"file": (filename, raw_bytes, "application/pdf")},
         )
         assert upload_response.status_code == 202

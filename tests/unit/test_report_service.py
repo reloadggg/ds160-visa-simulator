@@ -179,7 +179,91 @@ def test_user_report_keeps_runtime_focus_during_gate_review() -> None:
     assert payload["current_key_question"] is None
     assert payload["current_key_proof"] == "funding_proof"
     assert payload["missing_evidence"] == ["funding_proof"]
-    assert payload["recommended_improvements"] == ["优先补充 funding_proof，再继续面谈。"]
+    assert payload["recommended_improvements"] == [
+        "围绕 funding_proof 说明事实来源；如果有材料，可作为证据补充上传。"
+    ]
+
+
+def test_user_report_projects_case_board_facts_conflicts_and_proof_points() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-case-board-report",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={},
+        phase_state="interview",
+        case_board={
+            "schema_version": "case_board.v1",
+            "claims": [
+                {
+                    "claim_id": "claim-school",
+                    "field_path": "/education/school_name",
+                    "value": "Example University",
+                    "status": "documented",
+                    "supporting_evidence_ids": ["ev-i20-school"],
+                    "conflicting_evidence_ids": [],
+                },
+                {
+                    "claim_id": "claim-funding-user",
+                    "field_path": "/funding/primary_source",
+                    "value": "self",
+                    "status": "contradicted",
+                    "supporting_evidence_ids": [],
+                    "conflicting_evidence_ids": ["ev-bank-parent"],
+                },
+            ],
+            "evidence_cards": [
+                {
+                    "evidence_id": "ev-i20-school",
+                    "source_type": "uploaded_file",
+                    "document_id": "doc-i20",
+                    "excerpt": "School Name: Example University",
+                    "claim_refs": ["claim-school"],
+                },
+                {
+                    "evidence_id": "ev-bank-parent",
+                    "source_type": "uploaded_file",
+                    "document_id": "doc-bank",
+                    "excerpt": "Parent sponsor account",
+                    "claim_refs": ["claim-funding-user"],
+                },
+            ],
+            "proof_points": [
+                {
+                    "proof_point_id": "proof-funding-source",
+                    "visa_family": "f1",
+                    "question": "Who will pay for your first year of study?",
+                    "status": "partial",
+                    "why_it_matters": "Funding source must be credible.",
+                }
+            ],
+            "conflicts": [
+                {
+                    "conflict_id": "conflict-funding-source",
+                    "claim_ids": ["claim-funding-user"],
+                    "evidence_ids": ["ev-bank-parent"],
+                    "summary": "用户说自费，但银行材料显示父母资助。",
+                    "severity": "high",
+                    "suggested_followup": "请解释资金来源到底是本人还是父母。",
+                }
+            ],
+        },
+    )
+
+    assert payload["strengths"] == [
+        "/education/school_name 已有材料证据支持：Example University"
+    ]
+    assert payload["risk_level"] == "high"
+    assert payload["risk_points"] == [
+        "用户说自费，但银行材料显示父母资助。",
+        "/funding/primary_source 存在证据冲突：self",
+    ]
+    assert payload["missing_evidence"][0] == "proof-funding-source"
+    assert "请解释资金来源到底是本人还是父母。" in payload[
+        "recommended_improvements"
+    ]
+    assert payload["case_board"]["claims"][0]["claim_id"] == "claim-school"
 
 
 def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:

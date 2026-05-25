@@ -1,0 +1,161 @@
+{
+  "fixture_id": "funding-claim-conflict",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-funding-conflict",
+    "run_id": "run-funding-conflict",
+    "user_turn": {
+      "content": "I said I am self-funded."
+    },
+    "case_state": {
+      "assert_case_memory": true,
+      "assert_conflict_specific_clarification": true,
+      "case_memory": {
+        "claims": [
+          {
+            "claim_id": "claim-user-funding",
+            "field_path": "/funding/primary_source",
+            "value": "self",
+            "status": "contradicted",
+            "supporting_evidence_ids": [],
+            "conflicting_evidence_ids": [
+              "ev-user-funding",
+              "ev-bank"
+            ],
+            "confidence": 0.72
+          },
+          {
+            "claim_id": "claim-bank-funding",
+            "field_path": "/funding/primary_source",
+            "value": "parents",
+            "status": "contradicted",
+            "supporting_evidence_ids": [
+              "ev-bank"
+            ],
+            "conflicting_evidence_ids": [
+              "ev-user-funding",
+              "ev-bank"
+            ],
+            "confidence": 0.9
+          }
+        ],
+        "evidence_cards": [
+          {
+            "evidence_id": "ev-user-funding",
+            "source_type": "user_turn",
+            "excerpt": "I will pay for the program myself.",
+            "claim_refs": [
+              "claim-user-funding"
+            ],
+            "confidence": 0.72
+          },
+          {
+            "evidence_id": "ev-bank",
+            "source_type": "uploaded_file",
+            "document_id": "doc-bank",
+            "excerpt": "Sponsor: parents",
+            "claim_refs": [
+              "claim-bank-funding"
+            ],
+            "confidence": 0.9
+          }
+        ],
+        "proof_points": [],
+        "conflicts": [
+          {
+            "conflict_id": "conflict-funding-primary-source",
+            "claim_ids": [
+              "claim-user-funding",
+              "claim-bank-funding"
+            ],
+            "evidence_ids": [
+              "ev-user-funding",
+              "ev-bank"
+            ],
+            "summary": "Funding source conflicts: self vs parents.",
+            "severity": "medium",
+            "suggested_followup": "Clarify who funds the study."
+          }
+        ]
+      },
+      "case_board": {
+        "schema_version": "case_board.v1",
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": []
+      }
+    },
+    "citation_bundle": {
+      "citations": [
+        {
+          "citation_id": "cite-bank-sponsor",
+          "source_type": "case_evidence",
+          "source_authority": "user_provided",
+          "source_id": "source-session",
+          "document_id": "doc-bank",
+          "chunk_id": "chunk-sponsor",
+          "span_start": 0,
+          "span_end": 40,
+          "content_hash": "sha256:bank",
+          "quote_or_summary": "Bank proof indicates parents sponsor tuition.",
+          "retrieved_at": "2026-05-25T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-bank-funding"
+          ]
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "你刚才说自费，但银行材料显示父母资助。请说明资金来源到底是哪一种？",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "high_risk_review",
+      "requested_documents": [],
+      "public_claims": [
+        {
+          "claim_id": "claim-bank-funding",
+          "claim_type": "case_evidence",
+          "text": "银行材料显示父母资助。",
+          "citation_ids": [
+            "cite-bank-sponsor"
+          ]
+        }
+      ],
+      "used_citation_ids": [
+        "cite-bank-sponsor"
+      ],
+      "guard_status": "passed",
+      "next_safe_action": "ask_clarification"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-funding-conflict",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-funding-conflict",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "你刚才说自费，但银行材料显示父母资助。请说明资金来源到底是哪一种？",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "high_risk_review"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "conflict_specific_clarification"
+    ]
+  }
+}

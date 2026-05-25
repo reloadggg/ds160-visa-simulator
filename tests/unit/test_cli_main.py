@@ -91,7 +91,8 @@ def test_cli_main_eval_graph_corpus_matches_expected_failures(capsys) -> None:
 
     captured = capsys.readouterr().out
     assert exit_code == 0
-    assert '"fixture_count": 5' in captured
+    assert '"fixture_count": 10' in captured
+    assert '"fixture_id": "no-material-chat-starts"' in captured
     assert '"fixture_id": "repeated-template-failure"' in captured
     assert '"expected_passed": false' in captured
     assert '"matched_expectation": true' in captured

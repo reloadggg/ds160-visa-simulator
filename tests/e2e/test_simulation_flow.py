@@ -271,7 +271,8 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
     assert upload_response.status_code == 202
     upload_payload = upload_response.json()
     assert upload_payload["main_flow_feedback"]["status"] == "not_helpful"
-    assert "没有直接帮助" in upload_payload["main_flow_feedback"]["message"]
+    assert "已保存" in upload_payload["main_flow_feedback"]["message"]
+    assert "可以继续面签对话" in upload_payload["main_flow_feedback"]["message"]
 
     next_response = client.post(
         f"/v1/sessions/{session_id}/messages",

@@ -184,17 +184,30 @@ function buildRequestedDocumentsMessage(
 
   const documentList = formatRequestedDocuments(requestedDocumentLabels)
   if (governorDecision === "need_more_evidence") {
-    return `请补充：${documentList}。`
+    return `还需要核验证据：${documentList}。`
   }
 
   return `还需要核对：${documentList}。`
 }
 
-function buildOfficerUploadFollowUp(
+function buildUploadOnlySystemSummary(
   responses: FileUploadResponse[],
-  fallbackLabels: string[],
 ): string {
-  const uploadedLabels = Array.from(
+  const evidenceCount = responses.reduce(
+    (total, response) => total + response.evidence_cards.length,
+    0,
+  )
+  const claimCount = responses.reduce(
+    (total, response) =>
+      total + (response.case_board_delta?.claims.length ?? 0),
+    0,
+  )
+  const conflictCount = responses.reduce(
+    (total, response) =>
+      total + (response.case_board_delta?.conflicts.length ?? 0),
+    0,
+  )
+  const materialLabels = Array.from(
     new Set(
       responses
         .map(
@@ -205,33 +218,26 @@ function buildOfficerUploadFollowUp(
         .filter((label): label is string => Boolean(label)),
     ),
   )
-  const remainingLabels = Array.from(
-    new Set(
-      responses.flatMap(
-        (response) => response.remaining_required_document_labels ?? [],
-      ),
-    ),
-  )
-  const focusLabels = remainingLabels.length ? remainingLabels : fallbackLabels
 
-  if (uploadedLabels.length && !focusLabels.length) {
-    return `我收到了你上传的${formatRequestedDocuments(uploadedLabels)}。你这次赴美学习什么项目？`
+  const materialPart = materialLabels.length
+    ? `：${formatRequestedDocuments(materialLabels)}`
+    : ""
+  const evidencePart = evidenceCount
+    ? `，已形成 ${evidenceCount} 条证据片段`
+    : ""
+  const claimPart = claimCount ? `、${claimCount} 个候选事实` : ""
+  const conflictPart = conflictCount ? `，其中 ${conflictCount} 个冲突待核验` : ""
+
+  if (evidenceCount || claimCount || conflictCount) {
+    return `材料已加入案例证据${materialPart}${evidencePart}${claimPart}${conflictPart}。`
   }
 
-  if (uploadedLabels.length && focusLabels.length) {
-    return `我收到了你上传的${formatRequestedDocuments(uploadedLabels)}。请补充${formatRequestedDocuments(focusLabels)}。`
-  }
-
-  if (focusLabels.length) {
-    return `材料已收到。请补充${formatRequestedDocuments(focusLabels)}。`
-  }
-
-  return "材料已收到。你这次赴美学习什么项目？"
+  return `材料已收到${materialPart}，案例理解正在更新。`
 }
 
 function buildGateProgressMessage(overallStatus?: string): string | null {
   if (overallStatus === "waiting_for_parse") {
-    return "材料已收到，系统正在解析，请稍后继续查看更新。"
+    return "材料已收到，案例理解正在更新。你可以继续对话。"
   }
 
   return null
@@ -602,7 +608,7 @@ function humanizeUploadStatus(
     case "processing":
     case "waiting_for_parse":
     case "parsing":
-      return "解析中"
+      return "理解中"
     case "parsed":
     case "uploaded":
     case "completed":
@@ -1546,6 +1552,7 @@ export function useSessionWorkbench() {
           ? getFileContentUrl(sessionId, response.document_id)
           : null,
       document_status: response?.document_status,
+      understanding_status: response?.understanding_status ?? null,
       document_type:
         response?.document_type ??
         response?.document_assessment?.document_type ??
@@ -1557,6 +1564,15 @@ export function useSessionWorkbench() {
       relevance:
         response?.relevance ?? response?.document_assessment?.relevance ?? null,
       feedback_message: feedbackMessage,
+      evidence_cards:
+        response?.case_board_delta?.evidence_cards ??
+        response?.evidence_cards ??
+        [],
+      claims: response?.case_board_delta?.claims ?? [],
+      proof_points: response?.case_board_delta?.open_proof_points ?? [],
+      conflicts: response?.case_board_delta?.conflicts ?? [],
+      next_move: response?.case_board_delta?.next_move ?? null,
+      case_board_delta: response?.case_board_delta ?? null,
       requested_document_labels: response?.requested_document_labels ?? [],
       current_focus_document_label:
         response?.main_flow_feedback?.current_focus_document_label ??
@@ -1869,6 +1885,7 @@ export function useSessionWorkbench() {
                 null,
               )
               if (
+                hasContent &&
                 requestedDocumentsMessage &&
                 !uploadFeedback?.includes(requestedDocumentsMessage)
               ) {
@@ -1910,15 +1927,10 @@ export function useSessionWorkbench() {
               successfulUploads > 0 ? "sent" : "error",
             )
             if (successfulUploads > 0) {
-              const latestReport = await refreshReports(sessionId)
-              const fallbackLabels =
-                latestReport?.requested_document_labels ?? []
+              await refreshReports(sessionId)
               appendMessage({
-                role: "officer",
-                content: buildOfficerUploadFollowUp(
-                  uploadResponses,
-                  fallbackLabels,
-                ),
+                role: "system",
+                content: buildUploadOnlySystemSummary(uploadResponses),
               })
             } else {
               await refreshReports(sessionId)

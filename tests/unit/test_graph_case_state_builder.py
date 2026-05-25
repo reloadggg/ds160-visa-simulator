@@ -181,6 +181,303 @@ def test_graph_case_state_builder_normalizes_session_turns_and_materials() -> No
     ]
 
 
+def test_graph_case_state_builder_projects_case_memory_from_document_artifacts() -> None:
+    record = SessionRecord(
+        session_id="sess-case-memory",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    documents = [
+        DocumentRecord(
+            document_id="doc-i20",
+            session_id=record.session_id,
+            filename="i20.pdf",
+            status="parsed",
+            artifact_json={
+                "document_type": "i20",
+                "understanding_status": "completed",
+                "case_board_delta": {
+                    "latest_material": {
+                        "document_id": "doc-i20",
+                        "filename": "i20.pdf",
+                        "understanding_status": "completed",
+                    }
+                },
+                "material_understanding_result": {
+                    "document_type_candidates": [
+                        {"document_type": "i20", "confidence": 0.91}
+                    ],
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-school",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-i20",
+                            "excerpt": "School Name: Example University",
+                            "claim_refs": ["claim-school"],
+                            "confidence": 0.93,
+                        }
+                    ],
+                    "extracted_claims": [
+                        {
+                            "claim_id": "claim-school",
+                            "field_path": "/education/school_name",
+                            "value": "Example University",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-school"],
+                            "confidence": 0.93,
+                        }
+                    ],
+                    "proof_points": [],
+                    "conflicts": [],
+                    "unknowns": [],
+                    "suggested_followups": [],
+                    "confidence": 0.91,
+                },
+            },
+        )
+    ]
+
+    case_state = GraphCaseStateBuilder().build(record, [], documents=documents)
+
+    assert case_state["case_memory"]["claims"][0]["field_path"] == (
+        "/education/school_name"
+    )
+    assert case_state["case_memory"]["evidence_cards"][0]["evidence_id"] == (
+        "ev-school"
+    )
+    assert case_state["case_board"]["latest_material"]["document_id"] == "doc-i20"
+
+
+def test_graph_case_state_builder_projects_material_next_move() -> None:
+    record = SessionRecord(
+        session_id="sess-case-next-move",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    documents = [
+        DocumentRecord(
+            document_id="doc-i20",
+            session_id=record.session_id,
+            filename="i20.pdf",
+            status="parsed",
+            artifact_json={
+                "document_type": "i20",
+                "case_board_delta": {
+                    "latest_material": {
+                        "document_id": "doc-i20",
+                        "filename": "i20.pdf",
+                        "understanding_status": "completed",
+                    }
+                },
+                "material_understanding_result": {
+                    "document_type_candidates": [],
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-school",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-i20",
+                            "excerpt": "School Name: Example University",
+                            "claim_refs": ["claim-school"],
+                            "confidence": 0.93,
+                        }
+                    ],
+                    "extracted_claims": [
+                        {
+                            "claim_id": "claim-school",
+                            "field_path": "/education/school_name",
+                            "value": "Example University",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-school"],
+                            "confidence": 0.93,
+                        }
+                    ],
+                    "proof_points": [],
+                    "conflicts": [],
+                    "unknowns": [],
+                    "suggested_followups": [
+                        {
+                            "move_type": "ask",
+                            "question": "Why did you choose Example University?",
+                            "reason": "The uploaded I-20 proves the school; motivation is the next interview topic.",
+                            "claim_refs": ["claim-school"],
+                            "evidence_refs": ["ev-school"],
+                        }
+                    ],
+                    "confidence": 0.91,
+                },
+            },
+        )
+    ]
+
+    case_state = GraphCaseStateBuilder().build(record, [], documents=documents)
+
+    assert case_state["case_memory"]["next_move"] == {
+        "move_type": "ask",
+        "question": "Why did you choose Example University?",
+        "reason": (
+            "The uploaded I-20 proves the school; motivation is the next "
+            "interview topic."
+        ),
+        "claim_refs": ["claim-school"],
+        "evidence_refs": ["ev-school"],
+    }
+    assert case_state["case_board"]["next_move"] == case_state["case_memory"]["next_move"]
+
+
+def test_graph_case_state_builder_includes_user_claims_and_conflicts() -> None:
+    record = SessionRecord(
+        session_id="sess-case-conflict",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    turns = [
+        SessionTurnRecord(
+            turn_id="turn-user-1",
+            turn_index=1,
+            session_id=record.session_id,
+            role="user",
+            content="I will pay for the program myself.",
+            source="user_message",
+            metadata_json={
+                "case_memory_claims": [
+                    {
+                        "claim_id": "claim-user-funding",
+                        "field_path": "/funding/primary_source",
+                        "value": "self",
+                        "status": "stated",
+                        "confidence": 0.72,
+                    }
+                ],
+                "case_memory_evidence_cards": [
+                    {
+                        "evidence_id": "ev-user-funding",
+                        "source_type": "user_turn",
+                        "excerpt": "I will pay for the program myself.",
+                        "claim_refs": ["claim-user-funding"],
+                        "confidence": 0.72,
+                    }
+                ],
+            },
+        )
+    ]
+    documents = [
+        DocumentRecord(
+            document_id="doc-bank",
+            session_id=record.session_id,
+            filename="bank.pdf",
+            status="parsed",
+            artifact_json={
+                "document_type": "funding_proof",
+                "material_understanding_result": {
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-bank",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-bank",
+                            "excerpt": "Sponsor: parents",
+                            "claim_refs": ["claim-bank-funding"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "extracted_claims": [
+                        {
+                            "claim_id": "claim-bank-funding",
+                            "field_path": "/funding/primary_source",
+                            "value": "parents",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-bank"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "proof_points": [],
+                    "conflicts": [],
+                    "unknowns": [],
+                    "suggested_followups": [],
+                    "confidence": 0.9,
+                },
+            },
+        )
+    ]
+
+    case_state = GraphCaseStateBuilder().build(record, turns, documents=documents)
+
+    claims_by_value = {
+        claim["value"]: claim for claim in case_state["case_memory"]["claims"]
+    }
+    assert claims_by_value["self"]["status"] == "contradicted"
+    assert claims_by_value["parents"]["status"] == "contradicted"
+    assert case_state["case_memory"]["conflicts"][0]["conflict_id"] == (
+        "conflict-funding-primary-source"
+    )
+
+
+def test_graph_case_state_builder_excludes_tombstoned_case_memory_document() -> None:
+    record = SessionRecord(
+        session_id="sess-case-tombstone",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    documents = [
+        DocumentRecord(
+            document_id="doc-i20",
+            session_id=record.session_id,
+            filename="i20.pdf",
+            status="tombstoned",
+            artifact_json={
+                "document_type": "i20",
+                "case_memory_tombstone": {
+                    "status": "tombstoned",
+                    "reason": "document_removed",
+                },
+                "case_board_delta": {
+                    "latest_material": {
+                        "document_id": "doc-i20",
+                        "filename": "i20.pdf",
+                        "understanding_status": "completed",
+                    }
+                },
+                "material_understanding_result": {
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-school",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-i20",
+                            "excerpt": "School Name: Example University",
+                            "claim_refs": ["claim-school"],
+                            "confidence": 0.93,
+                        }
+                    ],
+                    "extracted_claims": [
+                        {
+                            "claim_id": "claim-school",
+                            "field_path": "/education/school_name",
+                            "value": "Example University",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-school"],
+                            "confidence": 0.93,
+                        }
+                    ],
+                    "proof_points": [],
+                    "conflicts": [],
+                    "unknowns": [],
+                    "suggested_followups": [],
+                    "confidence": 0.93,
+                },
+            },
+        )
+    ]
+
+    case_state = GraphCaseStateBuilder().build(record, [], documents=documents)
+
+    assert case_state["case_memory"] == {
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": [],
+    }
+    assert "latest_material" not in case_state["case_board"]
+
+
 def test_graph_case_state_builder_keeps_recent_turn_window_stable() -> None:
     record = SessionRecord(
         session_id="sess-window",
@@ -288,6 +585,37 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
             artifact_json={
                 "document_type": "i20",
                 "source_type": "text",
+                "material_understanding_result": {
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-debug",
+                            "source_type": "debug_material",
+                            "excerpt": "School Name: Example University",
+                            "metadata": {
+                                "synthetic_bundle_id": "dbg-bundle-secret",
+                                "debug_bundle_scenario": "school_mismatch_bundle",
+                            },
+                        }
+                    ],
+                    "extracted_claims": [],
+                },
+                "case_board_delta": {
+                    "latest_material": {
+                        "document_id": "doc-debug",
+                        "filename": "debug_i20.txt",
+                        "understanding_status": "completed",
+                    },
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-debug",
+                            "source_type": "debug_material",
+                            "excerpt": "School Name: Example University",
+                            "metadata": {
+                                "debug_bundle_scenario_label": "学校材料冲突包",
+                            },
+                        }
+                    ],
+                },
                 "metadata": {
                     "debug_material_bundle": True,
                     "synthetic_bundle_id": "dbg-bundle-secret",
@@ -347,11 +675,34 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
     )
 
     assert case_state["documents"][0]["artifact"] == {
-        "source_type": "text",
-        "document_type": "i20",
-        "metadata": {"debug_material_bundle": True},
-        "document_assessment": {
+            "source_type": "text",
             "document_type": "i20",
+            "case_board_delta": {
+                "latest_material": {
+                    "document_id": "doc-debug",
+                    "filename": "debug_i20.txt",
+                    "understanding_status": "completed",
+                },
+                "evidence_cards": [
+                    {
+                        "evidence_id": "ev-debug",
+                        "source_type": "debug_material",
+                        "excerpt": "School Name: Example University",
+                    }
+                ],
+            },
+            "material_understanding_result": {
+                "evidence_cards": [
+                    {
+                        "evidence_id": "ev-debug",
+                        "source_type": "debug_material",
+                        "excerpt": "School Name: Example University",
+                    }
+                ]
+            },
+            "metadata": {"debug_material_bundle": True},
+            "document_assessment": {
+                "document_type": "i20",
             "document_type_candidates": ["i20"],
             "relevance": "high",
             "supported_claims": ["/education/school_name"],

@@ -4,12 +4,17 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic_ai import Agent
 from pydantic_ai import messages as ai_messages
 from pydantic_ai.exceptions import ModelHTTPError
 
 from app.agents.model_factory import AgentModelFactory
 from app.domain.agent_runtime import DS160GraphState, GraphRunResult
+from app.domain.contracts import GovernorDecision
+from app.services.llm_node_runner import (
+    LLMNodeRequest,
+    LLMNodeRunner,
+    PydanticAILLMNodeRunner,
+)
 from app.services.runtime_errors import ModelRuntimeError, ProviderAPIError
 
 
@@ -29,8 +34,10 @@ class GraphAdjudicationNode:
         self,
         *,
         model_factory: AgentModelFactory | None = None,
+        llm_runner: LLMNodeRunner | None = None,
     ) -> None:
         self.model_factory = model_factory or AgentModelFactory()
+        self.llm_runner = llm_runner or PydanticAILLMNodeRunner()
 
     def run(
         self,
@@ -98,11 +105,6 @@ class GraphAdjudicationNode:
         state: DS160GraphState,
         message_text: str,
     ) -> GraphRunResult:
-        agent = Agent(
-            model,
-            output_type=GraphRunResult,
-            instructions=self._build_instructions(runtime),
-        )
         prompt = json.dumps(
             {
                 "schema_version": state.schema_version,
@@ -113,8 +115,17 @@ class GraphAdjudicationNode:
             },
             ensure_ascii=False,
         )
-        run_result = agent.run_sync(prompt)
-        return run_result.output
+        response = self.llm_runner.run(
+            LLMNodeRequest(
+                node_name="graph_adjudication",
+                prompt=prompt,
+                instructions=self._build_instructions(runtime),
+                output_type=GraphRunResult,
+                model=model,
+                runtime=runtime,
+            )
+        )
+        return GraphRunResult.model_validate(response.output)
 
     def _repair_redundant_question(
         self,
@@ -230,16 +241,11 @@ class GraphAdjudicationNode:
         runtime: dict[str, Any],
         error: ModelRuntimeError | None = None,
     ) -> GraphAdjudicationNodeResult:
-        final_response = GraphRunResult(
-            assistant_message=GRAPH_ADJUDICATION_FALLBACK_MESSAGE,
-            assistant_message_author="deterministic_safe_fallback",
-            decision="continue_interview",
-            used_citation_ids=sorted(state.citation_bundle.citation_ids),
-            guard_status="fallback_required",
-            incomplete_reason="provider_error"
-            if reason == "provider_error"
-            else "schema_invalid",
-            next_safe_action="continue_interview",
+        final_response = self._fallback_response_from_case_state(
+            state,
+            incomplete_reason=(
+                "provider_error" if reason == "provider_error" else "schema_invalid"
+            ),
         )
         state = state.model_copy(
             update={
@@ -266,6 +272,110 @@ class GraphAdjudicationNode:
             metadata["status_code"] = error.status_code
             metadata["upstream_code"] = error.upstream_code
         return GraphAdjudicationNodeResult(state=state, metadata=metadata)
+
+    def _fallback_response_from_case_state(
+        self,
+        state: DS160GraphState,
+        *,
+        incomplete_reason: str,
+    ) -> GraphRunResult:
+        case_state = self._payload(state.case_state)
+        case_board = self._payload(case_state.get("case_board"))
+        case_memory = self._payload(case_state.get("case_memory"))
+        conflicts = self._list_payload(
+            case_memory.get("conflicts") or case_board.get("conflicts")
+        )
+        next_move = self._payload(
+            case_board.get("next_move") or case_memory.get("next_move")
+        )
+        proof_points = self._list_payload(
+            case_memory.get("proof_points") or case_board.get("proof_points")
+        )
+        latest_material = self._payload(case_board.get("latest_material"))
+
+        decision = "continue_interview"
+        next_safe_action = "continue_interview"
+        if conflicts:
+            assistant_message = self._question_from_conflict(conflicts[0])
+            decision = GovernorDecision.HIGH_RISK_REVIEW.value
+            next_safe_action = "ask_clarification"
+        elif next_move:
+            move_type = self._string_or_none(next_move.get("move_type")) or "ask"
+            assistant_message = self._question_from_next_move(
+                next_move,
+                move_type=move_type,
+            )
+            decision = self._decision_for_next_move(move_type)
+            next_safe_action = self._next_safe_action_for_move(move_type)
+        elif proof_points:
+            assistant_message = (
+                self._string_or_none(proof_points[0].get("question"))
+                or "请补充说明这个关键证明点。"
+            )
+        elif latest_material:
+            status = self._string_or_none(latest_material.get("understanding_status"))
+            if status in {"queued", "processing"}:
+                assistant_message = "案例理解正在更新中。你可以先继续说明你的学习计划和资金安排。"
+            elif status == "failed":
+                assistant_message = "这份材料暂时无法完成案例理解。你可以继续面签对话，我会先基于已知事实追问。"
+            else:
+                assistant_message = "材料已经加入案例理解。请继续说明它和你的签证计划有什么关系。"
+        else:
+            assistant_message = "为什么选择去美国读这个项目？"
+
+        return GraphRunResult(
+            assistant_message=assistant_message,
+            assistant_message_author="deterministic_safe_fallback",
+            decision=decision,
+            used_citation_ids=sorted(state.citation_bundle.citation_ids),
+            guard_status="fallback_required",
+            incomplete_reason=incomplete_reason,  # type: ignore[arg-type]
+            next_safe_action=next_safe_action,  # type: ignore[arg-type]
+        )
+
+    def _decision_for_next_move(self, move_type: str) -> str:
+        if move_type in {"clarify_conflict", "probe_risk"}:
+            return GovernorDecision.HIGH_RISK_REVIEW.value
+        if move_type == "simulate_refusal":
+            return GovernorDecision.SIMULATED_REFUSAL.value
+        return "continue_interview"
+
+    def _next_safe_action_for_move(self, move_type: str) -> str:
+        if move_type in {"clarify_conflict", "probe_risk"}:
+            return "ask_clarification"
+        if move_type == "simulate_refusal":
+            return "end_session"
+        return "continue_interview"
+
+    def _question_from_next_move(
+        self,
+        next_move: dict[str, Any],
+        *,
+        move_type: str,
+    ) -> str:
+        question = self._string_or_none(next_move.get("question"))
+        if question and not question.casefold().startswith("ask the applicant"):
+            return question
+        if move_type == "clarify_conflict":
+            return "当前回答和材料存在不一致。请说明哪个说法准确，以及为什么会不同。"
+        if move_type == "probe_risk":
+            return "当前案例有一个高风险点需要先核验。请说明具体背景和原因。"
+        if move_type == "simulate_refusal":
+            return "当前事实已足以模拟一次高风险拒签结果，我会先说明原因和下一步。"
+        return "请继续说明这个材料如何支持你的签证案例。"
+
+    def _question_from_conflict(self, conflict: dict[str, Any]) -> str:
+        suggested = self._string_or_none(conflict.get("suggested_followup"))
+        if suggested and not suggested.casefold().startswith("ask the applicant"):
+            return suggested
+
+        summary = self._string_or_none(conflict.get("summary")) or ""
+        field_label = "关键事实"
+        if "/funding/primary_source" in summary or "funding" in summary.casefold():
+            field_label = "资金来源"
+        elif "/education/school_name" in summary or "school" in summary.casefold():
+            field_label = "学校信息"
+        return f"{field_label}存在不一致。请说明哪个说法准确，以及为什么回答和材料会不同。"
 
     def _build_runtime(
         self,

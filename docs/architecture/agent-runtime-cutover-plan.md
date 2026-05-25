@@ -259,7 +259,7 @@ graph 可追加但不能替换的字段：
 - Next.js workbench 无需改 UI 即可显示回复。
 - replay fixture CLI 全部通过。
 - 一键补资料、材料包、parse worker 三条 material-change 入口在 graph mode 下不会调用 legacy refresh。
-- graph material refresh 只写一条 assistant turn，且 `turn_record.user_turn_id` 为空。
+- graph material refresh 只更新 session state / `material_refresh` metadata，不写用户可见 assistant turn。
 - material bundle 的 `expected_findings`、scenario、bundle id 不进入 graph prompt/event/document review context。
 
 停止条件：
@@ -423,7 +423,7 @@ Phase A / B 当前已落地：
 
 - `AGENT_RUNTIME=legacy|graph_shadow|graph_canary|graph` selector 已接入 `MessageService.handle_user_turn(...)`。
 - 官方 `langgraph.graph.StateGraph` 已编译为 `CompiledStateGraph` 并由 `GraphRuntimeAdapter` 调用。
-- `graph_shadow` 返回 legacy public response，并把 graph trace 附在同一条 assistant turn metadata。
+- 普通用户消息的 `graph_shadow` 返回 legacy public response，并把 graph trace 附在同一条 assistant turn metadata；material refresh 的 shadow trace 写入 `last_material_refresh`，不创建 assistant turn。
 - deterministic graph mode 已能写 public assistant turn，前端旧字段保持兼容。
 - material-change refresh 已接入 graph runtime，覆盖 debug fill、debug material bundle、parse worker。
 - parse worker 在解析 job 完成后触发 refresh；refresh 异常只记录日志，不反向污染 completed job。

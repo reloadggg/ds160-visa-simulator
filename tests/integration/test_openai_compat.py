@@ -158,7 +158,7 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
     assert response.status_code == 200
     payload = response.json()
     metadata = payload["metadata"]
-    assert payload["choices"][0]["message"]["content"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert payload["choices"][0]["message"]["content"] == "为什么选择去美国读这个项目？"
     assert metadata["turn_decision"]["decision"] == "continue_interview"
     assert metadata["turn_decision"]["assistant_message_author"] == "adjudication_agent"
     assert metadata["prompt_trace"]["prompt_pack_id"] == "ds160.graph_runtime"

@@ -195,14 +195,14 @@ export function ReportModal({
                     </CardContent>
                   </Card>
 
-                  {/* Missing Evidence Card */}
+                  {/* Weak Evidence Card */}
                   <Card>
                     <CardHeader className="pb-3">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
                           <FileText className="w-4 h-4 text-primary" />
                         </div>
-                        缺失材料
+                        薄弱证明点
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -225,7 +225,7 @@ export function ReportModal({
                           ))}
                         </ul>
                       ) : (
-                        <p className="text-sm text-muted-foreground">暂无缺失材料</p>
+                        <p className="text-sm text-muted-foreground">暂无明确薄弱证明点</p>
                       )}
                     </CardContent>
                   </Card>
@@ -322,7 +322,7 @@ export function ReportModal({
                 <ClipboardCheck className="h-12 w-12 text-muted-foreground" />
                 <div>
                   <p className="font-medium text-foreground">还没有生成复盘</p>
-                  <p className="mt-1 text-sm text-muted-foreground">点击右上角“生成复盘”，系统会结合调试数据和材料 OCR 生成总结。</p>
+                  <p className="mt-1 text-sm text-muted-foreground">点击右上角“生成复盘”，系统会结合调试数据和材料理解生成总结。</p>
                 </div>
               </div>
             )}

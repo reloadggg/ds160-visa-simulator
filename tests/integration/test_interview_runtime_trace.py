@@ -162,14 +162,15 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
         (turns[-2].turn_index, "user"),
         (turns[-1].turn_index, "assistant"),
     ]
-    material_refresh_turns = [
-        turn
-        for turn in turns
-        if (turn.metadata_json or {}).get("turn_record", {}).get("user_input", "").startswith(
-            "document_parsed:"
+    assert all(
+        not (
+            (turn.metadata_json or {})
+            .get("turn_record", {})
+            .get("user_input", "")
+            .startswith(("case_understanding:", "document_parsed:"))
         )
-    ]
-    assert material_refresh_turns
+        for turn in turns
+    )
     assert len(record.runtime_trace_json) >= 18
     assert len(record.score_history_json) >= 2
     assert len(record.governor_history_json) >= 2
@@ -185,6 +186,7 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
         if group and group[0].get("node_name") == "material_changed"
     ]
     assert material_change_groups
+    assert material_change_groups[-1][0]["node_name"] == "material_changed"
     assert len(user_turn_groups) >= 2
     expected_user_turn_nodes = [
         "receive_input",

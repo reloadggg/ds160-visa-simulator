@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.evals.advisory_scorers import build_score_eval_series
 from app.platform.runtime_ledger import SessionLedger, TurnLedger
+from app.services.case_memory_service import CaseMemoryService
 from app.services.runtime_ledger_service import RuntimeLedgerService
 
 
@@ -13,6 +14,7 @@ class ReplayRunner:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.runtime_ledger = RuntimeLedgerService(db)
+        self.case_memory = CaseMemoryService(db)
 
     def inspect_turn(self, session_id: str, turn_id: str) -> dict:
         ledger = self.runtime_ledger.build_session_ledger(session_id)
@@ -35,6 +37,10 @@ class ReplayRunner:
             "session_id": session_id,
             "phase_state": ledger.phase_state,
             "turn_count": len(ledger.turns),
+            "case_memory": self.case_memory.build_snapshot(session_id).model_dump(
+                mode="json"
+            ),
+            "case_board": self.case_memory.build_board(session_id),
             "score_evals": build_score_eval_series(
                 self.runtime_ledger.scorer_payloads(ledger)
             ),

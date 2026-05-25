@@ -173,6 +173,7 @@ function Workbench() {
           isLoading={isLoadingReport}
           error={reportError}
           mode={activeTab === "coach" ? "coach" : "simulation"}
+          materials={uploadedMaterials}
           onViewDetails={handleViewDetails}
           onViewAllMaterials={() => setActiveNavItem("materials")}
           onActionClick={handleActionClick}

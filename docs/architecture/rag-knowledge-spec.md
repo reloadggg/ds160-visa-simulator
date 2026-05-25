@@ -20,7 +20,7 @@ RAG 是知识平面，不是裁判。
 
 ```text
 official_policy   官方政策、DS-160、SEVIS、使领馆说明
-case_evidence     用户上传材料、OCR 字段、历史口头声明
+case_evidence     用户上传材料理解结果、证据片段、历史口头声明
 product_rubric    模拟面签评分、训练建议、复盘模板
 ```
 

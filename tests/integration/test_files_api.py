@@ -9,6 +9,12 @@ import fitz
 from app.db.base import Base
 from app.db.models import DocumentRecord, JobRecord, SessionRecord
 from app.db.session import get_db
+from app.domain.case_memory import (
+    CaseClaim,
+    DocumentTypeCandidate,
+    EvidenceCard,
+    MaterialUnderstandingResult,
+)
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
 from app.core import settings as settings_module
@@ -83,7 +89,25 @@ def test_upload_file_creates_document_and_job(
     payload = response.json()
     assert payload["document_status"] == "uploaded"
     assert payload["job_status"] == "queued"
-    assert payload["document_assessment"]["document_type"] == "i20"
+    assert payload["understanding_status"] == "queued"
+    assert payload["document_assessment"].get("document_type") is None
+    assert payload["document_type_candidates"] == []
+    assert payload["supported_claims"] == []
+    assert payload["case_board_delta"]["latest_material"]["document_id"] == (
+        payload["document_id"]
+    )
+    assert payload["case_board_delta"]["latest_material"]["understanding_status"] == "queued"
+    assert payload["case_board_delta"]["latest_material"]["unknowns"] == [
+        "案例理解任务已创建，视觉材料的完整证据、冲突和追问建议仍在更新。"
+    ]
+    assert payload["case_board_delta"]["conflicts"] == []
+    assert payload["case_board_delta"]["next_move"] == {
+        "move_type": "ask",
+        "question": "请继续回答面签问题；材料理解完成后我会结合证据调整追问。",
+        "reason": "文件已保存并进入案例理解队列，当前无需等待材料齐套。",
+        "claim_refs": [],
+        "evidence_refs": [],
+    }
 
     with db_session_factory() as db:
         document = db.scalar(
@@ -103,7 +127,7 @@ def test_upload_file_creates_document_and_job(
         assert document.status == "uploaded"
 
         assert job is not None
-        assert job.kind == "gate_parse"
+        assert job.kind == "case_understanding"
         assert job.status == "queued"
         assert job.payload_json["document_id"] == document.document_id
 
@@ -237,8 +261,8 @@ def test_upload_file_reports_helpful_feedback_for_current_key_proof(
         "supported_document_type": "funding_proof",
         "current_focus_document_type": "funding_proof",
         "message": (
-            "这份材料对当前关键证明 funding_proof 有帮助。"
-            " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
+            "这份材料已加入案例证据，候选证明点为 funding_proof。"
+            "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
@@ -289,12 +313,12 @@ def test_upload_file_reports_partial_help_and_keeps_current_primary_focus(
     assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
     assert payload["main_flow_feedback"] == {
-        "status": "partial_helpful",
+        "status": "helpful",
         "supported_document_type": "funding_proof",
-        "current_focus_document_type": "ds160",
+        "current_focus_document_type": "funding_proof",
         "message": (
-            "这份材料对 funding_proof 有帮助，但当前主线没有改变。"
-            " 当前最缺的关键证明是 ds160。 当前仍待补的材料还有：funding_proof。"
+            "这份材料已加入案例证据，候选证明点为 funding_proof。"
+            "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
@@ -358,8 +382,8 @@ def test_upload_file_prefers_interviewer_focus_over_gate_primary_in_feedback(
         "supported_document_type": "ds2019",
         "current_focus_document_type": "ds2019",
         "message": (
-            "这份材料对当前关键证明 ds2019 有帮助。 "
-            "材料门控层当前最缺的关键证明是 ds160。"
+            "这份材料已加入案例证据，候选证明点为 ds2019。"
+            "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
@@ -461,16 +485,16 @@ def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus
         "supported_document_type": None,
         "current_focus_document_type": "funding_proof",
         "message": (
-            "这份材料对当前主线没有直接帮助。"
-            " 当前最缺的关键证明是 funding_proof。"
+            "这份材料已保存，但目前还不能支持一个明确证明点。"
+            "你可以继续面签对话，系统会在案例理解中保留它。"
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == {
         "status": "not_helpful",
         "current_focus_document_type": "funding_proof",
         "message": (
-            "这份材料对当前主线没有直接帮助。"
-            " 当前最缺的关键证明是 funding_proof。"
+            "这份材料已保存，但目前还不能支持一个明确证明点。"
+            "你可以继续面签对话，系统会在案例理解中保留它。"
         ),
     }
 
@@ -524,8 +548,8 @@ def test_upload_file_maps_funding_alias_into_gate_flow(
         "supported_document_type": "funding_proof",
         "current_focus_document_type": "funding_proof",
         "message": (
-            "这份材料对当前关键证明 funding_proof 有帮助。"
-            " 当前最关键的证明是 funding_proof，系统正在等待解析结果。"
+            "这份材料已加入案例证据，候选证明点为 funding_proof。"
+            "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
         ),
     }
     assert payload["document_assessment"]["main_flow_feedback"] == payload["main_flow_feedback"]
@@ -546,7 +570,7 @@ def test_get_file_content_returns_stored_bytes(
               filename="passport.png",
               status="parsed",
               raw_bytes=b"png-bytes",
-              raw_text="OCR text",
+              raw_text="Material understanding text",
               artifact_json={"content_type": "image/png"},
           )
       )
@@ -557,6 +581,74 @@ def test_get_file_content_returns_stored_bytes(
     assert response.status_code == 200
     assert response.content == b"png-bytes"
     assert response.headers["content-type"] == "image/png"
+
+
+def test_delete_file_tombstones_case_memory_evidence(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_id = "sess-delete-file"
+    seed_session(db_session_factory, session_id)
+    material_result = MaterialUnderstandingResult(
+        document_type_candidates=[
+            DocumentTypeCandidate(document_type="i20", confidence=0.91)
+        ],
+        evidence_cards=[
+            EvidenceCard(
+                evidence_id="ev-delete-i20-school",
+                source_type="uploaded_file",
+                document_id="doc-delete-1",
+                excerpt="School Name: Example University",
+                claim_refs=["claim-delete-school"],
+                confidence=0.91,
+            )
+        ],
+        extracted_claims=[
+            CaseClaim(
+                claim_id="claim-delete-school",
+                field_path="/education/school_name",
+                value="Example University",
+                status="documented",
+                supporting_evidence_ids=["ev-delete-i20-school"],
+                confidence=0.91,
+            )
+        ],
+        confidence=0.91,
+    )
+
+    with db_session_factory() as db:
+        db.add(
+            DocumentRecord(
+                document_id="doc-delete-1",
+                session_id=session_id,
+                filename="i20.png",
+                status="parsed",
+                raw_bytes=b"image",
+                raw_text="",
+                artifact_json={
+                    "material_understanding_result": material_result.model_dump(
+                        mode="json"
+                    )
+                },
+            )
+        )
+        db.commit()
+
+    response = client.delete(f"/v1/sessions/{session_id}/files/doc-delete-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["document_status"] == "tombstoned"
+    assert payload["case_board"]["claims"] == []
+    assert payload["case_board"]["evidence_cards"] == []
+    with db_session_factory() as db:
+        document = db.get(DocumentRecord, "doc-delete-1")
+        assert document is not None
+        assert document.status == "tombstoned"
+        assert document.artifact_json["case_memory_tombstone"] == {
+            "status": "tombstoned",
+            "reason": "file_delete_api",
+        }
 
 
 def test_get_file_content_rejects_cross_session_document(
@@ -574,7 +666,7 @@ def test_get_file_content_rejects_cross_session_document(
               filename="passport.png",
               status="parsed",
               raw_bytes=b"png-bytes",
-              raw_text="OCR text",
+              raw_text="Material understanding text",
               artifact_json={"content_type": "image/png"},
           )
       )
@@ -604,7 +696,7 @@ def test_get_file_content_uses_cookie_auth_when_enabled(
                 filename="passport.png",
                 status="parsed",
                 raw_bytes=b"png-bytes",
-                raw_text="OCR text",
+                raw_text="Material understanding text",
                 artifact_json={"content_type": "image/png"},
             )
         )

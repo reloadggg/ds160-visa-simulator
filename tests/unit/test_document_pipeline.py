@@ -162,6 +162,7 @@ def test_process_passport_and_i20_extract_structured_evidence(tmp_path) -> None:
                             b"Passport Number: P1234567\n"
                             b"Nationality: UK"
                         ),
+                        artifact_json={"document_type": "passport_bio"},
                     ),
                     DocumentRecord(
                         document_id="doc-i20",
@@ -172,6 +173,7 @@ def test_process_passport_and_i20_extract_structured_evidence(tmp_path) -> None:
                             b"School Name: Example University\n"
                             b"Program: Computer Science"
                         ),
+                        artifact_json={"document_type": "i20"},
                     ),
                 ]
             )
@@ -193,6 +195,51 @@ def test_process_passport_and_i20_extract_structured_evidence(tmp_path) -> None:
             assert extracted[("i20", "/education/sevis_id")] == "N1234567890"
             assert extracted[("i20", "/education/school_name")] == "Example University"
             assert extracted[("i20", "/education/program_name")] == "Computer Science"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_process_document_does_not_infer_document_type_from_filename(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-no-filename-type.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-i20",
+                    session_id="sess-1",
+                    filename="i20.txt",
+                    raw_bytes=(
+                        b"SEVIS ID: N1234567890\n"
+                        b"School Name: Example University\n"
+                        b"Program: Computer Science"
+                    ),
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            result = DocumentPipelineService(db).process_document("doc-i20")
+            db.commit()
+
+            document = DocumentRepository(db).get_document("doc-i20")
+            evidence = db.scalars(select(EvidenceItemRecord)).all()
+
+            assert result == {"chunk_count": 1, "evidence_count": 0}
+            assert document is not None
+            assessment = DocumentAssessment.from_artifact(document.artifact_json)
+            assert assessment.document_type is None
+            assert document.artifact_json["metadata"]["document_type"] is None
+            assert evidence == []
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
@@ -457,6 +504,7 @@ def test_process_supported_pdf_uses_multimodal_structured_extraction(tmp_path) -
                     session_id="sess-1",
                     filename="ds160.pdf",
                     raw_bytes=build_pdf_bytes("Locally extracted text should not win"),
+                    artifact_json={"document_type": "ds160"},
                 )
             )
             db.commit()

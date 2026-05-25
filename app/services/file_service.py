@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.domain.document_types import DOCUMENT_TYPE_ALIASES, normalize_document_type
+from app.domain.document_types import normalize_document_type
 from app.domain.evidence import (
     DocumentAssessment,
     DocumentAssessmentMainFlowFeedback,
@@ -25,6 +25,7 @@ from app.services.multimodal_extraction_service import (
 
 MAX_UPLOAD_SIZE_MB = 64
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+CASE_UNDERSTANDING_JOB_KIND = "case_understanding"
 ALLOWED_UPLOAD_MIME_TYPES = (
     "application/pdf",
     "image/png",
@@ -121,6 +122,7 @@ class FileUploadResult:
     document_id: str
     job_id: str
     document_type: str | None
+    understanding_status: str = "queued"
     document_assessment: DocumentAssessment | None = None
     document_type_candidates: list[str] | None = None
     relevance: str | None = None
@@ -129,6 +131,8 @@ class FileUploadResult:
     feedback_message: str | None = None
     relevant: bool | None = None
     main_flow_feedback: dict[str, Any] | None = None
+    case_board_delta: dict[str, Any] | None = None
+    evidence_cards: list[dict[str, Any]] | None = None
     requested_documents: list[str] | None = None
     remaining_required_documents: list[str] | None = None
     gate_progress: dict[str, Any] | None = None
@@ -202,11 +206,10 @@ class FileService:
         source_type = resolve_source_type(normalized_content_type)
         gate_runtime = GateRuntimeService(self.db)
         session_record = gate_runtime.refresh_record(session_record, save=False)
-        pre_upload_support = gate_runtime.build_gate_support(session_record)
         required_document_types = self._required_document_types(session_record)
-        document_type_hint = normalize_document_type(document_type) or self._document_type_hint_from_context_text(
-            context_text,
-            required_document_types=required_document_types,
+        document_type_hint = (
+            normalize_document_type(document_type)
+            or self._document_type_hint_from_context_text(context_text)
         )
         assessment = self._assess_upload(
             filename=filename,
@@ -218,14 +221,12 @@ class FileService:
             document_type=document_type_hint,
             assessment=assessment,
         )
-        supported_document_type = self._supported_document_type(
-            filename=filename,
+        case_supported_document_type = self._case_supported_document_type(
             document_type=document_type_hint,
             assessment_candidates=assessment.document_type_candidates,
-            required_document_types=required_document_types,
         )
-        counts_toward_gate = self._counts_toward_gate(
-            supported_document_type=supported_document_type,
+        counts_toward_gate = self._legacy_counts_toward_gate(
+            case_supported_document_type=case_supported_document_type,
             required_document_types=required_document_types,
             relevance=assessment.relevance,
         )
@@ -239,7 +240,7 @@ class FileService:
         )
         resolved_document_type = (
             document_type_hint
-            or supported_document_type
+            or case_supported_document_type
             or top_assessment_document_type
         )
         document_assessment = DocumentAssessment(
@@ -281,20 +282,41 @@ class FileService:
             )
             job = self.repo.enqueue_job(
                 session_id=session_id,
-                kind="gate_parse",
+                kind=CASE_UNDERSTANDING_JOB_KIND,
                 payload_json={"document_id": document.document_id},
             )
             session_record = gate_runtime.refresh_record(session_record, save=False)
-            post_upload_support = gate_runtime.build_gate_support(session_record)
-            main_flow_feedback = self._build_main_flow_feedback(
-                supported_document_type=supported_document_type,
-                counts_toward_gate=counts_toward_gate,
-                pre_upload_support=pre_upload_support,
-                post_upload_support=post_upload_support,
+            legacy_gate_progress = self._legacy_gate_progress(session_record)
+            main_flow_feedback = self._build_case_understanding_feedback(
+                case_document_type=resolved_document_type,
+                supported_claims=assessment.supported_claims,
+                relevance=assessment.relevance,
                 interviewer_focus_document_type=self._interviewer_focus_document_type(
                     session_record
                 ),
             )
+            evidence_cards = self._pending_evidence_cards(
+                document_id=document.document_id,
+                supported_claims=assessment.supported_claims,
+                document_type=resolved_document_type,
+                confidence=assessment.confidence,
+            )
+            case_board_delta = self._build_case_board_delta(
+                document_id=document.document_id,
+                filename=filename,
+                understanding_status="queued",
+                document_type=resolved_document_type,
+                assessment=assessment,
+                evidence_cards=evidence_cards,
+                feedback_message=feedback_message,
+            )
+            document.artifact_json = {
+                **(document.artifact_json or {}),
+                "understanding_status": "queued",
+                "understanding_job_kind": CASE_UNDERSTANDING_JOB_KIND,
+                "case_board_delta": case_board_delta,
+                "evidence_cards": evidence_cards,
+            }
             if main_flow_feedback is not None:
                 document_assessment = document_assessment.model_copy(
                     update={
@@ -318,6 +340,7 @@ class FileService:
             document_id=document.document_id,
             job_id=job.job_id,
             document_type=resolved_document_type,
+            understanding_status="queued",
             document_assessment=document_assessment,
             document_type_candidates=[
                 item.document_type for item in assessment.document_type_candidates
@@ -328,9 +351,11 @@ class FileService:
             feedback_message=feedback_message,
             relevant=relevant,
             main_flow_feedback=main_flow_feedback,
+            case_board_delta=case_board_delta,
+            evidence_cards=evidence_cards,
             requested_documents=self._interviewer_requested_documents(session_record),
             remaining_required_documents=[],
-            gate_progress=post_upload_support["gate_progress"],
+            gate_progress=legacy_gate_progress,
         )
 
     def _build_assessment_feedback(
@@ -434,8 +459,6 @@ class FileService:
     def _document_type_hint_from_context_text(
         self,
         context_text: str | None,
-        *,
-        required_document_types: set[str],
     ) -> str | None:
         if not isinstance(context_text, str):
             return None
@@ -443,19 +466,9 @@ class FileService:
         if not normalized_context:
             return None
 
-        normalized_required_document_types = {
-            normalize_document_type(document_type) or document_type
-            for document_type in required_document_types
-            if isinstance(document_type, str) and document_type.strip()
-        }
         matched_document_types: list[str] = []
         for document_type, keywords in _CONTEXT_DOCUMENT_TYPE_HINT_KEYWORDS:
             normalized_document_type = normalize_document_type(document_type) or document_type
-            if (
-                normalized_required_document_types
-                and normalized_document_type not in normalized_required_document_types
-            ):
-                continue
             if any(keyword in normalized_context for keyword in keywords):
                 matched_document_types.append(normalized_document_type)
 
@@ -468,21 +481,14 @@ class FileService:
             return None
         return deduped_matches[0]
 
-    def _supported_document_type(
+    def _case_supported_document_type(
         self,
         *,
-        filename: str,
         document_type: str | None,
         assessment_candidates: list[Any],
-        required_document_types: set[str],
     ) -> str | None:
-        normalized_required_document_types = {
-            normalize_document_type(required_document_type)
-            for required_document_type in required_document_types
-            if normalize_document_type(required_document_type) is not None
-        }
         normalized_document_type = normalize_document_type(document_type)
-        if normalized_document_type in normalized_required_document_types:
+        if normalized_document_type is not None:
             return normalized_document_type
         for candidate in assessment_candidates:
             candidate_type = normalize_document_type(
@@ -490,93 +496,153 @@ class FileService:
                 if not isinstance(candidate, dict)
                 else candidate.get("document_type")
             )
-            if candidate_type in normalized_required_document_types:
+            if candidate_type is not None:
                 return candidate_type
-
-        lowered_filename = filename.lower()
-        for required_document_type in normalized_required_document_types:
-            if required_document_type in lowered_filename:
-                return required_document_type
-        for alias, normalized_document_type in DOCUMENT_TYPE_ALIASES.items():
-            if (
-                alias in lowered_filename
-                and normalized_document_type in normalized_required_document_types
-            ):
-                return normalized_document_type
         return None
 
-    def _build_main_flow_feedback(
+    def _build_case_understanding_feedback(
         self,
         *,
-        supported_document_type: str | None,
-        counts_toward_gate: bool | None,
-        pre_upload_support: dict[str, Any],
-        post_upload_support: dict[str, Any],
+        case_document_type: str | None,
+        supported_claims: list[str],
+        relevance: str | None,
         interviewer_focus_document_type: str | None,
     ) -> dict[str, str | None] | None:
-        gate_focus_document_type = normalize_document_type(
-            post_upload_support.get("primary_document")
-            or pre_upload_support.get("primary_document")
-        )
-        current_focus_document_type = (
-            interviewer_focus_document_type or gate_focus_document_type
-        )
+        current_focus_document_type = interviewer_focus_document_type or case_document_type
         current_focus_document_type = (
             normalize_document_type(current_focus_document_type)
             or current_focus_document_type
         )
-        support_message = self._main_flow_support_message(
-            interviewer_focus_document_type=interviewer_focus_document_type,
-            post_upload_support=post_upload_support,
+        normalized_case_document_type = (
+            normalize_document_type(case_document_type) or case_document_type
         )
-        normalized_supported_document_type = normalize_document_type(
-            supported_document_type
-        ) or supported_document_type
 
         if (
             current_focus_document_type is None
-            and supported_document_type is None
-            and counts_toward_gate is None
+            and normalized_case_document_type is None
+            and not supported_claims
+            and relevance in {None, "unknown"}
         ):
             return None
 
-        if not counts_toward_gate or supported_document_type is None:
+        has_case_signal = bool(normalized_case_document_type or supported_claims)
+        if relevance == "low" or not has_case_signal:
             return {
                 "status": "not_helpful",
                 "supported_document_type": None,
                 "current_focus_document_type": current_focus_document_type,
-                "message": self._join_feedback_message(
-                    "这份材料对当前主线没有直接帮助。",
-                    support_message,
-                ),
+                "message": "这份材料已保存，但目前还不能支持一个明确证明点。你可以继续面签对话，系统会在案例理解中保留它。",
             }
 
-        if normalized_supported_document_type == current_focus_document_type:
+        if normalized_case_document_type == current_focus_document_type:
             return {
                 "status": "helpful",
-                "supported_document_type": normalized_supported_document_type,
+                "supported_document_type": normalized_case_document_type,
                 "current_focus_document_type": current_focus_document_type,
-                "message": self._join_feedback_message(
-                    f"这份材料对当前关键证明 {normalized_supported_document_type} 有帮助。",
-                    support_message,
+                "message": (
+                    f"这份材料已加入案例证据，候选证明点为 {normalized_case_document_type}。"
+                    "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
                 ),
             }
 
         if interviewer_focus_document_type:
             headline = (
-                f"这份材料对 {normalized_supported_document_type} 有帮助，"
-                f"但当前对话主线仍在核验 {current_focus_document_type}。"
+                f"这份材料已加入案例证据，候选证明点为 {normalized_case_document_type}，"
+                f"当前对话仍在核验 {current_focus_document_type}。"
             )
         else:
             headline = (
-                f"这份材料对 {normalized_supported_document_type} 有帮助，"
-                "但当前主线没有改变。"
+                f"这份材料已加入案例证据，候选证明点为 {normalized_case_document_type}。"
             )
         return {
             "status": "partial_helpful",
-            "supported_document_type": normalized_supported_document_type,
+            "supported_document_type": normalized_case_document_type,
             "current_focus_document_type": current_focus_document_type,
-            "message": self._join_feedback_message(headline, support_message),
+            "message": f"{headline} 你可以继续面签对话。",
+        }
+
+    def _pending_evidence_cards(
+        self,
+        *,
+        document_id: str,
+        supported_claims: list[str],
+        document_type: str | None,
+        confidence: float,
+    ) -> list[dict[str, Any]]:
+        cards: list[dict[str, Any]] = []
+        for index, claim in enumerate(supported_claims):
+            cards.append(
+                {
+                    "evidence_id": f"pending-{document_id}-{index}",
+                    "source_type": "uploaded_file",
+                    "document_id": document_id,
+                    "excerpt": f"候选支持主张：{claim}",
+                    "claim_refs": [claim],
+                    "confidence": confidence,
+                    "metadata": {
+                        "status": "pending_understanding",
+                        "document_type": document_type,
+                    },
+                }
+            )
+        return cards
+
+    def _build_case_board_delta(
+        self,
+        *,
+        document_id: str,
+        filename: str,
+        understanding_status: str,
+        document_type: str | None,
+        assessment: MultimodalUploadAssessment,
+        evidence_cards: list[dict[str, Any]],
+        feedback_message: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "latest_material": {
+                "document_id": document_id,
+                "filename": filename,
+                "understanding_status": understanding_status,
+                "document_type": document_type,
+                "document_type_candidates": [
+                    item.model_dump(mode="json")
+                    for item in assessment.document_type_candidates
+                ],
+                "relevance": assessment.relevance,
+                "supported_claims": list(assessment.supported_claims),
+                "confidence": assessment.confidence,
+                "feedback_message": feedback_message,
+                "unknowns": [
+                    "案例理解任务已创建，视觉材料的完整证据、冲突和追问建议仍在更新。"
+                ],
+            },
+            "evidence_cards": list(evidence_cards),
+            "open_proof_points": [
+                {
+                    "proof_point_id": claim,
+                    "visa_family": "unknown",
+                    "question": f"这份材料能否支持 {claim}？",
+                    "status": "partial",
+                    "why_it_matters": "模型认为这份材料可能支持该证明点，等待案例理解进一步确认。",
+                    "claim_refs": [claim],
+                    "evidence_refs": [
+                        card["evidence_id"]
+                        for card in evidence_cards
+                        if claim in card.get("claim_refs", [])
+                    ],
+                }
+                for claim in assessment.supported_claims
+            ],
+            "conflicts": [],
+            "next_move": {
+                "move_type": "ask",
+                "question": "请继续回答面签问题；材料理解完成后我会结合证据调整追问。",
+                "reason": "文件已保存并进入案例理解队列，当前无需等待材料齐套。",
+                "claim_refs": list(assessment.supported_claims),
+                "evidence_refs": [
+                    card["evidence_id"] for card in evidence_cards
+                ],
+            },
         }
 
     def _interviewer_focus_document_type(self, session_record) -> str | None:
@@ -609,38 +675,55 @@ class FileService:
             return []
         return [document_type]
 
-    def _main_flow_support_message(
+    def _legacy_counts_toward_gate(
         self,
         *,
-        interviewer_focus_document_type: str | None,
-        post_upload_support: dict[str, Any],
-    ) -> str | None:
-        gate_primary_document = normalize_document_type(
-            post_upload_support.get("primary_document")
-        ) or post_upload_support.get("primary_document")
-        if (
-            interviewer_focus_document_type
-            and gate_primary_document
-            and gate_primary_document != interviewer_focus_document_type
-        ):
-            return f"材料门控层当前最缺的关键证明是 {gate_primary_document}。"
-        support_message = post_upload_support.get("support_message")
-        if isinstance(support_message, str) and support_message.strip():
-            return support_message.strip()
-        return None
-
-    def _counts_toward_gate(
-        self,
-        *,
-        supported_document_type: str | None,
+        case_supported_document_type: str | None,
         required_document_types: set[str],
         relevance: str | None,
     ) -> bool | None:
         if not required_document_types:
             return None
-        if supported_document_type is None:
+        if case_supported_document_type is None:
+            return False
+        normalized_required = {
+            normalize_document_type(document_type) or document_type
+            for document_type in required_document_types
+        }
+        if case_supported_document_type not in normalized_required:
             return False
         return relevance != "low"
+
+    def _legacy_gate_progress(self, session_record) -> dict[str, Any]:
+        gate_status = session_record.gate_status_json or {}
+        documents = []
+        ready_count = 0
+        uploaded_count = 0
+        missing_count = 0
+        for item in gate_status.get("required_documents", []):
+            if not isinstance(item, dict):
+                continue
+            document_progress = {
+                "document_type": item.get("document_type"),
+                "status": item.get("status", "missing"),
+                "is_uploaded": bool(item.get("is_uploaded", False)),
+                "is_parsed": bool(item.get("is_parsed", False)),
+                "meets_minimum_fields": bool(item.get("meets_minimum_fields", False)),
+            }
+            documents.append(document_progress)
+            if document_progress["status"] == "ready":
+                ready_count += 1
+            elif document_progress["status"] == "uploaded":
+                uploaded_count += 1
+            else:
+                missing_count += 1
+        return {
+            "overall_status": gate_status.get("status", "pending_documents"),
+            "ready_count": ready_count,
+            "uploaded_count": uploaded_count,
+            "missing_count": missing_count,
+            "documents": documents,
+        }
 
     def _join_feedback_message(
         self,

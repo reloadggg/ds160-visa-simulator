@@ -1,0 +1,174 @@
+{
+  "fixture_id": "visual-i20-updates-case-memory",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-i20-visual",
+    "run_id": "run-i20-visual",
+    "user_turn": {
+      "content": "I uploaded my I-20."
+    },
+    "case_state": {
+      "assert_case_memory": true,
+      "assert_case_board_next_move": true,
+      "documents": [
+        {
+          "document_id": "doc-i20",
+          "filename": "i20.png",
+          "status": "parsed",
+          "artifact": {
+            "source_type": "image",
+            "parser_name": "multimodal_required"
+          }
+        }
+      ],
+      "case_memory": {
+        "claims": [
+          {
+            "claim_id": "claim-school",
+            "field_path": "/education/school_name",
+            "value": "Example University",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-school"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.93
+          },
+          {
+            "claim_id": "claim-sevis",
+            "field_path": "/education/sevis_id",
+            "value": "N0001234567",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-sevis"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.9
+          }
+        ],
+        "evidence_cards": [
+          {
+            "evidence_id": "ev-school",
+            "source_type": "uploaded_file",
+            "document_id": "doc-i20",
+            "page_number": 1,
+            "excerpt": "School Name: Example University",
+            "claim_refs": [
+              "claim-school"
+            ],
+            "confidence": 0.93
+          },
+          {
+            "evidence_id": "ev-sevis",
+            "source_type": "uploaded_file",
+            "document_id": "doc-i20",
+            "page_number": 1,
+            "excerpt": "SEVIS ID: N0001234567",
+            "claim_refs": [
+              "claim-sevis"
+            ],
+            "confidence": 0.9
+          }
+        ],
+        "proof_points": [],
+        "conflicts": []
+      },
+      "case_board": {
+        "schema_version": "case_board.v1",
+        "latest_material": {
+          "document_id": "doc-i20",
+          "filename": "i20.png",
+          "understanding_status": "completed",
+          "document_type": "i20"
+        },
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": [],
+        "next_move": {
+          "move_type": "ask",
+          "question": "为什么选择 Example University？",
+          "reason": "I-20 已证明学校，下一步核验学习动机。",
+          "claim_refs": [
+            "claim-school"
+          ],
+          "evidence_refs": [
+            "ev-school"
+          ]
+        }
+      }
+    },
+    "citation_bundle": {
+      "citations": [
+        {
+          "citation_id": "cite-i20-school",
+          "source_type": "case_evidence",
+          "source_authority": "user_provided",
+          "source_id": "source-session",
+          "document_id": "doc-i20",
+          "chunk_id": "chunk-school",
+          "span_start": 0,
+          "span_end": 40,
+          "content_hash": "sha256:i20school",
+          "quote_or_summary": "I-20 shows Example University.",
+          "retrieved_at": "2026-05-25T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-school"
+          ]
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "I-20 显示你会去 Example University。为什么选择这个项目？",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [
+        {
+          "claim_id": "claim-school",
+          "claim_type": "case_evidence",
+          "text": "I-20 显示 Example University。",
+          "citation_ids": [
+            "cite-i20-school"
+          ]
+        }
+      ],
+      "used_citation_ids": [
+        "cite-i20-school"
+      ],
+      "guard_status": "passed",
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-i20-visual",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-i20-visual",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "I-20 显示你会去 Example University。为什么选择这个项目？",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "case_memory_recorded",
+      "case_board_next_move"
+    ]
+  }
+}

@@ -10,7 +10,7 @@ from app.domain.evidence import (
     DocumentSourceType,
     EvidenceItem,
 )
-from app.domain.document_types import DOCUMENT_TYPE_ALIASES, normalize_document_type
+from app.domain.document_types import normalize_document_type
 from app.integrations.parsers import parse_document
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
@@ -83,9 +83,7 @@ class DocumentPipelineService:
 
         previous_artifact = dict(document.artifact_json or {})
         upload_assessment = DocumentAssessment.from_artifact(previous_artifact)
-        document_type = self._normalize_document_type(
-            upload_assessment.document_type
-        ) or self._classify_document_type(document.filename)
+        document_type = self._normalize_document_type(upload_assessment.document_type)
         parsed = parse_document(document.filename, document.raw_bytes)
         multimodal_result = self.multimodal_service.extract(
             filename=document.filename,
@@ -283,16 +281,6 @@ class DocumentPipelineService:
                 )
             )
         return items
-
-    def _classify_document_type(self, filename: str) -> str | None:
-        candidate = filename.lower()
-        for marker, document_type in DOCUMENT_TYPE_ALIASES.items():
-            if marker in candidate:
-                return document_type
-        for document_type in _STRUCTURED_FIELD_PATTERNS:
-            if document_type in candidate:
-                return document_type
-        return None
 
     def _normalize_document_type(self, document_type: str | None) -> str | None:
         return normalize_document_type(document_type)

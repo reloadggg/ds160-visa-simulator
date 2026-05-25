@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 import pytest
 from pydantic_ai.models.test import TestModel
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
 
@@ -171,6 +171,7 @@ def seed_ready_for_interview_session(
                         "status": "parsed",
                         "filename": filename,
                         "source_type": "text",
+                        "document_type": filename.removesuffix(".txt"),
                     },
                 )
             )
@@ -352,6 +353,53 @@ def test_message_turn_enters_runtime_when_gate_not_ready(
         assert record is not None
         assert record.phase_state == "interview"
         assert record.gate_status_json["status"] == "pending_documents"
+
+
+def test_message_turn_graph_starts_without_materials_after_f1_selection(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("graph runtime should own no-material F-1 chat")
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    assert session_resp.status_code == 201
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I want to study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_runtime"] == "graph"
+    assert payload["assistant_message"] == "为什么选择去美国读这个项目？"
+    assert payload["requested_documents"] == []
+    assert payload["gate_progress"]["overall_status"] == "pending_documents"
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+        document_count = db.scalar(
+            select(func.count())
+            .select_from(DocumentRecord)
+            .where(DocumentRecord.session_id == session_id)
+        )
+
+    assert document_count == 0
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("user", "user_message"),
+        ("assistant", "graph_runtime_adapter"),
+    ]
 
 
 def test_messages_reject_user_model_config_when_disabled(
@@ -983,7 +1031,7 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistant_message"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert payload["assistant_message"] == "为什么选择去美国读这个项目？"
     assert payload["agent_runtime"] == "graph"
     assert payload["graph_run_id"].startswith("graph-run-")
     assert payload["graph_trace"]["event_count"] > 0
@@ -1194,7 +1242,7 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
     assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
     final_payload = events[-1][1]
     assert final_payload["agent_runtime"] == "graph"
-    assert final_payload["assistant_message"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert final_payload["assistant_message"] == "为什么选择去美国读这个项目？"
     assert "graph_events" not in final_payload
 
 
@@ -1625,7 +1673,7 @@ def test_helpful_secondary_upload_enters_gate_flow_without_hijacking_primary_foc
     )
 
     assert upload_response.status_code == 202
-    assert upload_response.json()["main_flow_feedback"]["status"] == "partial_helpful"
+    assert upload_response.json()["main_flow_feedback"]["status"] == "helpful"
 
     assert message_response.status_code == 200
     payload = message_response.json()
@@ -1820,6 +1868,7 @@ def test_gate_progress_reports_ready_uploaded_and_missing_mix(
                     "status": "parsed",
                     "filename": "ds160.txt",
                     "source_type": "text",
+                    "document_type": "ds160",
                 },
             )
         )
@@ -1832,6 +1881,7 @@ def test_gate_progress_reports_ready_uploaded_and_missing_mix(
                 artifact_json={
                     "status": "uploaded",
                     "filename": "passport_bio.txt",
+                    "document_type": "passport_bio",
                 },
             )
         )

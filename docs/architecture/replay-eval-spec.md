@@ -1,79 +1,46 @@
 # Replay Eval Spec
 
-日期：2026-05-24
-状态：v1 草案，可执行合同先行
+日期：2026-05-25
+状态：AI-native case understanding regression contract
 
-## 目标
+## Goal
 
-Replay eval 必须证明对话逻辑能跑通，而不是只证明字段能序列化。
+Replay must prove the product center has moved from Gate readiness to Case Memory.
+It should record what the agent knew, which evidence supported it, and why the
+next move was chosen.
 
-每条 replay 需要比较：
+## Required Replay Payload
 
-- 输入消息。
-- graph state。
-- retrieval plan。
-- citation bundle。
-- agent output。
-- guard result。
-- final response。
-- SSE event sequence。
+`ReplayRunner.replay_session()` returns:
 
-## Fixture 类型
+- `case_memory`: claims, evidence cards, proof points, conflicts, and next move
+- `case_board`: frontend-facing case understanding projection
+- `turns`: user and assistant turns with runtime events
+- `score_evals`: legacy score summaries for compatibility only
 
-首批 corpus 至少包含 10 类，每类不少于 3 条：
+`score_evals.missing_evidence` may still exist, but it cannot be the only replay
+signal for interview progress.
 
-1. 正常 F-1 面谈补资料。
-2. 用户追问“哪里不一致”。
-3. 学校/项目材料冲突。
-4. 资金证明不足。
-5. 无官方 citation 的政策问题。
-6. 政策来源过期。
-7. 用户材料删除后再次检索。
-8. debug synthetic bundle 泄漏风险。
-9. 高风险但未闭合拒签条件。
-10. provider 失败 / schema invalid。
+## Required Fixtures
 
-## 机器判定指标
+Fixtures live in `fixtures/graph_replay/`:
 
-必须可自动判断：
+- `no_material_chat_starts.json`
+- `visual_i20_updates_case_memory.json`
+- `funding_claim_conflict.json`
+- `high_risk_simulation_without_full_package.json`
+- `ocr_not_used_for_applicant_image.json`
 
-- `assistant_message_author` 唯一。
-- 连续 10 轮不 500。
-- 不连续重复同一模板超过 2 次。
-- 用户问“哪里不一致”后，回复必须包含具体 what。
-- 高风险回复必须包含 what / why / next。
-- policy claim 必须有 official citation。
-- case conflict claim 必须有 case evidence citation。
-- 无证据时必须走 `unable_to_confirm` 或等价降级。
-- replay 能定位失败 graph node。
+These fixtures assert:
 
-## 输出格式
+- no-material F-1 chat can proceed without Gate blocking
+- visual I-20 understanding creates claim and evidence records
+- funding self-vs-parents mismatch becomes a concrete conflict clarification
+- high-risk simulation can proceed with unknown caveats before a full material package
+- applicant image replay contains no OCR parser or text markers
 
-每次 replay run 输出：
+## Eval Boundary
 
-- `fixture_id`
-- `run_id`
-- `passed`
-- `failed_checks`
-- `node_failures`
-- `used_citation_ids`
-- `assistant_message_author`
-- `llm_call_count`
-- `token_estimate`
-- `latency_ms`
-
-## Live LLM
-
-默认 replay eval 不依赖真实 LLM。
-
-真实模型联调必须：
-
-- 使用显式 marker。
-- 只断言稳定合同。
-- 不把合理自然语言波动写死为唯一答案。
-
-## 验收
-
-- focused replay eval 可本地运行。
-- 失败能定位到 graph node 或 guard rule。
-- 可区分 schema failure、citation failure、provider failure、logic failure。
+`GraphReplayEvaluator` checks graph output and product-state shape. It does not
+call live LLMs. Live LLM replay may be added later, but should only assert stable
+contract fields and not exact prose.

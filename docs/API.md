@@ -2,6 +2,71 @@
 
 本文件记录当前 FastAPI 后端对外暴露的主要接口。代码入口位于 `app/api/routers/`，默认前缀为 `/v1`；前端在生产镜像中通过 `/api` 反向代理访问后端，因此浏览器侧实际 URL 通常是 `/api/v1/...`。
 
+## Product State Model
+
+当前 API 的主产品状态是 Case Memory / Case Board，而不是 Gate 材料清单。
+
+- 上传材料会创建 `case_understanding` 任务，材料理解结果写入 Case Memory。
+- 用户对话中的明确事实陈述也可以作为 `source_type=user_turn` 写入 Case Memory。
+- `case_board` / `case_board_delta` 用于展示事实、证据、证明点、冲突和下一问原因。
+- `gate_progress`、`requested_documents`、`remaining_required_documents` 仍保留给旧前端/API 消费者，但只能视为兼容投影。
+- 除 `family_not_selected` 外，材料缺失、案例理解处理中或 Gate 未 ready 不阻断聊天。
+
+核心 Case Board shape：
+
+```json
+{
+  "schema_version": "case_board.v1",
+  "latest_material": {
+    "document_id": "doc-abc123",
+    "filename": "i20.png",
+    "understanding_status": "completed",
+    "document_type": "i20",
+    "confidence": 0.86
+  },
+  "claims": [
+    {
+      "claim_id": "claim-doc-abc123-school-name",
+      "field_path": "/education/school_name",
+      "value": "Example University",
+      "status": "documented",
+      "supporting_evidence_ids": ["ev-doc-abc123-school-name"],
+      "conflicting_evidence_ids": []
+    }
+  ],
+  "evidence_cards": [
+    {
+      "evidence_id": "ev-doc-abc123-school-name",
+      "source_type": "uploaded_file",
+      "document_id": "doc-abc123",
+      "page_number": 1,
+      "excerpt": "School Name: Example University",
+      "claim_refs": ["claim-doc-abc123-school-name"],
+      "confidence": 0.86
+    }
+  ],
+  "proof_points": [
+    {
+      "proof_point_id": "proof-doc-abc123-school",
+      "visa_family": "f1",
+      "question": "Does the case document the school and program?",
+      "status": "supported",
+      "why_it_matters": "F-1 interview questions depend on the school and program context.",
+      "claim_refs": ["claim-doc-abc123-school-name"],
+      "evidence_refs": ["ev-doc-abc123-school-name"]
+    }
+  ],
+  "conflicts": [],
+  "next_move": {
+    "move_type": "ask",
+    "question": "为什么选择这所学校？",
+    "reason": "I-20 已提供学校信息，下一步核验学习动机。",
+    "claim_refs": ["claim-doc-abc123-school-name"],
+    "evidence_refs": ["ev-doc-abc123-school-name"]
+  }
+}
+```
+
 ## Authentication
 
 ### Web Cookie Session
@@ -324,9 +389,17 @@ Response includes stable runtime fields consumed by the frontend:
   "turn_decision": {},
   "document_review": {},
   "prompt_trace": {},
-  "runtime_view_state": {}
+  "runtime_view_state": {},
+  "phase_state": "interview"
 }
 ```
+
+Runtime notes:
+
+- 用户可见的 `assistant_message` 只能来自 graph adjudication agent 或 deterministic safe fallback。
+- 材料理解、Case Memory 更新、Governor 和 guard 不会额外写第二条用户可见主回复。
+- 当 `AGENT_RUNTIME=graph` 时，主流程经 `GraphRuntimeAdapter` / LangGraph 运行。
+- typed adjudication 模型不可用时，fallback 会读取 `case_board.next_move` 和 `case_memory.conflicts`，不会退回“先补齐材料”的固定话术。
 
 ### `POST /v1/sessions/{session_id}/messages/stream`
 
@@ -356,24 +429,71 @@ Fields:
 | `context_text` | no | 同一条聊天消息里的原始用户文本 |
 
 `context_text` 只由前端原样透传，材料类型判断在后端完成。
+未配置多模态模型时，后端不会根据文件名猜材料类型；文件名只作为审计元数据。
+
+上传语义：
+
+- 新上传只 enqueue `kind="case_understanding"`。
+- 历史 `gate_parse` job 只作为 worker 兼容 fallback 继续消费。
+- 图片上传不调用 OCR；图片 parser 只标记 `source_type=image` 和 `parser_name=multimodal_required`。
+- PDF/图片的视觉理解由 `MaterialUnderstandingService` 经多模态模型完成。
+- 上传完成后聊天可继续，不需要等待“材料齐”或“解析完成”。
 
 Response:
 
 ```json
 {
   "document_id": "doc-abc123",
+  "content_url": "/v1/sessions/sess-abc123/files/doc-abc123/content",
   "document_status": "uploaded",
   "job_id": "job-123",
   "job_status": "queued",
-  "document_type": "funding_proof",
-  "document_assessment": {},
-  "document_type_candidates": ["funding_proof"],
-  "relevance": "medium",
-  "supported_claims": ["/funding/primary_source"],
-  "confidence": 0.65,
-  "feedback_message": "string",
-  "relevant": true,
+  "understanding_status": "queued",
+  "document_type": null,
+  "document_assessment": {
+    "document_type": null,
+    "document_type_hint": null,
+    "document_type_candidates": [],
+    "relevance": "unknown",
+    "supported_claims": [],
+    "confidence": 0,
+    "feedback_message": null,
+    "relevant": null
+  },
+  "document_type_candidates": [],
+  "relevance": "unknown",
+  "supported_claims": [],
+  "confidence": 0,
+  "feedback_message": null,
+  "relevant": null,
   "main_flow_feedback": {},
+  "case_board_delta": {
+    "latest_material": {
+      "document_id": "doc-abc123",
+      "filename": "i20.png",
+      "understanding_status": "queued",
+      "document_type": null,
+      "document_type_candidates": [],
+      "relevance": "unknown",
+      "supported_claims": [],
+      "confidence": 0,
+      "unknowns": [
+        "案例理解任务已创建，视觉材料的完整证据、冲突和追问建议仍在更新。"
+      ]
+    },
+    "evidence_cards": [],
+    "claims": [],
+    "open_proof_points": [],
+    "conflicts": [],
+    "next_move": {
+      "move_type": "ask",
+      "question": "请继续回答面签问题；材料理解完成后我会结合证据调整追问。",
+      "reason": "文件已保存并进入案例理解队列，当前无需等待材料齐套。",
+      "claim_refs": [],
+      "evidence_refs": []
+    }
+  },
+  "evidence_cards": [],
   "requested_documents": [],
   "remaining_required_documents": [],
   "gate_progress": {}
@@ -390,15 +510,60 @@ Notes:
 - 开启鉴权时使用同一个 HttpOnly Cookie
 - 不支持长期 query token
 
+### `DELETE /v1/sessions/{session_id}/files/{document_id}`
+
+撤回一份已上传材料。接口不会物理删除审计记录，而是写入 Case Memory tombstone，
+并从 Case Board / replay / Gate compatibility projection 中排除该材料贡献。
+
+Response:
+
+```json
+{
+  "document_id": "doc-abc123",
+  "document_status": "tombstoned",
+  "case_board": {
+    "schema_version": "case_board.v1",
+    "claims": [],
+    "evidence_cards": [],
+    "proof_points": [],
+    "conflicts": [],
+    "next_move": null
+  }
+}
+```
+
 ## Reports API
 
 ### `GET /v1/sessions/{session_id}/reports/user`
 
 返回面向用户的准备建议报告。
+报告会携带 `case_board`，并从 Case Memory 中的 documented / stated /
+contradicted facts、proof points 和 conflicts 生成优势、薄弱证明点和风险提示。
+
+Response excerpt:
+
+```json
+{
+  "session_id": "sess-abc123",
+  "summary": "string",
+  "risk_level": "medium",
+  "case_board": {
+    "schema_version": "case_board.v1",
+    "claims": [],
+    "evidence_cards": [],
+    "proof_points": [],
+    "conflicts": []
+  },
+  "strengths": [],
+  "weaknesses": [],
+  "allowed_next_actions": []
+}
+```
 
 ### `GET /v1/sessions/{session_id}/reports/internal`
 
 返回内部调试报告，包含 runtime ledger、trace、score history 和 governor history。
+同时返回当前 `case_board`，用于调试报告结论的证据来源。
 
 ### `POST /v1/sessions/{session_id}/reports/review`
 
@@ -406,7 +571,7 @@ Notes:
 
 ### `GET /v1/sessions/{session_id}/reports/export`
 
-导出当前会话快照，包含会话、用户报告、内部报告、profile snapshot 和材料摘要。
+导出当前会话快照，包含会话、用户报告、内部报告、profile snapshot 和材料摘要。用户报告和内部报告里都会包含当前 `case_board`；被 tombstone 的材料不会继续贡献 Case Board 事实或证据。
 
 ## Model Config API
 

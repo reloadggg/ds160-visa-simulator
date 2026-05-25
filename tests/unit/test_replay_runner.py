@@ -3,9 +3,17 @@ from sqlalchemy.orm import Session
 
 from app.db.base import Base
 from app.domain.runtime import ScoreHistoryEntry
+from app.domain.case_memory import (
+    CaseClaim,
+    EvidenceCard,
+    MaterialUnderstandingJob,
+    MaterialUnderstandingResult,
+)
+from app.db.models import DocumentRecord
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.evals.replay_runner import ReplayRunner
+from app.services.case_memory_service import CaseMemoryService
 
 
 def test_replay_runner_inspects_single_turn(tmp_path) -> None:
@@ -144,6 +152,46 @@ def test_replay_runner_replays_session_in_order(tmp_path) -> None:
             source="interviewer_runtime_service",
             metadata_json={"turn_record": {"decision": "continue_interview"}},
         )
+        document = DocumentRecord(
+            document_id="doc-i20",
+            session_id=session_record.session_id,
+            filename="i20.pdf",
+            artifact_json={"document_type": "i20"},
+            raw_bytes=b"i20",
+        )
+        db.add(document)
+        db.flush()
+        CaseMemoryService(db).upsert_material_understanding(
+            document_id="doc-i20",
+            job=MaterialUnderstandingJob(
+                job_id="job-i20",
+                document_id="doc-i20",
+                status="completed",
+                result=MaterialUnderstandingResult(
+                    evidence_cards=[
+                        EvidenceCard(
+                            evidence_id="ev-school",
+                            source_type="uploaded_file",
+                            document_id="doc-i20",
+                            excerpt="School Name: Example University",
+                            claim_refs=["claim-school"],
+                            confidence=0.93,
+                        )
+                    ],
+                    extracted_claims=[
+                        CaseClaim(
+                            claim_id="claim-school",
+                            field_path="/education/school_name",
+                            value="Example University",
+                            status="documented",
+                            supporting_evidence_ids=["ev-school"],
+                            confidence=0.93,
+                        )
+                    ],
+                    confidence=0.93,
+                ),
+            ),
+        )
 
         payload = ReplayRunner(db).replay_session(session_record.session_id)
 
@@ -166,6 +214,10 @@ def test_replay_runner_replays_session_in_order(tmp_path) -> None:
     ]
     assert [turn["role"] for turn in payload["turns"]] == ["user", "assistant"]
     assert payload["turns"][1]["turn_record"] == {"decision": "continue_interview"}
+    assert payload["case_memory"]["claims"][0]["field_path"] == (
+        "/education/school_name"
+    )
+    assert payload["case_board"]["claims"][0]["value"] == "Example University"
     assert payload["turns"][0]["events"] == []
     assert [event["event_type"] for event in payload["turns"][1]["events"]] == [
         "scorer"

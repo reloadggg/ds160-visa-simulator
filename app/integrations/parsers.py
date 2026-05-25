@@ -5,9 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import fitz
-import pytesseract
 from docx import Document
-from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.domain.evidence import DocumentSourceType
@@ -74,12 +72,10 @@ def parse_document(filename: str, raw_bytes: bytes) -> ParsedDocument:
         )
 
     if suffix in {".png", ".jpg", ".jpeg"}:
-        with Image.open(BytesIO(raw_bytes)) as image:
-            text = pytesseract.image_to_string(image).strip()
         return ParsedDocument(
             source_type=DocumentSourceType.IMAGE,
-            parser_name="pytesseract",
-            segments=[ParsedSegment(ordinal=0, text=text)],
+            parser_name="multimodal_required",
+            segments=[],
         )
 
     return ParsedDocument(

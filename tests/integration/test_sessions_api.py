@@ -582,7 +582,7 @@ def test_debug_fill_current_gap_rejects_unknown_scenario(
     assert "unsupported debug fill scenario" in response.json()["detail"]
 
 
-def test_debug_fill_current_gap_persists_assistant_refresh_turn(
+def test_debug_fill_current_gap_refreshes_state_without_assistant_turn(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -605,17 +605,16 @@ def test_debug_fill_current_gap_persists_assistant_refresh_turn(
         persisted_messages = db.query(SessionTurnRecord).filter_by(
             session_id=session_id,
         ).all()
+        record = db.get(SessionRecord, session_id)
 
     assert chunk_count >= 1
-    assert any(
-        turn.role == "assistant"
-        and turn.source == "interviewer_runtime_service"
-        and turn.content == "Please continue with your study plan."
-        for turn in persisted_messages
-    )
+    assert [turn.role for turn in persisted_messages] == []
+    assert record is not None
+    assert record.current_governor_decision == "continue_interview"
+    assert record.current_focus_json["question"] == "Please continue with your study plan."
 
 
-def test_debug_fill_current_gap_graph_runtime_persists_graph_assistant_turn(
+def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_turn(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -639,8 +638,14 @@ def test_debug_fill_current_gap_graph_runtime_persists_graph_assistant_turn(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistant_message"] == "我会继续围绕你的 DS-160 材料做下一步核对。"
+    assert payload["assistant_message"] == "材料已经加入案例理解。请继续说明它和你的签证计划有什么关系。"
     assert payload["turn_decision"]["decision"] == "continue_interview"
+    assert payload["material_refresh"]["assistant_turn_created"] is False
+    assert payload["material_refresh"]["prompt_trace"]["graph_trigger"] == "material_change"
+    assert (
+        payload["material_refresh"]["prompt_trace"]["material_change_reason"]
+        == "material_added:ds160"
+    )
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -648,24 +653,25 @@ def test_debug_fill_current_gap_graph_runtime_persists_graph_assistant_turn(
             .where(SessionTurnRecord.session_id == session_id)
             .order_by(SessionTurnRecord.turn_index)
         ).all()
+        record = db.get(SessionRecord, session_id)
 
-    assert [(turn.role, turn.source) for turn in turns] == [
-        ("assistant", "graph_runtime_adapter"),
-    ]
-    metadata = turns[0].metadata_json
-    assert metadata["agent_runtime"] == "graph"
-    assert metadata["selected_public_runtime"] == "graph"
-    assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
-    assert metadata["prompt_trace"]["material_change_reason"] == "material_added:ds160"
-    assert metadata["graph_events"][0]["payload"]["trigger"] == "material_change"
+    assert turns == []
+    assert record is not None
+    material_refresh = record.interviewer_state_json["last_material_refresh"]
+    assert material_refresh["agent_runtime"] == "graph"
+    assert material_refresh["selected_public_runtime"] == "graph"
+    assert material_refresh["prompt_trace"]["graph_trigger"] == "material_change"
     assert (
-        metadata["graph_events"][0]["payload"]["material_change_reason"]
+        material_refresh["prompt_trace"]["material_change_reason"]
         == "material_added:ds160"
     )
-    assert metadata["graph_events"][-1]["event_type"] == "final"
-    assert metadata["turn_record"].get("user_turn_id") is None
-    assert metadata["turn_record"]["user_input"] == "material_added:ds160"
-    assert metadata["turn_record"]["assistant_turn_id"] == turns[0].turn_id
+    assert material_refresh["graph_events"][0]["payload"]["trigger"] == "material_change"
+    assert (
+        material_refresh["graph_events"][0]["payload"]["material_change_reason"]
+        == "material_added:ds160"
+    )
+    assert material_refresh["graph_events"][-1]["event_type"] == "final"
+    assert material_refresh["assistant_turn_created"] is False
 
 
 def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
@@ -693,20 +699,24 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
     assert response.status_code == 200
     assert refresh_calls == ["debug_fill:ds160"]
     assert response.json()["assistant_message"] == "Please continue with your study plan."
+    assert response.json()["material_refresh"]["graph_runtime_error"] == {
+        "status": "error",
+        "agent_runtime": "graph",
+        "selected_public_runtime": "graph",
+        "error_type": "RuntimeError",
+        "error_message": "graph material refresh exploded",
+        "fallback_runtime": "legacy",
+    }
 
     with db_session_factory() as db:
-        assistant_turn = db.scalar(
-            select(SessionTurnRecord)
-            .where(
-                SessionTurnRecord.session_id == session_id,
-                SessionTurnRecord.role == "assistant",
-            )
-            .order_by(SessionTurnRecord.turn_index)
-        )
+        turns = db.scalars(
+            select(SessionTurnRecord).where(SessionTurnRecord.session_id == session_id)
+        ).all()
+        record = db.get(SessionRecord, session_id)
 
-    assert assistant_turn is not None
-    assert assistant_turn.source == "interviewer_runtime_service"
-    assert assistant_turn.metadata_json["graph_runtime_error"] == {
+    assert turns == []
+    assert record is not None
+    assert record.interviewer_state_json["last_material_refresh"]["graph_runtime_error"] == {
         "status": "error",
         "agent_runtime": "graph",
         "selected_public_runtime": "graph",
@@ -735,20 +745,29 @@ def test_debug_fill_current_gap_graph_shadow_keeps_legacy_response(
     payload = response.json()
     assert refresh_calls == ["debug_fill:ds160"]
     assert payload["assistant_message"] == "Please continue with your study plan."
+    assert payload["material_refresh"]["assistant_turn_created"] is False
+    assert payload["material_refresh"]["graph_shadow"]["status"] == "completed"
+    assert payload["material_refresh"]["graph_shadow"]["agent_runtime"] == "graph_shadow"
+    assert (
+        payload["material_refresh"]["graph_shadow"]["prompt_trace"]["graph_trigger"]
+        == "material_change"
+    )
+    assert (
+        payload["material_refresh"]["graph_shadow"]["prompt_trace"][
+            "material_change_reason"
+        ]
+        == "material_added:ds160"
+    )
 
     with db_session_factory() as db:
-        assistant_turn = db.scalar(
-            select(SessionTurnRecord)
-            .where(
-                SessionTurnRecord.session_id == session_id,
-                SessionTurnRecord.role == "assistant",
-            )
-            .order_by(SessionTurnRecord.turn_index)
-        )
+        turns = db.scalars(
+            select(SessionTurnRecord).where(SessionTurnRecord.session_id == session_id)
+        ).all()
+        record = db.get(SessionRecord, session_id)
 
-    assert assistant_turn is not None
-    assert assistant_turn.source == "interviewer_runtime_service"
-    graph_shadow = assistant_turn.metadata_json["graph_shadow"]
+    assert turns == []
+    assert record is not None
+    graph_shadow = record.interviewer_state_json["last_material_refresh"]["graph_shadow"]
     assert graph_shadow["status"] == "completed"
     assert graph_shadow["agent_runtime"] == "graph_shadow"
     assert graph_shadow["prompt_trace"]["graph_trigger"] == "material_change"

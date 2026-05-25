@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.repositories.document_repo import DocumentRepository
+from app.services.case_memory_service import CaseMemoryService
 from app.services.file_service import FileService, FileTooLargeError, SessionNotFoundError
 from app.services.file_service import UnsupportedFileTypeError
 
@@ -39,6 +40,7 @@ async def upload_file(
         "document_status": "uploaded",
         "job_id": result.job_id,
         "job_status": "queued",
+        "understanding_status": result.understanding_status,
         "document_type": result.document_type,
         "document_assessment": (
             None
@@ -52,6 +54,8 @@ async def upload_file(
         "feedback_message": result.feedback_message,
         "relevant": result.relevant,
         "main_flow_feedback": result.main_flow_feedback,
+        "case_board_delta": result.case_board_delta,
+        "evidence_cards": list(result.evidence_cards or []),
         "requested_documents": list(result.requested_documents or []),
         "remaining_required_documents": list(
             result.remaining_required_documents or []
@@ -75,3 +79,37 @@ def get_file_content(
         media_type=content_type,
         headers={"Content-Disposition": f'inline; filename="{document.filename}"'},
     )
+
+
+@router.delete("/{document_id}", status_code=200)
+def delete_file(
+    session_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    document = DocumentRepository(db).get_document(document_id)
+    if document is None or document.session_id != session_id:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    snapshot = CaseMemoryService(db).tombstone_document(
+        document_id=document_id,
+        reason="file_delete_api",
+    )
+    db.commit()
+    return {
+        "document_id": document_id,
+        "document_status": "tombstoned",
+        "case_board": {
+            "schema_version": "case_board.v1",
+            "claims": [item.model_dump(mode="json") for item in snapshot.claims],
+            "evidence_cards": [
+                item.model_dump(mode="json") for item in snapshot.evidence_cards
+            ],
+            "proof_points": [
+                item.model_dump(mode="json") for item in snapshot.proof_points
+            ],
+            "conflicts": [
+                item.model_dump(mode="json") for item in snapshot.conflicts
+            ],
+        },
+    }

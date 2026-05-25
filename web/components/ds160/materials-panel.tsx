@@ -152,6 +152,134 @@ function ExpectedFindings({ material }: { material: UploadedMaterial }) {
   )
 }
 
+function CaseUnderstandingSummary({ material }: { material: UploadedMaterial }) {
+  const claims = material.claims ?? []
+  const evidenceCards = material.evidence_cards ?? []
+  const proofPoints = material.proof_points ?? []
+  const conflicts = material.conflicts ?? []
+  const unknowns = material.case_board_delta?.latest_material?.unknowns ?? []
+  const nextMove = material.next_move ?? material.case_board_delta?.next_move ?? null
+
+  if (
+    !claims.length &&
+    !evidenceCards.length &&
+    !proofPoints.length &&
+    !conflicts.length &&
+    !unknowns.length &&
+    !nextMove
+  ) {
+    return null
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground">案例理解</div>
+
+      {claims.length ? (
+        <div className="space-y-2">
+          {claims.map((claim) => (
+            <div
+              key={claim.claim_id}
+              className="rounded-xl border border-border bg-background px-3 py-2"
+            >
+              <div className="text-xs text-muted-foreground">
+                {claim.field_label ?? claim.field_path}
+              </div>
+              <div className="mt-1 break-words text-sm leading-6 text-foreground">
+                {claim.value ?? claim.status}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {evidenceCards.length ? (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-muted-foreground">证据片段</div>
+          {evidenceCards.map((card) => (
+            <div
+              key={card.evidence_id}
+              className="rounded-xl border border-border bg-muted/20 px-3 py-2"
+            >
+              <p className="break-words text-sm leading-6 text-foreground">
+                {card.excerpt}
+              </p>
+              {card.page_number ? (
+                <div className="mt-1 text-xs text-muted-foreground">
+                  第 {card.page_number} 页
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {proofPoints.length ? (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-muted-foreground">证明点</div>
+          {proofPoints.map((proof) => (
+            <div
+              key={proof.proof_point_id}
+              className="rounded-xl border border-border bg-muted/20 px-3 py-2"
+            >
+              <div className="break-words text-sm font-medium leading-6 text-foreground">
+                {proof.question}
+              </div>
+              <div className="mt-1 break-words text-xs leading-5 text-muted-foreground">
+                {proof.why_it_matters}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {conflicts.length ? (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-red-700">冲突</div>
+          {conflicts.map((conflict) => (
+            <div
+              key={conflict.conflict_id}
+              className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-red-950"
+            >
+              <p className="break-words text-sm leading-6">{conflict.summary}</p>
+              {conflict.suggested_followup ? (
+                <div className="mt-1 break-words text-xs leading-5 text-red-800">
+                  {conflict.suggested_followup}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {unknowns.length ? (
+        <div className="rounded-xl border border-border bg-muted/20 px-3 py-2">
+          <div className="text-xs font-medium text-muted-foreground">未知项</div>
+          <ul className="mt-1 space-y-1">
+            {unknowns.map((unknown) => (
+              <li key={unknown} className="break-words text-xs leading-5 text-muted-foreground">
+                {unknown}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {nextMove ? (
+        <div className="rounded-xl border border-border bg-muted/20 px-3 py-2">
+          <div className="text-xs font-medium text-muted-foreground">建议追问</div>
+          <div className="mt-1 break-words text-sm font-medium leading-6 text-foreground">
+            {nextMove.question}
+          </div>
+          <div className="mt-1 break-words text-xs leading-5 text-muted-foreground">
+            {nextMove.reason}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function MaterialGrid({
   materials,
   emptyText,
@@ -208,7 +336,7 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                       {material.name}
                     </DialogTitle>
                     <DialogDescription>
-                      查看材料正文、提取字段和核验线索。
+                      查看材料正文、案例理解和证据片段。
                     </DialogDescription>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Badge variant="outline">
@@ -248,12 +376,7 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                       </div>
                     )}
 
-                    {material.current_focus_document_label && (
-                      <div className="break-words rounded-xl bg-primary/5 px-3 py-2 text-xs leading-5 text-primary">
-                        当前仍需关注：{material.current_focus_document_label}
-                      </div>
-                    )}
-
+                    <CaseUnderstandingSummary material={material} />
                     <FieldTable fields={material.fields} />
                     <RawTextBlock rawText={material.raw_text} />
                     <ExpectedFindings material={material} />
@@ -318,9 +441,18 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
             {material.document_type_label ?? material.status_label}
           </div>
         </div>
-        {material.current_focus_document_label ? (
+        {material.claims?.length ? (
+          <div className="space-y-1 rounded-xl border border-border bg-background px-3 py-2">
+            <div className="text-xs text-muted-foreground">已理解事实</div>
+            {material.claims.slice(0, 2).map((claim) => (
+              <div key={claim.claim_id} className="line-clamp-2 break-words text-xs leading-5 text-foreground">
+                {claim.field_label ?? claim.field_path}: {claim.value ?? claim.status}
+              </div>
+            ))}
+          </div>
+        ) : material.understanding_status ? (
           <div className="break-words text-xs leading-5 text-muted-foreground">
-            当前主线仍关注：{material.current_focus_document_label}
+            理解状态：{material.understanding_status}
           </div>
         ) : null}
         {material.raw_text ? (

@@ -6,6 +6,7 @@ from app.repositories.session_repo import SessionRepository
 from app.repositories.document_repo import DocumentRepository
 from app.services.report_service import ReportService
 from app.services.interview_review_service import InterviewReviewService
+from app.services.case_memory_service import CaseMemoryService
 from app.services.session_read_model_service import SessionReadModelService
 
 router = APIRouter(prefix="/v1/sessions/{session_id}/reports", tags=["reports"])
@@ -20,6 +21,7 @@ def get_user_report(
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     read_model = SessionReadModelService(db).build_from_record(record)
+    case_board = CaseMemoryService(db).build_board(session_id)
     return ReportService().user_report(
         session_id=session_id,
         visa_family=record.declared_family or "unknown",
@@ -30,6 +32,7 @@ def get_user_report(
         runtime_view_state=read_model.runtime_view_state.model_dump(mode="json"),
         interviewer_state_json=record.interviewer_state_json,
         current_focus_json=record.current_focus_json,
+        case_board=case_board,
     )
 
 
@@ -42,6 +45,7 @@ def get_internal_report(
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     read_model = SessionReadModelService(db).build_from_record(record)
+    case_board = CaseMemoryService(db).build_board(session_id)
     return ReportService().internal_report(
         session_id=session_id,
         visa_family=record.declared_family or "unknown",
@@ -54,6 +58,7 @@ def get_internal_report(
         governor_history=record.governor_history_json,
         interviewer_state_json=record.interviewer_state_json,
         current_focus_json=record.current_focus_json,
+        case_board=case_board,
     )
 
 
@@ -79,6 +84,7 @@ def export_session_report(
         raise HTTPException(status_code=404, detail="session not found")
 
     read_model = SessionReadModelService(db).build_from_record(record)
+    case_board = CaseMemoryService(db).build_board(session_id)
     documents = DocumentRepository(db).list_session_document_exports(session_id)
     user_report = ReportService().user_report(
         session_id=session_id,
@@ -90,6 +96,7 @@ def export_session_report(
         runtime_view_state=read_model.runtime_view_state.model_dump(mode="json"),
         interviewer_state_json=record.interviewer_state_json,
         current_focus_json=record.current_focus_json,
+        case_board=case_board,
     )
     internal_report = ReportService().internal_report(
         session_id=session_id,
@@ -103,6 +110,7 @@ def export_session_report(
         governor_history=record.governor_history_json,
         interviewer_state_json=record.interviewer_state_json,
         current_focus_json=record.current_focus_json,
+        case_board=case_board,
     )
 
     return {
