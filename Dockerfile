@@ -2,7 +2,7 @@
 
 FROM python:3.12-slim AS python-deps
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=1 \
+ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock ./
