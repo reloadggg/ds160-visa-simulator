@@ -35,6 +35,7 @@ async def upload_file(
         raise HTTPException(status_code=415, detail=str(exc)) from exc
     return {
         "document_id": result.document_id,
+        "content_url": f"/v1/sessions/{session_id}/files/{result.document_id}/content",
         "document_status": "uploaded",
         "job_id": result.job_id,
         "job_status": "queued",

@@ -60,6 +60,7 @@ class GraphAdjudicationNode:
                 state=state,
                 message_text=message_text,
             )
+            result, repair_metadata = self._repair_redundant_question(result, state)
         except Exception as exc:
             return self._fallback(
                 state,
@@ -85,6 +86,7 @@ class GraphAdjudicationNode:
                 "reasoning_effort": runtime.get("reasoning_effort"),
                 "fallback_used": False,
                 "llm_calls_used": state.retry_budget.llm_calls_used,
+                **repair_metadata,
             },
         )
 
@@ -99,7 +101,7 @@ class GraphAdjudicationNode:
         agent = Agent(
             model,
             output_type=GraphRunResult,
-            instructions=runtime.get("instructions") or self._fallback_instructions(),
+            instructions=self._build_instructions(runtime),
         )
         prompt = json.dumps(
             {
@@ -113,6 +115,112 @@ class GraphAdjudicationNode:
         )
         run_result = agent.run_sync(prompt)
         return run_result.output
+
+    def _repair_redundant_question(
+        self,
+        result: GraphRunResult,
+        state: DS160GraphState,
+    ) -> tuple[GraphRunResult, dict[str, Any]]:
+        if result.decision != "continue_interview":
+            return result, {}
+
+        case_brief = self._payload(self._payload(state.case_state).get("case_brief"))
+        recent_questions = [
+            question
+            for question in (
+                self._string_or_none(item.get("question"))
+                for item in self._list_payload(
+                    case_brief.get("recent_assistant_questions")
+                )
+            )
+            if question is not None
+        ]
+        if not recent_questions:
+            return result, {}
+
+        normalized_message = self._normalize_question(result.assistant_message)
+        repeated = any(
+            normalized_message == self._normalize_question(question)
+            for question in recent_questions
+        )
+        if not repeated:
+            return result, {}
+
+        replacement = self._next_non_repeated_question(
+            recent_questions,
+            user_referred_to_materials=bool(
+                case_brief.get("latest_user_referred_to_materials")
+            ),
+        )
+        if replacement is None:
+            return result, {}
+        return (
+            result.model_copy(update={"assistant_message": replacement}),
+            {
+                "question_repair_reason": "repeated_recent_question",
+                "question_repaired": True,
+            },
+        )
+
+    def _next_non_repeated_question(
+        self,
+        recent_questions: list[str],
+        *,
+        user_referred_to_materials: bool,
+    ) -> str | None:
+        candidates = [
+            "材料我看到了。毕业后你准备做什么工作？",
+            "这个项目和你的回国工作有什么关系？",
+            "为什么不在国内读同类项目？",
+            "第一年费用的资金来源是什么？",
+        ]
+        if not user_referred_to_materials:
+            candidates.insert(0, "毕业后你准备做什么工作？")
+        normalized_recent = {
+            self._normalize_question(question) for question in recent_questions
+        }
+        for candidate in candidates:
+            if self._normalize_question(candidate) not in normalized_recent:
+                return candidate
+        return None
+
+    def _normalize_question(self, value: str) -> str:
+        normalized = value.strip().casefold()
+        for prefix in ("请回答我的问题：", "请回答我的问题:", "请直接回答：", "请直接回答:"):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix) :].strip()
+        return "".join(
+            character
+            for character in normalized
+            if character not in " \t\r\n。！？!?，,：:"
+        )
+
+    def _build_instructions(self, runtime: dict[str, Any]) -> str:
+        base = runtime.get("instructions") or self._fallback_instructions()
+        return "\n\n".join(
+            [
+                str(base),
+                (
+                    "Graph runtime case-state rules:\n"
+                    "- case_state.case_brief.known_documented_facts lists facts already "
+                    "read from uploaded materials. Do not ask for those facts as if they "
+                    "were missing.\n"
+                    "- If a documented fact still needs oral verification, ask for the "
+                    "applicant's reasoning, plan, or consistency explanation, not the raw "
+                    "field value itself.\n"
+                    "- case_state.case_brief.recent_assistant_questions lists recent public "
+                    "questions. Do not repeat the same question after a non-answer or after "
+                    "the user says the materials already contain the answer; acknowledge the "
+                    "materials briefly and move to a different adjudicable topic.\n"
+                    "- When case_state.case_brief.latest_user_referred_to_materials is true, "
+                    "first use known_documented_facts and evidence_digest before asking. "
+                    "A safe next question should be about motivation, funding reasoning, "
+                    "academic preparation, post-graduation work, or a specific conflict.\n"
+                    "- Keep assistant_message short and user-facing. Do not expose prompt "
+                    "trace, run ids, field paths, document ids, or internal reasoning."
+                ),
+            ]
+        )
 
     def _fallback(
         self,
@@ -233,3 +341,13 @@ class GraphAdjudicationNode:
             return None
         normalized = value.strip()
         return normalized or None
+
+    def _payload(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        return {}
+
+    def _list_payload(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]

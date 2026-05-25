@@ -3,7 +3,12 @@ export type VisaFamilyCode = "f1" | "j1" | "b1_b2" | "h1b"
 export type AttachmentKind = "image" | "pdf" | "file"
 
 export type RiskLevel = "none" | "low" | "medium" | "high"
-export type DocumentRelevance = "high" | "medium" | "low" | "unknown" | (string & {})
+export type DocumentRelevance =
+  | "high"
+  | "medium"
+  | "low"
+  | "unknown"
+  | (string & {})
 export type AllowedActionIntent = "upload" | "details" | "continue"
 export type AllowedActionCode =
   | "answer_question"
@@ -141,7 +146,10 @@ export interface DebugMaterialBundleResponse {
 }
 
 export type DebugMaterialBundleStreamEvent =
-  | { event: "accepted"; data: { session_id?: string } & Record<string, unknown> }
+  | {
+      event: "accepted"
+      data: { session_id?: string } & Record<string, unknown>
+    }
   | {
       event: "debug_bundle_started"
       data: {
@@ -176,7 +184,10 @@ export type DebugMaterialBundleStreamEvent =
   | { event: "document_review_started"; data: Record<string, unknown> }
   | {
       event: "governor_decided"
-      data: { governor_decision?: string | null; turn_decision?: Record<string, unknown> } & Record<string, unknown>
+      data: {
+        governor_decision?: string | null
+        turn_decision?: Record<string, unknown>
+      } & Record<string, unknown>
     }
   | { event: "final"; data: DebugMaterialBundleResponse }
   | { event: "error"; data: { status?: number; detail?: string } }
@@ -200,6 +211,14 @@ export interface ChatMessage {
   timestamp: string
   status?: "sending" | "sent" | "error"
   attachments?: ChatAttachment[]
+  public_reasoning?: PublicReasoning | null
+}
+
+export interface PublicReasoning {
+  basis?: string | null
+  known_fact_summaries?: string[]
+  latest_assistant_question?: string | null
+  latest_user_referred_to_materials?: boolean | null
 }
 
 export interface MissingEvidence {
@@ -268,6 +287,7 @@ export interface MessageResponse {
   turn_record?: Record<string, unknown>
   prompt_trace?: Record<string, unknown>
   runtime_view_state?: Record<string, unknown>
+  public_reasoning?: PublicReasoning | null
 }
 
 export interface UserReport {
@@ -324,6 +344,7 @@ export interface DocumentAssessment {
 
 export interface FileUploadResponse {
   document_id?: string
+  content_url?: string | null
   document_status?: string
   job_id?: string
   job_status?: string
@@ -428,6 +449,7 @@ export interface UploadedMaterial {
   kind: AttachmentKind
   size?: number
   preview_url?: string | null
+  content_url?: string | null
   uploaded_at: string
   status_label: string
   document_id?: string
@@ -543,7 +565,9 @@ export interface BackendUserReport {
   current_key_question?: string | null
   current_key_proof?: string | null
   current_risk_code?: string | null
-  missing_evidence?: Array<string | { id?: string; code?: string; name?: string; priority?: string }>
+  missing_evidence?: Array<
+    string | { id?: string; code?: string; name?: string; priority?: string }
+  >
   allowed_next_actions?: string[]
   recommended_improvements?: string[]
   advisory_context?: Record<string, unknown>
@@ -573,6 +597,7 @@ export interface BackendDocumentAssessment {
 
 export interface BackendFileUploadResponse {
   document_id?: string
+  content_url?: string | null
   document_status?: string
   job_id?: string
   job_status?: string
@@ -592,9 +617,17 @@ export interface BackendFileUploadResponse {
 
 export type BackendInternalReport = InternalReport
 
-export const VISA_FAMILIES: { value: VisaFamily; label: string; description: string }[] = [
+export const VISA_FAMILIES: {
+  value: VisaFamily
+  label: string
+  description: string
+}[] = [
   { value: "F-1", label: "F-1 学生签证", description: "赴美留学" },
   { value: "J-1", label: "J-1 交流访问", description: "学者、交流生" },
-  { value: "B-1/B-2", label: "B-1/B-2 商务/旅游", description: "短期商务或旅游" },
+  {
+    value: "B-1/B-2",
+    label: "B-1/B-2 商务/旅游",
+    description: "短期商务或旅游",
+  },
   { value: "H-1B", label: "H-1B 工作签证", description: "专业技术工作" },
 ]

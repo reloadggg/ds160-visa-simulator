@@ -151,6 +151,29 @@ def test_graph_case_state_builder_normalizes_session_turns_and_materials() -> No
         "/education/school_name"
     ]
     assert case_state["evidence_digest"]["evidence_refs"] == ["evi-school"]
+    assert case_state["case_brief"]["known_documented_facts"] == [
+        {
+            "field_path": "/education/school_name",
+            "label": "学校",
+            "value": "Example University",
+            "document_ids": ["doc-i20"],
+            "document_filenames": ["i20.txt"],
+            "evidence_refs": ["evi-school"],
+        }
+    ]
+    assert case_state["case_brief"]["known_documented_field_paths"] == [
+        "/education/school_name"
+    ]
+    assert case_state["case_brief"]["recent_assistant_questions"] == [
+        {
+            "turn_id": "turn-assistant-1",
+            "turn_index": 2,
+            "question": "What program will you study?",
+        }
+    ]
+    assert case_state["case_brief"]["latest_assistant_question"] == (
+        "What program will you study?"
+    )
     assert case_state["history_summary"]["turn_count"] == 2
     assert case_state["history_summary"]["assistant_turn_count"] == 1
     assert case_state["history_summary"]["prior_decisions"] == [
@@ -185,6 +208,62 @@ def test_graph_case_state_builder_keeps_recent_turn_window_stable() -> None:
         "turn-8",
     ]
     assert case_state["history_summary"]["turn_count"] == 8
+
+
+def test_graph_case_state_builder_uses_profile_document_snapshot_and_material_reference() -> None:
+    record = SessionRecord(
+        session_id="sess-profile-snapshot",
+        phase_state="interview",
+        declared_family="f1",
+        profile_json={
+            "ds160_view": {
+                "document_evidence_snapshot": {
+                    "/education/program_name": {
+                        "value": "Master of Example Analytics",
+                        "state": "documented",
+                        "evidence_refs": ["evi-program"],
+                    }
+                }
+            }
+        },
+    )
+    turns = [
+        SimpleNamespace(
+            turn_id="turn-assistant-program",
+            turn_index=1,
+            session_id=record.session_id,
+            role="assistant",
+            content="你本科读的是什么专业？",
+            source="graph_runtime_adapter",
+            metadata_json={},
+        ),
+        SimpleNamespace(
+            turn_id="turn-user-materials",
+            turn_index=2,
+            session_id=record.session_id,
+            role="user",
+            content="我提供的资料里面都有",
+            source="user_message",
+            metadata_json={},
+        ),
+    ]
+
+    case_state = GraphCaseStateBuilder().build(record, turns)
+
+    assert case_state["case_brief"]["known_documented_facts"] == [
+        {
+            "field_path": "/education/program_name",
+            "label": "项目",
+            "value": "Master of Example Analytics",
+            "document_ids": [],
+            "document_filenames": [],
+            "evidence_refs": ["evi-program"],
+        }
+    ]
+    assert case_state["case_brief"]["latest_assistant_question"] == (
+        "你本科读的是什么专业？"
+    )
+    assert case_state["case_brief"]["latest_user_referred_to_materials"] is True
 
 
 def test_graph_case_state_builder_does_not_depend_on_legacy_orchestrators() -> None:

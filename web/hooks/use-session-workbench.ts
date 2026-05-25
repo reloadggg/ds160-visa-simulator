@@ -1,6 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import { toPng } from "html-to-image"
 
 import {
@@ -30,7 +36,11 @@ import {
   MOCK_SESSION_ID,
   MOCK_USER_REPORT,
 } from "@/lib/api/mock-data"
-import { humanizeBackendText, mapSessionGateStatus, toDocumentLabel } from "@/lib/api/mappers"
+import {
+  humanizeBackendText,
+  mapSessionGateStatus,
+  toDocumentLabel,
+} from "@/lib/api/mappers"
 import type {
   AllowedAction,
   AttachmentKind,
@@ -45,6 +55,7 @@ import type {
   InternalReport,
   InterviewReviewResponse,
   ModelListItem,
+  PublicReasoning,
   RagUploadMetadata,
   RagStatus,
   RequiredPackage,
@@ -78,6 +89,10 @@ function getTimestamp(): string {
 
 function getIsoTimestamp(): string {
   return new Date().toISOString()
+}
+
+function isPublicReasoning(value: unknown): value is PublicReasoning {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
 function loadUserModelConfig(): UserModelConfig {
@@ -119,7 +134,9 @@ function persistUserModelConfig(config: UserModelConfig): void {
   )
 }
 
-function toRuntimeModelConfig(config: UserModelConfig): UserModelRuntimeConfig | null {
+function toRuntimeModelConfig(
+  config: UserModelConfig,
+): UserModelRuntimeConfig | null {
   if (!config.enabled) {
     return null
   }
@@ -144,11 +161,14 @@ function formatRequestedDocuments(labels: string[]): string {
   return labels.join("、")
 }
 
-function buildRequiredPackageMessage(visaFamily: VisaFamily, requiredPackage: RequiredPackage): string {
+function buildRequiredPackageMessage(
+  visaFamily: VisaFamily,
+  requiredPackage: RequiredPackage,
+): string {
   const materialHint = requiredPackage.required_initial_package_labels.length
     ? `如果你手边有 ${formatRequestedDocuments(
-    requiredPackage.required_initial_package_labels,
-  )}，可以在对话过程中随时上传。`
+        requiredPackage.required_initial_package_labels,
+      )}，可以在对话过程中随时上传。`
     : "如果你手边有 I-20、DS-160 确认页、护照首页或资金证明，可以在对话过程中随时上传。"
 
   return `你好，我们开始今天的 ${visaFamily} 签证模拟。我会像真实窗口面谈一样，先了解你的学习计划，再结合材料核对关键细节。\n\n你先简单介绍一下：这次去美国读什么项目？为什么选择这所学校？\n\n${materialHint}`
@@ -177,13 +197,19 @@ function buildOfficerUploadFollowUp(
   const uploadedLabels = Array.from(
     new Set(
       responses
-        .map((response) => response.document_type_label ?? response.document_assessment?.document_type_label)
+        .map(
+          (response) =>
+            response.document_type_label ??
+            response.document_assessment?.document_type_label,
+        )
         .filter((label): label is string => Boolean(label)),
     ),
   )
   const remainingLabels = Array.from(
     new Set(
-      responses.flatMap((response) => response.remaining_required_document_labels ?? []),
+      responses.flatMap(
+        (response) => response.remaining_required_document_labels ?? [],
+      ),
     ),
   )
   const focusLabels = remainingLabels.length ? remainingLabels : fallbackLabels
@@ -215,16 +241,20 @@ function truncateProgressLine(value: string): string {
   return value.length > 220 ? `${value.slice(0, 217)}...` : value
 }
 
-function describeDebugBundleEvent(event: DebugMaterialBundleStreamEvent): string {
+function describeDebugBundleEvent(
+  event: DebugMaterialBundleStreamEvent,
+): string {
   switch (event.event) {
     case "accepted":
       return "已收到材料包生成请求。"
     case "debug_bundle_started":
       return `开始生成${event.data.scenario_label ?? "材料包"}，预计 ${event.data.document_count ?? 0} 份材料。`
     case "document_created":
-      return `已生成材料：${event.data.document_type_label ?? event.data.filename ?? "材料" }。`
+      return `已生成材料：${event.data.document_type_label ?? event.data.filename ?? "材料"}。`
     case "evidence_written":
-      return truncateProgressLine(`已整理字段：${Object.keys(event.data.fields ?? {}).join("、") || "字段待确认"}。`)
+      return truncateProgressLine(
+        `已整理字段：${Object.keys(event.data.fields ?? {}).join("、") || "字段待确认"}。`,
+      )
     case "profile_recomputed":
       return "已根据材料刷新申请人档案。"
     case "gate_refreshed":
@@ -259,12 +289,14 @@ function debugBundleDocumentToMaterial(
     kind: "file",
     size: new TextEncoder().encode(document.raw_text).length,
     preview_url: getFileContentUrl(sessionId, document.document_id),
+    content_url: getFileContentUrl(sessionId, document.document_id),
     uploaded_at: getIsoTimestamp(),
     status_label: "已生成",
     document_id: document.document_id,
     document_status: "parsed",
     document_type: document.document_type,
-    document_type_label: document.document_type_label ?? toDocumentLabel(document.document_type),
+    document_type_label:
+      document.document_type_label ?? toDocumentLabel(document.document_type),
     relevance: "high",
     feedback_message: `${bundle.scenario_label} / ${bundle.bundle_id}`,
     requested_document_labels: [],
@@ -278,18 +310,27 @@ function debugBundleDocumentToMaterial(
   }
 }
 
-function buildDebugBundleFinalMessage(bundle: DebugMaterialBundleResponse): string {
-  const documentNames = bundle.documents.map((document) => document.document_type_label ?? document.filename)
+function buildDebugBundleFinalMessage(
+  bundle: DebugMaterialBundleResponse,
+): string {
+  const documentNames = bundle.documents.map(
+    (document) => document.document_type_label ?? document.filename,
+  )
   const option = getDebugMaterialBundleOption(bundle.scenario)
   return `已生成${option.label}：${formatRequestedDocuments(documentNames)}。材料已写入材料库，可以直接打开查看正文和提取字段。`
 }
 
-function inferAttachmentKind(file: Pick<File, "name" | "type">): AttachmentKind {
+function inferAttachmentKind(
+  file: Pick<File, "name" | "type">,
+): AttachmentKind {
   if (file.type.startsWith("image/")) {
     return "image"
   }
 
-  if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+  if (
+    file.type === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+  ) {
     return "pdf"
   }
 
@@ -299,7 +340,9 @@ function inferAttachmentKind(file: Pick<File, "name" | "type">): AttachmentKind 
 function sanitizeHistoryAttachment(attachment: ChatAttachment): ChatAttachment {
   return {
     ...attachment,
-    preview_url: attachment.preview_url?.startsWith("data:") ? attachment.preview_url : null,
+    preview_url: attachment.preview_url?.startsWith("data:")
+      ? attachment.preview_url
+      : null,
   }
 }
 
@@ -310,11 +353,13 @@ function sanitizeHistoryMessage(message: ChatMessage): ChatMessage {
   }
 }
 
-function resolvePersistentMaterialPreview(material: UploadedMaterial): string | null {
+function resolvePersistentMaterialPreview(
+  material: UploadedMaterial,
+): string | null {
   if (material.preview_url?.startsWith("data:")) {
     return material.preview_url
   }
-  if (material.kind === "image" && material.session_id && material.document_id) {
+  if (material.session_id && material.document_id) {
     return getFileContentUrl(material.session_id, material.document_id)
   }
   return null
@@ -327,11 +372,17 @@ function sanitizeHistoryMaterial(material: UploadedMaterial): UploadedMaterial {
   }
 }
 
-function resolvePersistentAttachmentPreview(attachment: ChatAttachment): string | null {
+function resolvePersistentAttachmentPreview(
+  attachment: ChatAttachment,
+): string | null {
   if (attachment.preview_url?.startsWith("data:")) {
     return attachment.preview_url
   }
-  if (attachment.kind === "image" && attachment.session_id && attachment.document_id) {
+  if (
+    attachment.kind === "image" &&
+    attachment.session_id &&
+    attachment.document_id
+  ) {
     return getFileContentUrl(attachment.session_id, attachment.document_id)
   }
   return null
@@ -341,7 +392,9 @@ function resolveMaterialMatchKey(name: string, index: number): string {
   return `${name.trim().toLowerCase()}#${index}`
 }
 
-function buildMaterialPreviewLookup(materials: UploadedMaterial[]): Map<string, UploadedMaterial> {
+function buildMaterialPreviewLookup(
+  materials: UploadedMaterial[],
+): Map<string, UploadedMaterial> {
   const nameCounts = new Map<string, number>()
   const lookup = new Map<string, UploadedMaterial>()
   for (const material of materials) {
@@ -374,14 +427,17 @@ function hydrateHistoryMessages(
       const normalizedName = attachment.name.trim().toLowerCase()
       const index = attachmentNameCounts.get(normalizedName) ?? 0
       attachmentNameCounts.set(normalizedName, index + 1)
-      const matchedMaterial = materialLookup.get(resolveMaterialMatchKey(attachment.name, index))
+      const matchedMaterial = materialLookup.get(
+        resolveMaterialMatchKey(attachment.name, index),
+      )
       if (!matchedMaterial) {
         return attachment
       }
 
       return {
         ...attachment,
-        document_id: matchedMaterial.document_id ?? attachment.document_id ?? null,
+        document_id:
+          matchedMaterial.document_id ?? attachment.document_id ?? null,
         session_id: matchedMaterial.session_id ?? attachment.session_id ?? null,
         preview_url: resolvePersistentMaterialPreview(matchedMaterial),
       }
@@ -390,7 +446,10 @@ function hydrateHistoryMessages(
 }
 
 function readFileAsDataUrl(file: File): Promise<string | null> {
-  if (!file.type.startsWith("image/") || file.size > MAX_PERSISTED_PREVIEW_BYTES) {
+  if (
+    !file.type.startsWith("image/") ||
+    file.size > MAX_PERSISTED_PREVIEW_BYTES
+  ) {
     return Promise.resolve(null)
   }
 
@@ -426,7 +485,9 @@ function loadHistoryEntries(): SessionHistoryEntry[] {
     }
 
     const parsed = JSON.parse(raw)
-    cachedHistoryEntries = Array.isArray(parsed) ? parsed : EMPTY_HISTORY_ENTRIES
+    cachedHistoryEntries = Array.isArray(parsed)
+      ? parsed
+      : EMPTY_HISTORY_ENTRIES
     return cachedHistoryEntries
   } catch {
     cachedHistoryRaw = null
@@ -460,7 +521,10 @@ function subscribeHistoryStore(listener: () => void): () => void {
   }
 }
 
-function writeHistoryEntries(entries: SessionHistoryEntry[], options?: { notify?: boolean }): void {
+function writeHistoryEntries(
+  entries: SessionHistoryEntry[],
+  options?: { notify?: boolean },
+): void {
   if (typeof window === "undefined") {
     return
   }
@@ -487,7 +551,10 @@ function removeHistoryEntries(): void {
 }
 
 function createClientId(prefix: string): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `${prefix}-${crypto.randomUUID()}`
   }
 
@@ -525,7 +592,10 @@ function downloadJsonFile(filename: string, payload: unknown): void {
   URL.revokeObjectURL(url)
 }
 
-function humanizeUploadStatus(status?: string | null, fallback = "已上传"): string {
+function humanizeUploadStatus(
+  status?: string | null,
+  fallback = "已上传",
+): string {
   switch (status) {
     case "queued":
       return "排队中"
@@ -545,7 +615,9 @@ function humanizeUploadStatus(status?: string | null, fallback = "已上传"): s
   }
 }
 
-function firstNonEmptyText(...values: Array<string | null | undefined>): string | null {
+function firstNonEmptyText(
+  ...values: Array<string | null | undefined>
+): string | null {
   for (const value of values) {
     const normalized = value?.trim()
     if (normalized) {
@@ -597,7 +669,12 @@ function renderExportAttachment(attachment: ChatAttachment): string {
     `
   }
 
-  const kindLabel = attachment.kind === "pdf" ? "PDF" : attachment.kind === "image" ? "图片" : "文件"
+  const kindLabel =
+    attachment.kind === "pdf"
+      ? "PDF"
+      : attachment.kind === "image"
+        ? "图片"
+        : "文件"
   return `
     <div class="attachment attachment-file">
       <div class="file-icon">${escapeHtml(kindLabel)}</div>
@@ -609,8 +686,12 @@ function renderExportAttachment(attachment: ChatAttachment): string {
 function renderExportMessage(message: ChatMessage): string {
   const role = formatMessageRole(message.role)
   const roleClass = roleClassName(message.role)
-  const content = escapeHtml(message.content || "（仅包含附件）").replaceAll("\n", "<br />")
-  const attachments = message.attachments?.map(renderExportAttachment).join("") ?? ""
+  const content = escapeHtml(message.content || "（仅包含附件）").replaceAll(
+    "\n",
+    "<br />",
+  )
+  const attachments =
+    message.attachments?.map(renderExportAttachment).join("") ?? ""
   return `
     <section class="message-row ${roleClass}">
       <div class="avatar">${roleClass === "officer" ? "VO" : roleClass === "user" ? "我" : "记"}</div>
@@ -929,8 +1010,11 @@ async function exportConversationLongImage(
   }
 }
 
-
-function renderReviewList(title: string, items: string[], tone = "default"): string {
+function renderReviewList(
+  title: string,
+  items: string[],
+  tone = "default",
+): string {
   const normalizedItems = items.map(humanizeBackendText).filter(Boolean)
   const content = normalizedItems.length
     ? `<ul>${normalizedItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
@@ -1148,7 +1232,8 @@ export function useSessionWorkbench() {
 
   const [session, setSession] = useState<Session | null>(null)
   const [visaType, setVisaType] = useState<VisaFamily | null>(null)
-  const [requiredPackage, setRequiredPackage] = useState<RequiredPackage | null>(null)
+  const [requiredPackage, setRequiredPackage] =
+    useState<RequiredPackage | null>(null)
 
   const [isInitializing, setIsInitializing] = useState(false)
   const [initError, setInitError] = useState<string | null>(null)
@@ -1162,34 +1247,46 @@ export function useSessionWorkbench() {
   const [isLoadingReport, setIsLoadingReport] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
 
-  const [internalReport, setInternalReport] = useState<InternalReport | null>(null)
-  const [interviewReview, setInterviewReview] = useState<InterviewReviewResponse | null>(null)
+  const [internalReport, setInternalReport] = useState<InternalReport | null>(
+    null,
+  )
+  const [interviewReview, setInterviewReview] =
+    useState<InterviewReviewResponse | null>(null)
   const [isGeneratingReview, setIsGeneratingReview] = useState(false)
   const [isLoadingInternalReport, setIsLoadingInternalReport] = useState(false)
   const [modalError, setModalError] = useState<string | null>(null)
   const [isReportModalOpen, setIsReportModalOpen] = useState(false)
-  const [pendingResetAfterSummary, setPendingResetAfterSummary] = useState(false)
+  const [pendingResetAfterSummary, setPendingResetAfterSummary] =
+    useState(false)
 
-  const [uploadedMaterials, setUploadedMaterials] = useState<UploadedMaterial[]>([])
+  const [uploadedMaterials, setUploadedMaterials] = useState<
+    UploadedMaterial[]
+  >([])
   const historyStore = useSyncExternalStore(
     subscribeHistoryStore,
     loadHistoryEntries,
     getServerHistoryEntries,
   )
   const updateHistoryStore = useCallback(
-    (updater: SessionHistoryEntry[] | ((prev: SessionHistoryEntry[]) => SessionHistoryEntry[])) => {
+    (
+      updater:
+        | SessionHistoryEntry[]
+        | ((prev: SessionHistoryEntry[]) => SessionHistoryEntry[]),
+    ) => {
       const previousEntries = loadHistoryEntries()
-      const nextEntries = typeof updater === "function" ? updater(previousEntries) : updater
+      const nextEntries =
+        typeof updater === "function" ? updater(previousEntries) : updater
       writeHistoryEntries(nextEntries, { notify: true })
     },
     [],
   )
-  const [composerCommand, setComposerCommand] = useState<ComposerCommand | null>(null)
+  const [composerCommand, setComposerCommand] =
+    useState<ComposerCommand | null>(null)
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null)
   const [isDebugBundleGenerating, setIsDebugBundleGenerating] = useState(false)
   const [debugBundleProgress, setDebugBundleProgress] = useState<string[]>([])
-  const [userModelConfig, setUserModelConfig] = useState<UserModelConfig>(
-    () => loadUserModelConfig(),
+  const [userModelConfig, setUserModelConfig] = useState<UserModelConfig>(() =>
+    loadUserModelConfig(),
   )
   const [availableModels, setAvailableModels] = useState<ModelListItem[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
@@ -1203,7 +1300,6 @@ export function useSessionWorkbench() {
   const [sessionTime, setSessionTime] = useState(0)
 
   const sessionId = session?.session_id ?? null
-
 
   useEffect(() => {
     if (!settingsFeedback) {
@@ -1237,24 +1333,30 @@ export function useSessionWorkbench() {
     }
   }, [isPaused, sessionId])
 
-  const appendMessage = useCallback((message: Omit<ChatMessage, "id" | "timestamp">) => {
-    const id = createClientId(message.role)
-    setMessages((prev) => [
-      ...prev,
-      {
-        id,
-        timestamp: getTimestamp(),
-        ...message,
-      },
-    ])
-    return id
-  }, [])
+  const appendMessage = useCallback(
+    (message: Omit<ChatMessage, "id" | "timestamp">) => {
+      const id = createClientId(message.role)
+      setMessages((prev) => [
+        ...prev,
+        {
+          id,
+          timestamp: getTimestamp(),
+          ...message,
+        },
+      ])
+      return id
+    },
+    [],
+  )
 
-  const updateMessageStatus = useCallback((id: string, status: ChatMessage["status"]) => {
-    setMessages((prev) =>
-      prev.map((msg) => (msg.id === id ? { ...msg, status } : msg)),
-    )
-  }, [])
+  const updateMessageStatus = useCallback(
+    (id: string, status: ChatMessage["status"]) => {
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === id ? { ...msg, status } : msg)),
+      )
+    },
+    [],
+  )
 
   const updateMessageContent = useCallback((id: string, content: string) => {
     setMessages((prev) =>
@@ -1263,7 +1365,11 @@ export function useSessionWorkbench() {
   }, [])
 
   const updateMessageAttachment = useCallback(
-    (messageId: string, attachmentId: string, patch: Partial<ChatAttachment>) => {
+    (
+      messageId: string,
+      attachmentId: string,
+      patch: Partial<ChatAttachment>,
+    ) => {
       setMessages((prev) =>
         prev.map((message) => {
           if (message.id !== messageId || !message.attachments?.length) {
@@ -1273,7 +1379,9 @@ export function useSessionWorkbench() {
           return {
             ...message,
             attachments: message.attachments.map((attachment) =>
-              attachment.id === attachmentId ? { ...attachment, ...patch } : attachment,
+              attachment.id === attachmentId
+                ? { ...attachment, ...patch }
+                : attachment,
             ),
           }
         }),
@@ -1293,7 +1401,11 @@ export function useSessionWorkbench() {
       if (error.status === 429) {
         return "当前对话模型额度已耗尽或请求过于频繁，请稍后重试。"
       }
-      if (error.status === 503 || error.status === 502 || error.status === 504) {
+      if (
+        error.status === 503 ||
+        error.status === 502 ||
+        error.status === 504
+      ) {
         return "当前对话模型不可用或运行失败。"
       }
       return `请求失败：${error.message}`
@@ -1383,24 +1495,28 @@ export function useSessionWorkbench() {
     setComposerCommand(null)
   }, [])
 
-  const createMessageAttachments = useCallback(async (files: File[]): Promise<ChatAttachment[]> => {
-    return Promise.all(
-      files.map(async (file) => {
-        const kind = inferAttachmentKind(file)
-        const previewUrl = kind === "image" ? await readFileAsDataUrl(file) : null
+  const createMessageAttachments = useCallback(
+    async (files: File[]): Promise<ChatAttachment[]> => {
+      return Promise.all(
+        files.map(async (file) => {
+          const kind = inferAttachmentKind(file)
+          const previewUrl =
+            kind === "image" ? await readFileAsDataUrl(file) : null
 
-        return {
-          id: createClientId("attachment"),
-          name: file.name,
-          mime_type: file.type,
-          kind,
-          size: file.size,
-          preview_url: previewUrl,
-          upload_status: "pending",
-        }
-      }),
-    )
-  }, [])
+          return {
+            id: createClientId("attachment"),
+            name: file.name,
+            mime_type: file.type,
+            kind,
+            size: file.size,
+            preview_url: previewUrl,
+            upload_status: "pending",
+          }
+        }),
+      )
+    },
+    [],
+  )
 
   const buildUploadedMaterial = useCallback(
     (
@@ -1425,9 +1541,15 @@ export function useSessionWorkbench() {
             "已上传",
           ),
       document_id: response?.document_id,
+      content_url:
+        response?.document_id && sessionId
+          ? getFileContentUrl(sessionId, response.document_id)
+          : null,
       document_status: response?.document_status,
       document_type:
-        response?.document_type ?? response?.document_assessment?.document_type ?? null,
+        response?.document_type ??
+        response?.document_assessment?.document_type ??
+        null,
       document_type_label:
         response?.document_type_label ??
         response?.document_assessment?.document_type_label ??
@@ -1438,9 +1560,11 @@ export function useSessionWorkbench() {
       requested_document_labels: response?.requested_document_labels ?? [],
       current_focus_document_label:
         response?.main_flow_feedback?.current_focus_document_label ??
-        response?.document_assessment?.main_flow_feedback?.current_focus_document_label ??
+        response?.document_assessment?.main_flow_feedback
+          ?.current_focus_document_label ??
         null,
-      counts_toward_gate: response?.document_assessment?.counts_toward_gate ?? null,
+      counts_toward_gate:
+        response?.document_assessment?.counts_toward_gate ?? null,
     }),
     [sessionId],
   )
@@ -1459,7 +1583,9 @@ export function useSessionWorkbench() {
         return null
       }
 
-      const existing = historyStore.find((entry) => entry.session_id === sessionId)
+      const existing = historyStore.find(
+        (entry) => entry.session_id === sessionId,
+      )
       const snapshotMessages = overrides?.messages ?? messages
       const snapshotReport = overrides?.report ?? userReport
       const snapshotMaterials = overrides?.materials ?? uploadedMaterials
@@ -1514,7 +1640,10 @@ export function useSessionWorkbench() {
       if (!entry) {
         return
       }
-      updateHistoryStore((prev) => [entry, ...prev.filter((item) => item.id !== entry.id)])
+      updateHistoryStore((prev) => [
+        entry,
+        ...prev.filter((item) => item.id !== entry.id),
+      ])
     },
     [buildHistoryEntry, updateHistoryStore],
   )
@@ -1530,7 +1659,10 @@ export function useSessionWorkbench() {
     if (!activeHistoryEntry) {
       return historyStore
     }
-    return [activeHistoryEntry, ...historyStore.filter((entry) => entry.id !== activeHistoryEntry.id)]
+    return [
+      activeHistoryEntry,
+      ...historyStore.filter((entry) => entry.id !== activeHistoryEntry.id),
+    ]
   }, [activeHistoryEntry, historyStore])
 
   useEffect(() => {
@@ -1575,7 +1707,8 @@ export function useSessionWorkbench() {
           setSession({
             session_id: MOCK_SESSION_ID,
             phase_state: "interview",
-            current_governor_decision: MOCK_USER_REPORT.governor_decision ?? null,
+            current_governor_decision:
+              MOCK_USER_REPORT.governor_decision ?? null,
             gate_status: null,
           })
           setVisaType(visaFamily)
@@ -1584,7 +1717,10 @@ export function useSessionWorkbench() {
             {
               id: "system-1",
               role: "system",
-              content: buildRequiredPackageMessage(visaFamily, mockRequiredPackage),
+              content: buildRequiredPackageMessage(
+                visaFamily,
+                mockRequiredPackage,
+              ),
               timestamp: getTimestamp(),
             },
             ...MOCK_MESSAGES.slice(1),
@@ -1596,7 +1732,9 @@ export function useSessionWorkbench() {
         }
 
         const createdSession = await createSession(visaFamily)
-        const nextRequiredPackage = await getRequiredPackage(createdSession.session_id)
+        const nextRequiredPackage = await getRequiredPackage(
+          createdSession.session_id,
+        )
 
         setSession(createdSession)
         setVisaType(visaFamily)
@@ -1605,7 +1743,10 @@ export function useSessionWorkbench() {
           {
             id: "system-1",
             role: "system",
-            content: buildRequiredPackageMessage(visaFamily, nextRequiredPackage),
+            content: buildRequiredPackageMessage(
+              visaFamily,
+              nextRequiredPackage,
+            ),
             timestamp: getTimestamp(),
           },
         ])
@@ -1613,7 +1754,9 @@ export function useSessionWorkbench() {
 
         await fetchUserReport(createdSession.session_id)
       } catch (error) {
-        setInitError(getErrorMessage(error, "无法连接到服务器，请确认后端已启动。"))
+        setInitError(
+          getErrorMessage(error, "无法连接到服务器，请确认后端已启动。"),
+        )
       } finally {
         setIsInitializing(false)
       }
@@ -1636,7 +1779,9 @@ export function useSessionWorkbench() {
         return
       }
 
-      const messageAttachments = hasFiles ? await createMessageAttachments(nextFiles) : []
+      const messageAttachments = hasFiles
+        ? await createMessageAttachments(nextFiles)
+        : []
       const userMsgId = appendMessage({
         role: "user",
         content: trimmedContent,
@@ -1680,10 +1825,16 @@ export function useSessionWorkbench() {
               const uploadFeedback = firstNonEmptyText(
                 response.feedback_message ?? null,
                 response.main_flow_feedback?.message ?? null,
-                response.document_assessment?.main_flow_feedback?.message ?? null,
+                response.document_assessment?.main_flow_feedback?.message ??
+                  null,
               )
 
-              const uploadedMaterial = buildUploadedMaterial(file, attachment, uploadFeedback, response)
+              const uploadedMaterial = buildUploadedMaterial(
+                file,
+                attachment,
+                uploadFeedback,
+                response,
+              )
               setUploadedMaterials((prev) => [
                 uploadedMaterial,
                 ...prev.filter((item) => item.id !== attachment.id),
@@ -1692,7 +1843,10 @@ export function useSessionWorkbench() {
                 document_id: response.document_id ?? null,
                 session_id: sessionId,
                 upload_status: "uploaded",
-                preview_url: resolvePersistentMaterialPreview(uploadedMaterial) ?? attachment.preview_url ?? null,
+                preview_url:
+                  resolvePersistentMaterialPreview(uploadedMaterial) ??
+                  attachment.preview_url ??
+                  null,
               })
 
               appendMessage({
@@ -1725,9 +1879,18 @@ export function useSessionWorkbench() {
               }
               successfulUploads += 1
             } catch (error) {
-              const fileError = getErrorMessage(error, `文件 ${file.name} 上传失败。`)
+              const fileError = getErrorMessage(
+                error,
+                `文件 ${file.name} 上传失败。`,
+              )
               setUploadedMaterials((prev) => [
-                buildUploadedMaterial(file, attachment, fileError, undefined, true),
+                buildUploadedMaterial(
+                  file,
+                  attachment,
+                  fileError,
+                  undefined,
+                  true,
+                ),
                 ...prev.filter((item) => item.id !== attachment.id),
               ])
               updateMessageAttachment(userMsgId, attachment.id, {
@@ -1742,13 +1905,20 @@ export function useSessionWorkbench() {
 
           setIsUploading(false)
           if (!hasContent) {
-            updateMessageStatus(userMsgId, successfulUploads > 0 ? "sent" : "error")
+            updateMessageStatus(
+              userMsgId,
+              successfulUploads > 0 ? "sent" : "error",
+            )
             if (successfulUploads > 0) {
               const latestReport = await refreshReports(sessionId)
-              const fallbackLabels = latestReport?.requested_document_labels ?? []
+              const fallbackLabels =
+                latestReport?.requested_document_labels ?? []
               appendMessage({
                 role: "officer",
-                content: buildOfficerUploadFollowUp(uploadResponses, fallbackLabels),
+                content: buildOfficerUploadFollowUp(
+                  uploadResponses,
+                  fallbackLabels,
+                ),
               })
             } else {
               await refreshReports(sessionId)
@@ -1777,26 +1947,29 @@ export function useSessionWorkbench() {
           } else {
             const runtimeModelConfig = toRuntimeModelConfig(userModelConfig)
             if (userModelConfig.enabled && !runtimeModelConfig) {
-              throw new Error("请完整填写 Base URL、API Key 和模型名称，或关闭自带模型。")
+              throw new Error(
+                "请完整填写 Base URL、API Key 和模型名称，或关闭自带模型。",
+              )
             }
-            const shouldUseStream = !runtimeModelConfig || userModelConfig.streamingEnabled
-            const response =
-              shouldUseStream
-                ? await sendMessageStream(
-                    sessionId,
-                    trimmedContent,
-                    runtimeModelConfig,
-                    (event) => {
-                      if (event.event === "analyzing") {
-                        setSettingsFeedback("正在生成本轮回复。")
-                      }
-                    },
-                  )
-                : await sendMessage(sessionId, trimmedContent, runtimeModelConfig)
+            const shouldUseStream =
+              !runtimeModelConfig || userModelConfig.streamingEnabled
+            const response = shouldUseStream
+              ? await sendMessageStream(
+                  sessionId,
+                  trimmedContent,
+                  runtimeModelConfig,
+                  (event) => {
+                    if (event.event === "analyzing") {
+                      setSettingsFeedback("正在生成本轮回复。")
+                    }
+                  },
+                )
+              : await sendMessage(sessionId, trimmedContent, runtimeModelConfig)
             updateMessageStatus(userMsgId, "sent")
             appendMessage({
               role: "officer",
               content: response.assistant_message,
+              public_reasoning: response.public_reasoning,
             })
 
             const requestedDocumentsMessage = buildRequestedDocumentsMessage(
@@ -1953,7 +2126,14 @@ export function useSessionWorkbench() {
         content: `本轮总结：${latestUserReport.summary}`,
       })
     }
-  }, [appendMessage, getErrorMessage, mockMode, persistHistoryEntry, sessionId, userReport])
+  }, [
+    appendMessage,
+    getErrorMessage,
+    mockMode,
+    persistHistoryEntry,
+    sessionId,
+    userReport,
+  ])
 
   const handleReset = useCallback(() => {
     if (sessionId && visaType && !pendingResetAfterSummary) {
@@ -1961,7 +2141,13 @@ export function useSessionWorkbench() {
     }
 
     clearCurrentSessionState()
-  }, [clearCurrentSessionState, pendingResetAfterSummary, persistHistoryEntry, sessionId, visaType])
+  }, [
+    clearCurrentSessionState,
+    pendingResetAfterSummary,
+    persistHistoryEntry,
+    sessionId,
+    visaType,
+  ])
 
   const handleReportModalOpenChange = useCallback(
     (open: boolean) => {
@@ -1972,7 +2158,6 @@ export function useSessionWorkbench() {
     },
     [clearCurrentSessionState, pendingResetAfterSummary],
   )
-
 
   const handleGenerateInterviewReview = useCallback(async () => {
     if (!sessionId) {
@@ -1990,7 +2175,9 @@ export function useSessionWorkbench() {
           executive_summary: "这是一份 Mock 复盘，用于验证复盘 UI。",
           strengths: ["已完成基础问答。"],
           refusal_or_risk_reasons: MOCK_USER_REPORT.risk_points,
-          missing_or_weak_evidence: MOCK_USER_REPORT.missing_evidence.map((item) => item.name),
+          missing_or_weak_evidence: MOCK_USER_REPORT.missing_evidence.map(
+            (item) => item.name,
+          ),
           conversation_issues: ["回答需要更具体、更像真实窗口问答。"],
           document_findings: ["Mock 材料记录可用于调试展示。"],
           improvement_plan: MOCK_USER_REPORT.recommended_improvements,
@@ -2026,10 +2213,13 @@ export function useSessionWorkbench() {
     }
   }, [sessionId])
 
-  const handleUserModelConfigChange = useCallback((nextConfig: UserModelConfig) => {
-    setUserModelConfig(nextConfig)
-    setModelConfigError(null)
-  }, [])
+  const handleUserModelConfigChange = useCallback(
+    (nextConfig: UserModelConfig) => {
+      setUserModelConfig(nextConfig)
+      setModelConfigError(null)
+    },
+    [],
+  )
 
   const handleFetchUserModels = useCallback(async () => {
     const baseUrl = userModelConfig.baseUrl.trim()
@@ -2051,7 +2241,9 @@ export function useSessionWorkbench() {
       )
     } catch (error) {
       setAvailableModels([])
-      setModelConfigError(getErrorMessage(error, "模型列表获取失败，可手动输入模型名称。"))
+      setModelConfigError(
+        getErrorMessage(error, "模型列表获取失败，可手动输入模型名称。"),
+      )
     } finally {
       setIsLoadingModels(false)
     }
@@ -2124,8 +2316,17 @@ export function useSessionWorkbench() {
     } catch (error) {
       setSettingsFeedback(getErrorMessage(error, "导出会话失败，请稍后重试。"))
     }
-  }, [getErrorMessage, internalReport, messages, mockMode, session, sessionId, uploadedMaterials, userReport, visaType])
-
+  }, [
+    getErrorMessage,
+    internalReport,
+    messages,
+    mockMode,
+    session,
+    sessionId,
+    uploadedMaterials,
+    userReport,
+    visaType,
+  ])
 
   const handleExportConversationImage = useCallback(async () => {
     if (!sessionId) {
@@ -2138,11 +2339,14 @@ export function useSessionWorkbench() {
     }
 
     try {
-      await exportConversationLongImage(`ds160-session-${sessionId}-conversation.png`, {
-        sessionId,
-        visaType,
-        messages,
-      })
+      await exportConversationLongImage(
+        `ds160-session-${sessionId}-conversation.png`,
+        {
+          sessionId,
+          visaType,
+          messages,
+        },
+      )
       setSettingsFeedback("会话长截图已导出。")
     } catch {
       setSettingsFeedback("导出会话长截图失败，请稍后重试。")
@@ -2197,7 +2401,10 @@ export function useSessionWorkbench() {
       const updateProgress = (line: string) => {
         progressLines.push(line)
         setDebugBundleProgress([...progressLines])
-        updateMessageContent(progressMessageId, buildDebugBundleProgressMessage(progressLines))
+        updateMessageContent(
+          progressMessageId,
+          buildDebugBundleProgressMessage(progressLines),
+        )
       }
 
       setIsDebugBundleGenerating(true)
@@ -2213,17 +2420,25 @@ export function useSessionWorkbench() {
           },
         )
         updateMessageStatus(progressMessageId, "sent")
-        setSession((prev) => prev ? {
-          ...prev,
-          phase_state: result.phase_state,
-          current_governor_decision: result.governor_decision ?? prev.current_governor_decision,
-          gate_status: mapSessionGateStatus(result.gate_status) ?? prev.gate_status,
-        } : prev)
+        setSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                phase_state: result.phase_state,
+                current_governor_decision:
+                  result.governor_decision ?? prev.current_governor_decision,
+                gate_status:
+                  mapSessionGateStatus(result.gate_status) ?? prev.gate_status,
+              }
+            : prev,
+        )
         setUploadedMaterials((prev) => {
           const nextMaterials = result.documents.map((document) =>
             debugBundleDocumentToMaterial(sessionId, document, result),
           )
-          const generatedIds = new Set(nextMaterials.map((material) => material.id))
+          const generatedIds = new Set(
+            nextMaterials.map((material) => material.id),
+          )
           return [
             ...nextMaterials,
             ...prev.filter((material) => !generatedIds.has(material.id)),
@@ -2237,17 +2452,27 @@ export function useSessionWorkbench() {
           appendMessage({
             role: "officer",
             content: humanizeBackendText(result.assistant_message),
+            public_reasoning: isPublicReasoning(
+              result.runtime_view_state?.public_reasoning,
+            )
+              ? result.runtime_view_state.public_reasoning
+              : null,
           })
         }
         await refreshReports(sessionId)
         if (result.main_flow_refresh_error) {
-          setSettingsFeedback(`材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`)
+          setSettingsFeedback(
+            `材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
+          )
         } else {
           setSettingsFeedback("材料包已生成，前端已接收完整流式进度。")
         }
       } catch (error) {
         updateMessageStatus(progressMessageId, "error")
-        const message = getErrorMessage(error, "调试材料包生成失败，请稍后重试。")
+        const message = getErrorMessage(
+          error,
+          "调试材料包生成失败，请稍后重试。",
+        )
         updateProgress(`错误：${message}`)
         setSettingsFeedback(message)
       } finally {
@@ -2319,7 +2544,9 @@ export function useSessionWorkbench() {
   const currentFocusDocumentLabel = useMemo(() => {
     return (
       userReport?.current_key_proof_label ??
-      (userReport?.current_key_proof ? toDocumentLabel(userReport.current_key_proof) : null)
+      (userReport?.current_key_proof
+        ? toDocumentLabel(userReport.current_key_proof)
+        : null)
     )
   }, [userReport])
 

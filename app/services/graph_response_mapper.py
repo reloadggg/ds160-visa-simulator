@@ -45,6 +45,7 @@ class GraphResponseMapper:
             advisory_context=advisory_context,
             document_review=document_review,
             prompt_trace=prompt_trace,
+            case_state=state.case_state,
         )
         turn_decision = self._build_turn_decision(
             final_response=final_response,
@@ -163,6 +164,7 @@ class GraphResponseMapper:
         advisory_context: dict[str, Any],
         document_review: dict[str, Any],
         prompt_trace: dict[str, Any],
+        case_state: dict[str, Any],
     ) -> dict[str, Any]:
         current_key_question = self._string_or_none(current_focus.get("question"))
         current_key_proof = self._string_or_none(current_focus.get("document_type"))
@@ -195,6 +197,11 @@ class GraphResponseMapper:
             ),
             "advisory_context": advisory_context,
             "document_review": document_review,
+            "public_reasoning": self._build_public_reasoning(
+                decision=final_response.decision,
+                current_focus=current_focus,
+                case_state=case_state,
+            ),
             "prompt_trace": prompt_trace,
         }
 
@@ -277,6 +284,50 @@ class GraphResponseMapper:
                     payload[key] = value
             break
         return payload
+
+    def _build_public_reasoning(
+        self,
+        *,
+        decision: str,
+        current_focus: dict[str, Any],
+        case_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        case_brief = self._payload(case_state.get("case_brief"))
+        known_facts = [
+            fact
+            for fact in self._list_payload(case_brief.get("known_documented_facts"))
+            if self._string_or_none(fact.get("label"))
+            and self._string_or_none(fact.get("value"))
+        ]
+        fact_summaries = [
+            f"{fact['label']}：{fact['value']}"
+            for fact in known_facts[:4]
+        ]
+        if decision == GovernorDecision.NEED_MORE_EVIDENCE.value:
+            basis = "还有关键证明没有闭合，先补当前最优先材料。"
+        elif decision == GovernorDecision.HIGH_RISK_REVIEW.value:
+            basis = "材料或回答存在需要复核的关键不一致。"
+        elif decision == GovernorDecision.SIMULATED_REFUSAL.value:
+            basis = "当前事实已触发模拟拒签判断。"
+        elif current_focus.get("kind") == "interview_question":
+            basis = "材料已用于核对事实，下一步继续做口头面谈验证。"
+        else:
+            basis = "根据当前材料和回答推进下一步。"
+
+        return self._drop_empty_values(
+            {
+                "basis": basis,
+                "known_fact_summaries": fact_summaries,
+                "latest_assistant_question": self._string_or_none(
+                    case_brief.get("latest_assistant_question")
+                ),
+                "latest_user_referred_to_materials": (
+                    bool(case_brief.get("latest_user_referred_to_materials"))
+                    if "latest_user_referred_to_materials" in case_brief
+                    else None
+                ),
+            }
+        )
 
     def _build_graph_trace(
         self,
@@ -460,6 +511,18 @@ class GraphResponseMapper:
         if not isinstance(value, list) or not value:
             return {}
         return self._payload(value[-1])
+
+    def _list_payload(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
+
+    def _drop_empty_values(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in payload.items()
+            if value not in (None, "", [], {})
+        }
 
     def _payload(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):

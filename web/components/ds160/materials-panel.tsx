@@ -13,7 +13,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { FileText, FileImage, FolderOpen, ImageIcon, Info, ExternalLink } from "lucide-react"
+import {
+  FileText,
+  FileImage,
+  FolderOpen,
+  ImageIcon,
+  Info,
+  ExternalLink,
+} from "lucide-react"
 import type { SessionHistoryEntry, UploadedMaterial } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 
@@ -68,6 +75,10 @@ function MaterialPreview({ material }: { material: UploadedMaterial }) {
   )
 }
 
+function materialOpenUrl(material: UploadedMaterial): string | null {
+  return material.content_url ?? material.preview_url ?? null
+}
+
 function FieldTable({ fields }: { fields?: Record<string, string> }) {
   const entries = Object.entries(fields ?? {})
   if (!entries.length) {
@@ -76,7 +87,9 @@ function FieldTable({ fields }: { fields?: Record<string, string> }) {
 
   return (
     <div className="space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">结构化字段</div>
+      <div className="text-xs font-medium text-muted-foreground">
+        结构化字段
+      </div>
       <div className="max-h-52 overflow-y-auto rounded-xl border border-border">
         {entries.map(([fieldPath, value]) => (
           <div
@@ -128,7 +141,9 @@ function ExpectedFindings({ material }: { material: UploadedMaterial }) {
             <div className="font-medium">{finding.kind}</div>
             <div className="mt-1 break-words">{finding.description}</div>
             {finding.field_path ? (
-              <div className="mt-1 break-all text-amber-800">{finding.field_path}</div>
+              <div className="mt-1 break-all text-amber-800">
+                {finding.field_path}
+              </div>
             ) : null}
           </div>
         ))}
@@ -145,154 +160,180 @@ function MaterialGrid({
   emptyText: string
 }) {
   if (!materials.length) {
-    return <div className="break-words text-sm leading-6 text-muted-foreground">{emptyText}</div>
+    return (
+      <div className="break-words text-sm leading-6 text-muted-foreground">
+        {emptyText}
+      </div>
+    )
   }
 
   return (
     <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
       {materials.map((material) => (
-        <div
-          key={material.id}
-          className="group relative min-w-0 overflow-hidden rounded-2xl border border-border bg-background transition-all hover:shadow-md"
-        >
-          <div className="aspect-[4/3] border-b border-border p-3">
-            <MaterialPreview material={material} />
-            <div className="absolute right-3 top-3">
-              <Dialog>
-                <DialogTrigger asChild>
-                  <Button
-                    size="icon"
-                    variant="secondary"
-                    className="h-8 w-8 rounded-full shadow-sm"
-                    aria-label="查看材料详情"
-                  >
-                    <Info className="h-4 w-4" />
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-h-[86vh] max-w-[min(1180px,calc(100vw-2rem))] overflow-hidden rounded-3xl p-0 sm:max-w-[min(1180px,calc(100vw-2rem))]">
-                  <div className="grid max-h-[86vh] min-w-0 overflow-y-auto lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                    <div className="min-w-0 bg-muted/30 p-4 md:p-6">
-                      <div className="aspect-[3/4] overflow-hidden rounded-2xl border border-border bg-background">
-                        <MaterialPreview material={material} />
-                      </div>
-                    </div>
-                    <div className="min-w-0 p-4 md:p-6">
-                      <DialogHeader className="mb-4">
-                        <DialogTitle className="break-all text-lg font-semibold leading-snug md:text-xl">
-                          {material.name}
-                        </DialogTitle>
-                        <DialogDescription>
-                          查看材料正文、提取字段和核验线索。
-                        </DialogDescription>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <Badge variant="outline">
-                            {material.kind === "pdf" ? "PDF" : material.kind === "image" ? "图片" : "文件"}
-                          </Badge>
-                          {material.synthetic_bundle_id ? (
-                            <Badge variant="outline">
-                              材料包
-                            </Badge>
-                          ) : null}
-                          <span className="break-words text-xs leading-5 text-muted-foreground">
-                            {formatDateTime(material.uploaded_at)}
-                          </span>
-                        </div>
-                      </DialogHeader>
+        <MaterialCard key={material.id} material={material} />
+      ))}
+    </div>
+  )
+}
 
-                      <div className="flex-1 space-y-4">
-                        <div className="rounded-2xl border border-border bg-muted/20 p-4">
-                          <div className="mb-1 text-xs font-medium text-muted-foreground">
-                            识别结果 (Document Type)
-                          </div>
-                          <div className="break-words text-sm font-semibold text-foreground">
-                            {material.document_type_label ?? material.status_label}
-                          </div>
-                        </div>
+function MaterialCard({ material }: { material: UploadedMaterial }) {
+  const openUrl = materialOpenUrl(material)
 
-                        {material.feedback_message && (
-                          <div className="space-y-1.5">
-                            <div className="text-xs font-medium text-muted-foreground">
-                              反馈建议
-                            </div>
-                            <p className="max-h-44 overflow-y-auto break-words pr-2 text-sm leading-7 text-foreground">
-                              {material.feedback_message}
-                            </p>
-                          </div>
-                        )}
-
-                        {material.current_focus_document_label && (
-                          <div className="break-words rounded-xl bg-primary/5 px-3 py-2 text-xs leading-5 text-primary">
-                            当前仍需关注：{material.current_focus_document_label}
-                          </div>
-                        )}
-
-                        <FieldTable fields={material.fields} />
-                        <RawTextBlock rawText={material.raw_text} />
-                        <ExpectedFindings material={material} />
-                      </div>
-
-                      <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                        {material.preview_url && (
-                          <Button asChild variant="outline" className="min-w-0 flex-1 rounded-xl">
-                            <a href={material.preview_url} target="_blank" rel="noreferrer">
-                              <ExternalLink className="mr-2 h-4 w-4" />
-                              查看原图
-                            </a>
-                          </Button>
-                        )}
-                        <DialogClose asChild>
-                          <Button className="min-w-0 flex-1 rounded-xl">确定</Button>
-                        </DialogClose>
-                      </div>
-                    </div>
+  return (
+    <div className="group relative min-w-0 overflow-hidden rounded-2xl border border-border bg-background transition-all hover:shadow-md">
+      <div className="aspect-[4/3] border-b border-border p-3">
+        <MaterialPreview material={material} />
+        <div className="absolute right-3 top-3">
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button
+                size="icon"
+                variant="secondary"
+                className="h-8 w-8 rounded-full shadow-sm"
+                aria-label="查看材料详情"
+              >
+                <Info className="h-4 w-4" />
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-h-[86vh] max-w-[min(1180px,calc(100vw-2rem))] overflow-hidden rounded-3xl p-0 sm:max-w-[min(1180px,calc(100vw-2rem))]">
+              <div className="grid max-h-[86vh] min-w-0 overflow-y-auto lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                <div className="min-w-0 bg-muted/30 p-4 md:p-6">
+                  <div className="aspect-[3/4] overflow-hidden rounded-2xl border border-border bg-background">
+                    <MaterialPreview material={material} />
                   </div>
-                </DialogContent>
-              </Dialog>
+                </div>
+                <div className="min-w-0 p-4 md:p-6">
+                  <DialogHeader className="mb-4">
+                    <DialogTitle className="break-all text-lg font-semibold leading-snug md:text-xl">
+                      {material.name}
+                    </DialogTitle>
+                    <DialogDescription>
+                      查看材料正文、提取字段和核验线索。
+                    </DialogDescription>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">
+                        {material.kind === "pdf"
+                          ? "PDF"
+                          : material.kind === "image"
+                            ? "图片"
+                            : "文件"}
+                      </Badge>
+                      {material.synthetic_bundle_id ? (
+                        <Badge variant="outline">材料包</Badge>
+                      ) : null}
+                      <span className="break-words text-xs leading-5 text-muted-foreground">
+                        {formatDateTime(material.uploaded_at)}
+                      </span>
+                    </div>
+                  </DialogHeader>
+
+                  <div className="flex-1 space-y-4">
+                    <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">
+                        识别结果 (Document Type)
+                      </div>
+                      <div className="break-words text-sm font-semibold text-foreground">
+                        {material.document_type_label ?? material.status_label}
+                      </div>
+                    </div>
+
+                    {material.feedback_message && (
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-medium text-muted-foreground">
+                          反馈建议
+                        </div>
+                        <p className="max-h-44 overflow-y-auto break-words pr-2 text-sm leading-7 text-foreground">
+                          {material.feedback_message}
+                        </p>
+                      </div>
+                    )}
+
+                    {material.current_focus_document_label && (
+                      <div className="break-words rounded-xl bg-primary/5 px-3 py-2 text-xs leading-5 text-primary">
+                        当前仍需关注：{material.current_focus_document_label}
+                      </div>
+                    )}
+
+                    <FieldTable fields={material.fields} />
+                    <RawTextBlock rawText={material.raw_text} />
+                    <ExpectedFindings material={material} />
+                  </div>
+
+                  <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                    {openUrl && (
+                      <Button
+                        asChild
+                        variant="outline"
+                        className="min-w-0 flex-1 rounded-xl"
+                      >
+                        <a href={openUrl} target="_blank" rel="noreferrer">
+                          <ExternalLink className="mr-2 h-4 w-4" />
+                          打开原始文件
+                        </a>
+                      </Button>
+                    )}
+                    <DialogClose asChild>
+                      <Button className="min-w-0 flex-1 rounded-xl">
+                        确定
+                      </Button>
+                    </DialogClose>
+                  </div>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
+      <div className="space-y-2 p-4">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div
+              className="truncate text-sm font-medium text-foreground"
+              title={material.name}
+            >
+              {material.name}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {formatDateTime(material.uploaded_at)}
             </div>
           </div>
-          <div className="space-y-2 p-4">
-            <div className="flex min-w-0 items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-foreground" title={material.name}>
-                  {material.name}
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {formatDateTime(material.uploaded_at)}
-                </div>
-              </div>
-              <Badge variant="outline" className="shrink-0">
-                {material.kind === "pdf" ? "PDF" : material.kind === "image" ? "图片" : "文件"}
-              </Badge>
-            </div>
-            {material.synthetic_bundle_id ? (
-              <Badge variant="outline" className="w-fit">
-                材料包
-              </Badge>
-            ) : null}
-            <div className="rounded-xl bg-muted/30 px-3 py-2">
-              <div className="break-words text-xs leading-5 text-muted-foreground">识别结果</div>
-              <div className="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">
-                {material.document_type_label ?? material.status_label}
-              </div>
-            </div>
-            {material.current_focus_document_label ? (
-              <div className="break-words text-xs leading-5 text-muted-foreground">
-                当前主线仍关注：{material.current_focus_document_label}
-              </div>
-            ) : null}
-            {material.raw_text ? (
-              <div className="line-clamp-3 break-words rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
-                {material.raw_text}
-              </div>
-            ) : null}
-            <div className="pt-1">
-              <span className="text-xs font-medium text-primary">
-                打开详情可查看正文
-              </span>
-            </div>
+          <Badge variant="outline" className="shrink-0">
+            {material.kind === "pdf"
+              ? "PDF"
+              : material.kind === "image"
+                ? "图片"
+                : "文件"}
+          </Badge>
+        </div>
+        {material.synthetic_bundle_id ? (
+          <Badge variant="outline" className="w-fit">
+            材料包
+          </Badge>
+        ) : null}
+        <div className="rounded-xl bg-muted/30 px-3 py-2">
+          <div className="break-words text-xs leading-5 text-muted-foreground">
+            识别结果
+          </div>
+          <div className="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">
+            {material.document_type_label ?? material.status_label}
           </div>
         </div>
-      ))}
+        {material.current_focus_document_label ? (
+          <div className="break-words text-xs leading-5 text-muted-foreground">
+            当前主线仍关注：{material.current_focus_document_label}
+          </div>
+        ) : null}
+        {material.raw_text ? (
+          <div className="line-clamp-3 break-words rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+            {material.raw_text}
+          </div>
+        ) : null}
+        <div className="pt-1">
+          <span className="text-xs font-medium text-primary">
+            打开详情可查看正文
+          </span>
+        </div>
+      </div>
     </div>
   )
 }

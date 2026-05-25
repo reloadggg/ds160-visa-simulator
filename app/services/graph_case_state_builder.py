@@ -16,6 +16,31 @@ INTERNAL_DEBUG_METADATA_KEYS = {
     "debug_fill_scenario_label",
 }
 
+PUBLIC_FIELD_LABELS = {
+    "/education/school_name": "学校",
+    "/education/program_name": "项目",
+    "/education/first_year_cost": "第一年费用",
+    "/education/sevis_id": "SEVIS ID",
+    "/funding/primary_source": "资金来源",
+    "/funding/available_funds": "可用资金",
+    "/funding/sponsor_relationship": "资助关系",
+    "/identity/full_name": "申请人姓名",
+    "/identity/nationality": "国籍",
+    "/identity/passport_number": "护照号码",
+    "/family/parent_names": "父母姓名",
+    "/visa_intent/travel_purpose": "赴美目的",
+}
+
+USER_MATERIAL_REFERENCE_MARKERS = (
+    "资料",
+    "材料",
+    "文件",
+    "里面都有",
+    "都在里面",
+    "已经提供",
+    "已提供",
+)
+
 
 class GraphCaseStateBuilder:
     """Build the graph case snapshot without calling models or mutating records."""
@@ -71,6 +96,12 @@ class GraphCaseStateBuilder:
             "document_chunks": normalized_chunks,
             "evidence_items": normalized_evidence,
             "evidence_digest": self._build_evidence_digest(
+                documents=normalized_documents,
+                evidence_items=normalized_evidence,
+            ),
+            "case_brief": self._build_case_brief(
+                record=record,
+                turns=normalized_turns,
                 documents=normalized_documents,
                 evidence_items=normalized_evidence,
             ),
@@ -346,6 +377,161 @@ class GraphCaseStateBuilder:
             "evidence_refs": evidence_refs,
             "supported_claims": supported_claims[-self.max_history_items :],
         }
+
+    def _build_case_brief(
+        self,
+        *,
+        record: SessionRecord,
+        turns: list[dict[str, Any]],
+        documents: list[dict[str, Any]],
+        evidence_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        recent_assistant_questions = self._recent_assistant_questions(turns)
+        latest_user_message = self._latest_user_message(turns)
+        known_documented_facts = self._build_known_documented_facts(
+            profile_json=self._payload(getattr(record, "profile_json", None)),
+            documents=documents,
+            evidence_items=evidence_items,
+        )
+        known_field_paths = [
+            fact["field_path"]
+            for fact in known_documented_facts
+            if isinstance(fact.get("field_path"), str)
+        ]
+
+        return self._drop_empty_values(
+            {
+                "phase_state": self._string_or_none(record.phase_state),
+                "declared_family": self._string_or_none(record.declared_family),
+                "known_documented_facts": known_documented_facts,
+                "known_documented_field_paths": known_field_paths,
+                "recent_assistant_questions": recent_assistant_questions,
+                "latest_assistant_question": (
+                    recent_assistant_questions[-1]["question"]
+                    if recent_assistant_questions
+                    else None
+                ),
+                "latest_user_referred_to_materials": (
+                    self._mentions_provided_materials(latest_user_message)
+                ),
+            }
+        )
+
+    def _build_known_documented_facts(
+        self,
+        *,
+        profile_json: dict[str, Any],
+        documents: list[dict[str, Any]],
+        evidence_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        document_lookup = {
+            document.get("document_id"): document
+            for document in documents
+            if self._string_or_none(document.get("document_id"))
+        }
+        facts_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+        for item in evidence_items:
+            field_path = self._string_or_none(item.get("field_path"))
+            value = self._string_or_none(item.get("value"))
+            if field_path is None or value is None:
+                continue
+
+            key = (field_path, value)
+            document_id = self._string_or_none(item.get("document_id"))
+            evidence_id = self._string_or_none(item.get("evidence_id"))
+            fact = facts_by_key.setdefault(
+                key,
+                {
+                    "field_path": field_path,
+                    "label": PUBLIC_FIELD_LABELS.get(field_path, field_path),
+                    "value": value,
+                    "document_ids": [],
+                    "document_filenames": [],
+                    "evidence_refs": [],
+                },
+            )
+            if document_id and document_id not in fact["document_ids"]:
+                fact["document_ids"].append(document_id)
+                document = document_lookup.get(document_id)
+                filename = self._string_or_none(
+                    document.get("filename") if isinstance(document, dict) else None
+                )
+                if filename and filename not in fact["document_filenames"]:
+                    fact["document_filenames"].append(filename)
+            if evidence_id and evidence_id not in fact["evidence_refs"]:
+                fact["evidence_refs"].append(evidence_id)
+
+        ds160_view = self._payload(profile_json.get("ds160_view"))
+        snapshots = self._payload(ds160_view.get("document_evidence_snapshot"))
+        for field_path, snapshot_value in snapshots.items():
+            if not isinstance(field_path, str):
+                continue
+            snapshot = self._payload(snapshot_value)
+            value = self._string_or_none(snapshot.get("value"))
+            if value is None:
+                continue
+            key = (field_path, value)
+            evidence_refs = [
+                item
+                for item in self._string_list(snapshot.get("evidence_refs"))
+                if item
+            ]
+            fact = facts_by_key.setdefault(
+                key,
+                {
+                    "field_path": field_path,
+                    "label": PUBLIC_FIELD_LABELS.get(field_path, field_path),
+                    "value": value,
+                    "document_ids": [],
+                    "document_filenames": [],
+                    "evidence_refs": [],
+                },
+            )
+            for evidence_ref in evidence_refs:
+                if evidence_ref not in fact["evidence_refs"]:
+                    fact["evidence_refs"].append(evidence_ref)
+
+        return list(facts_by_key.values())[-self.max_history_items :]
+
+    def _recent_assistant_questions(
+        self,
+        turns: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        questions: list[dict[str, Any]] = []
+        for turn in turns:
+            if turn.get("role") != "assistant":
+                continue
+            metadata = self._payload(turn.get("metadata"))
+            turn_record = self._payload(metadata.get("turn_record"))
+            focus = self._payload(turn_record.get("focus"))
+            question = self._string_or_none(focus.get("question")) or self._string_or_none(
+                turn.get("content")
+            )
+            if question is None:
+                continue
+            questions.append(
+                self._drop_empty_values(
+                    {
+                        "turn_id": self._string_or_none(turn.get("turn_id")),
+                        "turn_index": turn.get("turn_index"),
+                        "question": question,
+                    }
+                )
+            )
+        return questions[-self.max_recent_turns :]
+
+    def _latest_user_message(self, turns: list[dict[str, Any]]) -> str | None:
+        for turn in reversed(turns):
+            if turn.get("role") != "user":
+                continue
+            return self._string_or_none(turn.get("content"))
+        return None
+
+    def _mentions_provided_materials(self, message: str | None) -> bool:
+        if message is None:
+            return False
+        return any(marker in message for marker in USER_MATERIAL_REFERENCE_MARKERS)
 
     def _tail_payloads(self, value: Any) -> list[dict[str, Any]]:
         return self._list_payload(value)[-self.max_history_items :]
