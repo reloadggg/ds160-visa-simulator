@@ -10,6 +10,13 @@ from app.db.models import SessionTurnRecord
 MAX_APPEND_RETRIES = 3
 
 
+class DuplicateClientMessageIdError(RuntimeError):
+    def __init__(self, session_id: str, client_message_id: str) -> None:
+        self.session_id = session_id
+        self.client_message_id = client_message_id
+        super().__init__(f"duplicate client_message_id: {client_message_id}")
+
+
 class SessionTurnRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -58,6 +65,62 @@ class SessionTurnRepository:
         )
         return list(self.db.scalars(statement))
 
+    def find_user_turn_by_client_message_id(
+        self,
+        *,
+        session_id: str,
+        client_message_id: str,
+    ) -> SessionTurnRecord | None:
+        statement = select(SessionTurnRecord).where(
+            SessionTurnRecord.session_id == session_id,
+            SessionTurnRecord.role == "user",
+            SessionTurnRecord.client_message_id == client_message_id,
+        )
+        return self.db.scalar(statement)
+
+    def find_any_user_turn_by_client_message_id(
+        self,
+        *,
+        client_message_id: str,
+    ) -> SessionTurnRecord | None:
+        statement = (
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.role == "user",
+                SessionTurnRecord.client_message_id == client_message_id,
+            )
+            .order_by(SessionTurnRecord.session_id, SessionTurnRecord.turn_index)
+        )
+        return self.db.scalar(statement)
+
+    def assistant_turn_at_index(
+        self,
+        *,
+        session_id: str,
+        turn_index: int,
+    ) -> SessionTurnRecord | None:
+        statement = select(SessionTurnRecord).where(
+            SessionTurnRecord.session_id == session_id,
+            SessionTurnRecord.role == "assistant",
+            SessionTurnRecord.turn_index == turn_index,
+        )
+        return self.db.scalar(statement)
+
+    def next_assistant_turn_after(
+        self,
+        *,
+        session_id: str,
+        user_turn: SessionTurnRecord,
+    ) -> SessionTurnRecord | None:
+        for turn in self.list_session_turns(session_id):
+            if turn.turn_index <= user_turn.turn_index:
+                continue
+            if turn.role == "assistant":
+                return turn
+            if turn.role == "user":
+                return None
+        return None
+
     def _append_turn(
         self,
         *,
@@ -95,8 +158,13 @@ class SessionTurnRepository:
             self.db.add(record)
             try:
                 self.db.commit()
-            except IntegrityError:
+            except IntegrityError as exc:
                 self.db.rollback()
+                if self._is_client_message_conflict(record):
+                    raise DuplicateClientMessageIdError(
+                        session_id,
+                        record.client_message_id,
+                    ) from exc
                 continue
             self.db.refresh(record)
             return record
@@ -132,7 +200,15 @@ class SessionTurnRepository:
                     self.db.add(record)
                     self.db.flush()
                 return record
-            except IntegrityError:
+            except IntegrityError as exc:
+                if (
+                    "record" in locals()
+                    and self._is_client_message_conflict(record)
+                ):
+                    raise DuplicateClientMessageIdError(
+                        session_id,
+                        record.client_message_id,
+                    ) from exc
                 continue
 
         raise RuntimeError("failed to append session turn with a stable turn_index")
@@ -158,7 +234,28 @@ class SessionTurnRepository:
             content=content,
             source=source,
             metadata_json=metadata_json or {},
+            client_message_id=self._client_message_id_for_turn(
+                role=role,
+                metadata_json=metadata_json,
+            ),
         )
+
+    def _client_message_id_for_turn(
+        self,
+        *,
+        role: str,
+        metadata_json: dict | None,
+    ) -> str | None:
+        if role != "user":
+            return None
+        value = (metadata_json or {}).get("client_message_id")
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
+
+    def _is_client_message_conflict(self, record: SessionTurnRecord) -> bool:
+        return record.role == "user" and bool(record.client_message_id)
 
     def _build_turn_id(self) -> str:
         return f"turn-{time_ns():020d}-{uuid4().hex[:8]}"

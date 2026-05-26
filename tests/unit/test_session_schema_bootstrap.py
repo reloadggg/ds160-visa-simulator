@@ -113,6 +113,7 @@ def test_bootstrap_session_turns_table_creates_missing_table(tmp_path) -> None:
         "content",
         "source",
         "metadata_json",
+        "client_message_id",
     }.issubset(columns)
 
     with Session(engine) as db:
@@ -198,6 +199,177 @@ def test_bootstrap_session_turns_table_adds_missing_turn_index_column(tmp_path) 
         ).all()
 
     assert rows == [("turn-b", 1), ("turn-a", 2)]
+
+
+def test_bootstrap_session_turns_table_adds_client_message_id_column_and_index(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy-client-message-id.sqlite3"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE session_turns (
+                    turn_id VARCHAR(64) PRIMARY KEY,
+                    turn_index INTEGER,
+                    session_id VARCHAR(64),
+                    role VARCHAR(32),
+                    content TEXT,
+                    source VARCHAR(64),
+                    metadata_json JSON
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO session_turns (
+                    turn_id,
+                    turn_index,
+                    session_id,
+                    role,
+                    content,
+                    source,
+                    metadata_json
+                ) VALUES
+                    (
+                        'turn-user',
+                        1,
+                        'sess-legacy',
+                        'user',
+                        '第一轮',
+                        'chat',
+                        '{"client_message_id": "client-legacy-1"}'
+                    ),
+                    (
+                        'turn-assistant',
+                        2,
+                        'sess-legacy',
+                        'assistant',
+                        '第二轮',
+                        'chat',
+                        '{}'
+                    )
+                """
+            )
+        )
+
+    bootstrap_session_turns_table(engine)
+    bootstrap_session_turns_table(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("session_turns")}
+    indexes = inspector.get_indexes("session_turns")
+    assert "client_message_id" in columns
+    assert any(
+        index["unique"] and index["column_names"] == ["session_id", "client_message_id"]
+        for index in indexes
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT turn_id, client_message_id
+                FROM session_turns
+                ORDER BY turn_index
+                """
+            )
+        ).all()
+
+    assert rows == [
+        ("turn-user", "client-legacy-1"),
+        ("turn-assistant", None),
+    ]
+
+
+def test_bootstrap_session_turns_table_deduplicates_client_message_ids(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy-duplicate-client-message-id.sqlite3"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE session_turns (
+                    turn_id VARCHAR(64) PRIMARY KEY,
+                    turn_index INTEGER,
+                    session_id VARCHAR(64),
+                    role VARCHAR(32),
+                    content TEXT,
+                    source VARCHAR(64),
+                    metadata_json JSON,
+                    client_message_id VARCHAR(128)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO session_turns (
+                    turn_id,
+                    turn_index,
+                    session_id,
+                    role,
+                    content,
+                    source,
+                    metadata_json,
+                    client_message_id
+                ) VALUES
+                    (
+                        'turn-user-1',
+                        1,
+                        'sess-legacy',
+                        'user',
+                        '第一轮',
+                        'chat',
+                        '{}',
+                        'client-duplicate'
+                    ),
+                    (
+                        'turn-user-2',
+                        2,
+                        'sess-legacy',
+                        'user',
+                        '重复第一轮',
+                        'chat',
+                        '{}',
+                        'client-duplicate'
+                    )
+                """
+            )
+        )
+
+    bootstrap_session_turns_table(engine)
+    bootstrap_session_turns_table(engine)
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT turn_id, client_message_id
+                FROM session_turns
+                ORDER BY turn_index
+                """
+            )
+        ).all()
+
+    assert rows == [
+        ("turn-user-1", "client-duplicate"),
+        ("turn-user-2", None),
+    ]
 
 
 def test_bootstrap_documents_table_adds_missing_raw_bytes_column(tmp_path) -> None:

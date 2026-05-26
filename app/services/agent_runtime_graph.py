@@ -105,7 +105,7 @@ class DeterministicDS160TurnGraph:
             },
             config={
                 "configurable": {
-                    "thread_id": run_id,
+                    "thread_id": session_id,
                 }
             },
         )

@@ -139,6 +139,30 @@ def test_graph_case_state_builder_normalizes_session_turns_and_materials() -> No
     assert case_state["recent_turns"][1]["metadata"]["prompt_trace"] == {
         "model": "gpt-5.4"
     }
+    assert case_state["full_transcript"] == [
+        {
+            "turn_id": "turn-user-1",
+            "turn_index": 1,
+            "role": "user",
+            "source": "user_message",
+            "content": "I will attend Example University.",
+        },
+        {
+            "turn_id": "turn-assistant-1",
+            "turn_index": 2,
+            "role": "assistant",
+            "source": "interviewer_runtime_service",
+            "content": "What program will you study?",
+        },
+    ]
+    assert case_state["transcript"] == {
+        "turn_count": 2,
+        "roles": {"user": 1, "assistant": 1},
+    }
+    assert case_state["interview_memory"]["answered_topic_keys"] == [
+        "program_school"
+    ]
+    assert case_state["case_brief"]["answered_topic_keys"] == ["program_school"]
     assert case_state["documents"][0]["document_type"] == "i20"
     assert case_state["document_chunks"][0]["text_excerpt"] == (
         "School Name: Example University"
@@ -507,6 +531,9 @@ def test_graph_case_state_builder_keeps_recent_turn_window_stable() -> None:
         "turn-7",
         "turn-8",
     ]
+    assert [turn["turn_id"] for turn in case_state["full_transcript"]] == [
+        f"turn-{index}" for index in range(1, 9)
+    ]
     assert case_state["history_summary"]["turn_count"] == 8
 
 
@@ -552,6 +579,61 @@ def test_graph_case_state_builder_summarizes_prior_question_topics() -> None:
         "post_study_plan",
         "funding",
     ]
+
+
+def test_graph_case_state_builder_remembers_answered_topics_after_recent_window_rolls() -> None:
+    record = SessionRecord(
+        session_id="sess-answered-topic-window",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    turns = [
+        SimpleNamespace(
+            turn_id="turn-assistant-post-study",
+            turn_index=1,
+            session_id=record.session_id,
+            role="assistant",
+            content="毕业后你准备做什么工作？",
+            source="graph_runtime_adapter",
+            metadata_json={},
+        ),
+        SimpleNamespace(
+            turn_id="turn-user-post-study",
+            turn_index=2,
+            session_id=record.session_id,
+            role="user",
+            content="我毕业后会回国做数据分析师。",
+            source="user_message",
+            metadata_json={},
+        ),
+        *[
+            SimpleNamespace(
+                turn_id=f"turn-filler-{index}",
+                turn_index=index,
+                session_id=record.session_id,
+                role="assistant" if index % 2 else "user",
+                content=f"filler-{index}",
+                source="graph_runtime_adapter",
+                metadata_json={},
+            )
+            for index in range(3, 11)
+        ],
+    ]
+
+    case_state = GraphCaseStateBuilder(max_recent_turns=3).build(record, turns)
+
+    assert "turn-assistant-post-study" not in {
+        turn["turn_id"] for turn in case_state["recent_turns"]
+    }
+    assert case_state["interview_memory"]["answered_topic_keys"] == [
+        "post_study_plan"
+    ]
+    assert case_state["case_brief"]["answered_topic_keys"] == [
+        "post_study_plan"
+    ]
+    assert case_state["case_brief"]["answered_topics"][0]["answer_excerpt"] == (
+        "我毕业后会回国做数据分析师。"
+    )
 
 
 def test_graph_case_state_builder_uses_profile_document_snapshot_and_material_reference() -> None:

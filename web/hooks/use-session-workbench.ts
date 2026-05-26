@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react"
@@ -1247,6 +1248,7 @@ export function useSessionWorkbench() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isSending, setIsSending] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const sendingRef = useRef(false)
   const [chatError, setChatError] = useState<string | null>(null)
 
   const [userReport, setUserReport] = useState<UserReport | null>(null)
@@ -1782,7 +1784,7 @@ export function useSessionWorkbench() {
 
   const handleSendMessage = useCallback(
     async (content: string, files?: File[]) => {
-      if (!sessionId || isSending || isUploading) {
+      if (!sessionId || sendingRef.current || isSending || isUploading) {
         return
       }
 
@@ -1794,23 +1796,27 @@ export function useSessionWorkbench() {
       if (!hasFiles && !hasContent) {
         return
       }
-
-      const messageAttachments = hasFiles
-        ? await createMessageAttachments(nextFiles)
-        : []
-      const userMsgId = appendMessage({
-        role: "user",
-        content: trimmedContent,
-        attachments: messageAttachments,
-        status: "sending",
-      })
-
-      setChatError(null)
-
-      let successfulUploads = 0
-      const uploadResponses: FileUploadResponse[] = []
-
+      sendingRef.current = true
+      let userMsgId: string | null = null
       try {
+        const messageAttachments = hasFiles
+          ? await createMessageAttachments(nextFiles)
+          : []
+        const clientMessageId = hasContent
+          ? createClientId("client-message")
+          : undefined
+        userMsgId = appendMessage({
+          role: "user",
+          content: trimmedContent,
+          attachments: messageAttachments,
+          status: "sending",
+        })
+
+        setChatError(null)
+
+        let successfulUploads = 0
+        const uploadResponses: FileUploadResponse[] = []
+
         if (hasFiles) {
           setIsUploading(true)
 
@@ -1970,13 +1976,19 @@ export function useSessionWorkbench() {
                   sessionId,
                   trimmedContent,
                   runtimeModelConfig,
+                  clientMessageId,
                   (event) => {
                     if (event.event === "analyzing") {
                       setSettingsFeedback("正在生成本轮回复。")
                     }
                   },
                 )
-              : await sendMessage(sessionId, trimmedContent, runtimeModelConfig)
+              : await sendMessage(
+                  sessionId,
+                  trimmedContent,
+                  runtimeModelConfig,
+                  clientMessageId,
+                )
             updateMessageStatus(userMsgId, "sent")
             appendMessage({
               role: "officer",
@@ -2008,9 +2020,12 @@ export function useSessionWorkbench() {
           }
         }
       } catch (error) {
-        updateMessageStatus(userMsgId, "error")
+        if (userMsgId) {
+          updateMessageStatus(userMsgId, "error")
+        }
         setChatError(getErrorMessage(error, "发送失败，请重试。"))
       } finally {
+        sendingRef.current = false
         setIsSending(false)
         setIsUploading(false)
       }

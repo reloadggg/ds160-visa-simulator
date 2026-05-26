@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from app.agents.user_model_config import normalize_openai_base_url
@@ -41,17 +41,14 @@ def list_user_models(payload: ModelListRequest) -> ModelListResponse:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     try:
-        with httpx.Client(timeout=settings.openai_timeout_seconds) as client:
-            response = client.get(
-                f"{payload.base_url}/models",
-                headers={
-                    "Authorization": f"Bearer {payload.api_key.get_secret_value()}",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        status_code = exc.response.status_code
+        response = OpenAI(
+            api_key=payload.api_key.get_secret_value(),
+            base_url=payload.base_url,
+            timeout=settings.openai_timeout_seconds,
+            max_retries=0,
+        ).models.list()
+    except APIStatusError as exc:
+        status_code = exc.status_code
         if status_code in {401, 403}:
             detail = "模型服务认证失败，请检查 API Key。"
         elif status_code == 404:
@@ -61,19 +58,13 @@ def list_user_models(payload: ModelListRequest) -> ModelListResponse:
         else:
             detail = "模型列表获取失败，请检查 Base URL 或稍后重试。"
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    except httpx.HTTPError as exc:
+    except (APIConnectionError, APITimeoutError) as exc:
         raise HTTPException(
             status_code=502,
             detail="无法连接模型服务，请检查 Base URL。",
         ) from exc
 
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="模型服务返回了非 JSON 响应，请检查 Base URL。",
-        ) from exc
+    body = response.model_dump(mode="json")
     models = _extract_models(body)
     return ModelListResponse(models=models)
 

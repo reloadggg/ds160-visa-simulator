@@ -7,7 +7,7 @@ from io import BytesIO
 from typing import Any, Callable
 
 import fitz
-import httpx
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.domain.evidence import DocumentSourceType
@@ -154,11 +154,12 @@ class MultimodalExtractionService:
         raw_bytes: bytes,
         source_type: DocumentSourceType,
         document_type_hint: str | None = None,
+        allow_model: bool = True,
     ) -> MultimodalUploadAssessment:
         if source_type not in {DocumentSourceType.PDF, DocumentSourceType.IMAGE}:
             return MultimodalUploadAssessment()
 
-        can_call_model = self.can_call_model()
+        can_call_model = allow_model and self.can_call_model()
         if can_call_model:
             payload = self._build_assessment_payload(
                 filename=filename,
@@ -185,7 +186,7 @@ class MultimodalExtractionService:
             except Exception:
                 pass
 
-        if document_type_hint is not None:
+        if allow_model and document_type_hint is not None:
             extract_result = self.extract(
                 filename=filename,
                 raw_bytes=raw_bytes,
@@ -378,25 +379,21 @@ class MultimodalExtractionService:
         return f"data:{media_type};base64,{encoded}"
 
     def _invoke_http(self, payload: dict[str, Any]) -> dict[str, Any]:
-        response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
+        completion = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
             timeout=90.0,
+        ).chat.completions.create(
+            **payload,
         )
-        response.raise_for_status()
-        raw_payload = response.json()
-        raw_content = raw_payload["choices"][0]["message"]["content"]
+        raw_content = completion.choices[0].message.content
         if isinstance(raw_content, list):
             raw_content = "".join(
                 item.get("text", "")
                 for item in raw_content
                 if isinstance(item, dict)
             )
-        return json.loads(raw_content)
+        return json.loads(raw_content or "{}")
 
     def _heuristic_assessment(
         self,

@@ -50,6 +50,7 @@ class ParseWorker:
 
         try:
             self.pipeline.process_document(document_id)
+            self.db.commit()
             document = self.documents.get_document(document_id)
             if document is None:
                 raise LookupError(f"Document not found after processing: {document_id}")

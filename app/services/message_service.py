@@ -1,4 +1,5 @@
 from hashlib import sha256
+import logging
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -8,13 +9,31 @@ from app.db.models import SessionTurnRecord
 from app.domain.runtime import GateOverallStatus
 from app.platform.turn_record import TurnRecord
 from app.repositories.session_repo import SessionRepository
-from app.repositories.session_turn_repo import SessionTurnRepository
+from app.repositories.session_turn_repo import (
+    DuplicateClientMessageIdError,
+    SessionTurnRepository,
+)
 from app.services.case_memory_service import CaseMemoryService
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.graph_runtime_adapter import GraphRuntimeAdapter
+from app.services.interview_memory_service import (
+    INTERVIEW_MEMORY_KEY,
+    InterviewMemoryService,
+)
 from app.services.interviewer_runtime_service import InterviewerRuntimeService
 from app.services.runtime_view_contract_service import RuntimeViewContractService
 from app.services.session_read_model_service import SessionReadModelService
+
+logger = logging.getLogger(__name__)
+
+
+class DuplicateTurnInProgressError(RuntimeError):
+    def __init__(self, session_id: str, client_message_id: str) -> None:
+        self.session_id = session_id
+        self.client_message_id = client_message_id
+        super().__init__(
+            f"Duplicate client_message_id is still being processed: {client_message_id}"
+        )
 
 
 class SessionNotFoundError(LookupError):
@@ -43,8 +62,16 @@ class MessageService:
         self.graph_runtime = GraphRuntimeAdapter(db)
         self.session_read_model = SessionReadModelService(db)
         self.case_memory = CaseMemoryService(db)
+        self.interview_memory = InterviewMemoryService()
 
-    def handle_user_turn(self, session_id: str, message_text: str) -> dict:
+    def handle_user_turn(
+        self,
+        session_id: str,
+        message_text: str,
+        *,
+        client_message_id: str | None = None,
+    ) -> dict:
+        committed_user_turn: SessionTurnRecord | None = None
         record = self.session_repo.get(session_id)
         if record is None:
             raise SessionNotFoundError(session_id)
@@ -52,15 +79,43 @@ class MessageService:
             raise SessionClosedError(session_id, self._closed_session_detail(record))
         record = self.gate_runtime.refresh_session(session_id, save=False)
 
-        try:
-            user_turn = self.session_turn_repo.append_user_turn(
-                session_id=record.session_id,
-                content=message_text,
-                source="user_message",
-                metadata_json={"phase_state": record.phase_state},
-                commit=False,
+        if client_message_id:
+            duplicate_response = self._duplicate_turn_response(
+                record,
+                client_message_id=client_message_id,
             )
+            if duplicate_response is not None:
+                return duplicate_response
+
+        try:
+            try:
+                user_turn = self.session_turn_repo.append_user_turn(
+                    session_id=record.session_id,
+                    content=message_text,
+                    source="user_message",
+                    metadata_json=self._user_turn_metadata(
+                        record,
+                        client_message_id=client_message_id,
+                    ),
+                    commit=True,
+                )
+                committed_user_turn = user_turn
+            except DuplicateClientMessageIdError as exc:
+                duplicate_response = self._duplicate_turn_response(
+                    record,
+                    client_message_id=exc.client_message_id,
+                )
+                if duplicate_response is not None:
+                    return duplicate_response
+                raise DuplicateTurnInProgressError(
+                    record.session_id,
+                    exc.client_message_id,
+                ) from exc
+            self._capture_interview_memory(record.session_id, user_turn)
             self._capture_user_turn_claims(record.session_id, user_turn, message_text)
+            self.db.commit()
+            self.db.refresh(record)
+            self.db.refresh(user_turn)
 
             if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
                 response = self.gate_runtime.build_gate_response(record)
@@ -92,7 +147,153 @@ class MessageService:
             return response
         except Exception:
             self.db.rollback()
+            if committed_user_turn is not None:
+                self._cleanup_incomplete_committed_user_turn(committed_user_turn)
             raise
+
+    def _user_turn_metadata(
+        self,
+        record,
+        *,
+        client_message_id: str | None,
+    ) -> dict:
+        metadata = {"phase_state": record.phase_state}
+        if client_message_id:
+            metadata["client_message_id"] = client_message_id
+        return metadata
+
+    def _duplicate_turn_response(
+        self,
+        record,
+        *,
+        client_message_id: str,
+    ) -> dict | None:
+        user_turn = self.session_turn_repo.find_user_turn_by_client_message_id(
+            session_id=record.session_id,
+            client_message_id=client_message_id,
+        )
+        if user_turn is None:
+            return None
+        assistant_turn = self.session_turn_repo.next_assistant_turn_after(
+            session_id=record.session_id,
+            user_turn=user_turn,
+        )
+        if assistant_turn is None:
+            raise DuplicateTurnInProgressError(record.session_id, client_message_id)
+        response = self._response_from_assistant_turn(record, assistant_turn)
+        response["idempotent_replay"] = True
+        return response
+
+    def _cleanup_incomplete_committed_user_turn(
+        self,
+        user_turn: SessionTurnRecord,
+    ) -> None:
+        try:
+            persisted_turn = self.db.get(SessionTurnRecord, user_turn.turn_id)
+            if persisted_turn is None:
+                return
+            session_turns = self.session_turn_repo.list_session_turns(
+                persisted_turn.session_id
+            )
+            has_later_turn = any(
+                turn.turn_index > persisted_turn.turn_index for turn in session_turns
+            )
+            if has_later_turn:
+                return
+            self.db.delete(persisted_turn)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            logger.exception(
+                "failed to clean up incomplete committed user turn",
+                extra={
+                    "session_id": user_turn.session_id,
+                    "turn_id": user_turn.turn_id,
+                },
+            )
+
+    def _response_from_assistant_turn(
+        self,
+        record,
+        assistant_turn: SessionTurnRecord,
+    ) -> dict:
+        metadata = dict(assistant_turn.metadata_json or {})
+        metadata_runtime_view_state = dict(metadata.get("runtime_view_state", {}) or {})
+        if metadata_runtime_view_state.get("source_turn_id") == assistant_turn.turn_id:
+            runtime_view_state = metadata_runtime_view_state
+        else:
+            turns_until_assistant = [
+                turn
+                for turn in self.session_turn_repo.list_session_turns(record.session_id)
+                if turn.turn_index <= assistant_turn.turn_index
+            ]
+            read_model = self.session_read_model.build_from_record(
+                record,
+                turns=turns_until_assistant,
+            )
+            runtime_view_state = RuntimeViewContractService.payload(
+                read_model.runtime_view_state,
+                anchored_only=True,
+            )
+        fallback = {
+            "governor_decision": metadata.get("governor_decision")
+            or record.current_governor_decision,
+            "requested_documents": list(metadata.get("requested_documents", []) or []),
+            "remaining_required_documents": list(
+                metadata.get("remaining_required_documents", []) or []
+            ),
+            "turn_decision": self._turn_decision_payload_from_metadata(metadata),
+            "document_review": dict(metadata.get("document_review", {}) or {}),
+            "prompt_trace": dict(metadata.get("prompt_trace", {}) or {}),
+            "runtime_view_state": dict(metadata.get("runtime_view_state", {}) or {}),
+        }
+        if not runtime_view_state:
+            runtime_view_state = dict(fallback.get("runtime_view_state") or {})
+        response = {
+            "assistant_message": assistant_turn.content,
+            "governor_decision": RuntimeViewContractService.governor_decision(
+                runtime_view_state,
+                fallback,
+            ),
+            "requested_documents": RuntimeViewContractService.requested_documents(
+                runtime_view_state,
+                fallback,
+            ),
+            "remaining_required_documents": (
+                RuntimeViewContractService.remaining_required_documents(
+                    runtime_view_state,
+                    fallback,
+                )
+            ),
+            "gate_progress": self.gate_runtime.build_gate_support(record)[
+                "gate_progress"
+            ],
+            "turn_decision": RuntimeViewContractService.turn_decision(
+                runtime_view_state,
+                fallback,
+            ),
+            "document_review": RuntimeViewContractService.document_review(
+                runtime_view_state,
+                fallback,
+            ),
+            "turn_record": dict(metadata.get("turn_record", {}) or {}),
+            "prompt_trace": RuntimeViewContractService.prompt_trace(
+                runtime_view_state,
+                fallback,
+            ),
+            "runtime_view_state": runtime_view_state,
+        }
+        return response
+
+    def _turn_decision_payload_from_metadata(self, metadata: dict) -> dict:
+        turn_decision = metadata.get("turn_decision")
+        if isinstance(turn_decision, dict):
+            return dict(turn_decision)
+        if isinstance(turn_decision, str) and turn_decision:
+            return {"decision": turn_decision}
+        turn_record = dict(metadata.get("turn_record", {}) or {})
+        decision = turn_record.get("decision")
+        return {"decision": decision} if decision else {}
 
     def _capture_user_turn_claims(
         self,
@@ -111,6 +312,37 @@ class MessageService:
             turn_id=user_turn.turn_id,
             claims=claims,
         )
+
+    def _capture_interview_memory(
+        self,
+        session_id: str,
+        user_turn: SessionTurnRecord,
+    ) -> None:
+        assistant_turn = self._previous_assistant_turn(session_id, user_turn)
+        memory = self.interview_memory.annotate_user_answer(
+            assistant_turn=assistant_turn,
+            user_turn=user_turn,
+        )
+        if not memory:
+            return
+        metadata = dict(user_turn.metadata_json or {})
+        metadata[INTERVIEW_MEMORY_KEY] = memory
+        user_turn.metadata_json = metadata
+        self.db.add(user_turn)
+        self.db.flush()
+
+    def _previous_assistant_turn(
+        self,
+        session_id: str,
+        user_turn: SessionTurnRecord,
+    ) -> SessionTurnRecord | None:
+        previous_assistant: SessionTurnRecord | None = None
+        for turn in self.session_turn_repo.list_session_turns(session_id):
+            if turn.turn_index >= user_turn.turn_index:
+                break
+            if turn.role == "assistant":
+                previous_assistant = turn
+        return previous_assistant
 
     def refresh_after_material_change(
         self,

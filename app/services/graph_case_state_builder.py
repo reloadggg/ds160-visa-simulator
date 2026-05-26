@@ -4,6 +4,7 @@ from typing import Any
 
 from app.db.models import SessionRecord
 from app.domain.document_types import normalize_document_type
+from app.services.interview_memory_service import InterviewMemoryService
 
 
 INTERNAL_DEBUG_METADATA_KEYS = {
@@ -58,6 +59,7 @@ class GraphCaseStateBuilder:
         self.max_recent_turns = max(max_recent_turns, 0)
         self.max_history_items = max(max_history_items, 0)
         self.max_text_excerpt_chars = max(max_text_excerpt_chars, 0)
+        self.interview_memory = InterviewMemoryService()
 
     def build(
         self,
@@ -70,6 +72,7 @@ class GraphCaseStateBuilder:
     ) -> dict[str, Any]:
         normalized_turns = self._normalize_turns(turns)
         recent_turns = normalized_turns[-self.max_recent_turns :] if self.max_recent_turns else []
+        full_transcript = self._build_full_transcript(normalized_turns)
         normalized_documents = self._normalize_documents(documents or [])
         normalized_evidence = self._normalize_evidence_items(evidence_items or [])
         normalized_chunks = self._normalize_document_chunks(document_chunks or [])
@@ -94,6 +97,17 @@ class GraphCaseStateBuilder:
                 getattr(record, "interviewer_state_json", None)
             ),
             "recent_turns": recent_turns,
+            "full_transcript": full_transcript,
+            "transcript": {
+                "turn_count": len(full_transcript),
+                "roles": {
+                    "user": sum(1 for turn in full_transcript if turn["role"] == "user"),
+                    "assistant": sum(
+                        1 for turn in full_transcript if turn["role"] == "assistant"
+                    ),
+                },
+            },
+            "interview_memory": self.interview_memory.build_memory(normalized_turns),
             "history_summary": self._build_history_summary(normalized_turns),
             "documents": normalized_documents,
             "document_chunks": normalized_chunks,
@@ -181,7 +195,33 @@ class GraphCaseStateBuilder:
             CASE_MEMORY_USER_EVIDENCE_KEY: self._list_payload(
                 metadata.get(CASE_MEMORY_USER_EVIDENCE_KEY)
             ),
+            "client_message_id": self._string_or_none(
+                metadata.get("client_message_id")
+            ),
+            "source": self._string_or_none(metadata.get("source")),
         }
+
+    def _build_full_transcript(
+        self,
+        turns: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        transcript: list[dict[str, Any]] = []
+        for turn in turns:
+            role = self._string_or_none(turn.get("role"))
+            if role not in {"user", "assistant"}:
+                continue
+            transcript.append(
+                self._drop_empty_values(
+                    {
+                        "turn_id": self._string_or_none(turn.get("turn_id")),
+                        "turn_index": turn.get("turn_index"),
+                        "role": role,
+                        "source": self._string_or_none(turn.get("source")),
+                        "content": self._string_or_none(turn.get("content")) or "",
+                    }
+                )
+            )
+        return transcript
 
     def _normalize_documents(self, documents: list[Any]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
@@ -593,6 +633,7 @@ class GraphCaseStateBuilder:
             for fact in known_documented_facts
             if isinstance(fact.get("field_path"), str)
         ]
+        interview_memory = self.interview_memory.build_memory(turns)
 
         return self._drop_empty_values(
             {
@@ -600,6 +641,11 @@ class GraphCaseStateBuilder:
                 "declared_family": self._string_or_none(record.declared_family),
                 "known_documented_facts": known_documented_facts,
                 "known_documented_field_paths": known_field_paths,
+                "answered_topics": interview_memory.get("answered_topics", []),
+                "answered_topic_keys": interview_memory.get(
+                    "answered_topic_keys",
+                    [],
+                ),
                 "recent_assistant_questions": recent_assistant_questions,
                 "latest_assistant_question": (
                     recent_assistant_questions[-1]["question"]

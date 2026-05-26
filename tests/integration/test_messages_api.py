@@ -348,11 +348,188 @@ def test_message_turn_enters_runtime_when_gate_not_ready(
         ],
     }
 
+
+def test_message_post_is_idempotent_for_repeated_client_message_id(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        return {
+            "assistant_message": f"handled once: {message_text}",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {"run_count": run_count},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    body = {
+        "role": "user",
+        "content": "My parents will pay for my studies.",
+        "client_message_id": "client-repeat-1",
+    }
+    first_response = client.post(f"/v1/sessions/{session_id}/messages", json=body)
+    second_response = client.post(f"/v1/sessions/{session_id}/messages", json=body)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert run_count == 1
+    assert second_response.json()["assistant_message"] == first_response.json()[
+        "assistant_message"
+    ]
+    assert second_response.json()["idempotent_replay"] is True
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [turn.role for turn in turns] == ["user", "assistant"]
+    assert turns[0].metadata_json["client_message_id"] == "client-repeat-1"
+
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
         assert record is not None
         assert record.phase_state == "interview"
         assert record.gate_status_json["status"] == "pending_documents"
+
+
+def test_message_user_turn_commits_before_runtime_call(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_seen_user_turns: list[int] = []
+
+    def fake_run_turn(self, record, message_text):
+        with db_session_factory() as db:
+            run_seen_user_turns.append(
+                db.scalar(
+                    select(func.count())
+                    .select_from(SessionTurnRecord)
+                    .where(
+                        SessionTurnRecord.session_id == record.session_id,
+                        SessionTurnRecord.role == "user",
+                        SessionTurnRecord.client_message_id == "client-commit-1",
+                    )
+                )
+            )
+        return {
+            "assistant_message": f"handled after commit: {message_text}",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "My parents will pay for my studies.",
+            "client_message_id": "client-commit-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert run_seen_user_turns == [1]
+
+
+def test_message_turn_records_interview_memory_for_answered_question(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: {
+            "assistant_message": "毕业后你准备做什么工作？",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {},
+            "turn_record": {
+                "turn_id": "placeholder",
+                "session_id": record.session_id,
+                "user_turn_id": "placeholder",
+                "user_input": message_text,
+                "decision": "continue_interview",
+                "assistant_message": "毕业后你准备做什么工作？",
+                "requested_documents": [],
+                "remaining_required_documents": [],
+                "focus": {
+                    "kind": "interview_question",
+                    "question": "毕业后你准备做什么工作？",
+                },
+            },
+        },
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+    first = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "我去美国读数据科学。"},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "我毕业后会回国做数据分析师。"},
+    )
+
+    assert second.status_code == 200
+    with db_session_factory() as db:
+        user_turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "user",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert user_turns[-1].metadata_json["interview_memory"] == {
+        "schema_version": "interview_memory.v1",
+        "kind": "oral_answer",
+        "topic": "post_study_plan",
+        "topic_label": "毕业后计划",
+        "status": "answered",
+        "closed": True,
+        "question_turn_id": user_turns[-1].metadata_json["interview_memory"][
+            "question_turn_id"
+        ],
+        "question_turn_index": 2,
+        "question": "毕业后你准备做什么工作？",
+        "answer_turn_id": user_turns[-1].turn_id,
+        "answer_turn_index": user_turns[-1].turn_index,
+        "answer_excerpt": "我毕业后会回国做数据分析师。",
+        "confidence": 0.74,
+    }
 
 
 def test_message_turn_graph_starts_without_materials_after_f1_selection(
@@ -1532,7 +1709,7 @@ def test_supporting_funding_upload_does_not_block_interview_flow(
     assert upload_response.status_code == 202
 
 
-def test_irrelevant_upload_does_not_shift_gate_flow_or_primary_request(
+def test_fast_upload_does_not_block_next_message_while_parse_is_pending(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -1552,12 +1729,11 @@ def test_irrelevant_upload_does_not_shift_gate_flow_or_primary_request(
         },
     )
 
-    class IrrelevantExtractionResult:
-        fields: list[object] = []
-
     monkeypatch.setattr(
         "app.services.file_service.MultimodalExtractionService.extract",
-        lambda self, **kwargs: IrrelevantExtractionResult(),
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AssertionError("upload response must not call extraction model")
+        ),
     )
 
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
@@ -1591,22 +1767,22 @@ def test_irrelevant_upload_does_not_shift_gate_flow_or_primary_request(
     )
 
     assert upload_response.status_code == 202
-    assert upload_response.json()["main_flow_feedback"]["status"] == "not_helpful"
+    assert upload_response.json()["main_flow_feedback"]["status"] == "helpful"
 
     assert message_response.status_code == 200
     payload = message_response.json()
     assert payload["assistant_message"] == "Please explain your travel purpose."
     assert payload["requested_documents"] == []
     assert payload["gate_progress"] == {
-        "overall_status": "pending_documents",
+        "overall_status": "waiting_for_parse",
         "ready_count": 0,
-        "uploaded_count": 0,
-        "missing_count": 1,
+        "uploaded_count": 1,
+        "missing_count": 0,
         "documents": [
             {
                 "document_type": "funding_proof",
-                "status": "missing",
-                "is_uploaded": False,
+                "status": "uploaded",
+                "is_uploaded": True,
                 "is_parsed": False,
                 "meets_minimum_fields": False,
             }

@@ -409,12 +409,21 @@ class FileService:
     ) -> MultimodalUploadAssessment:
         assess_document = getattr(self.multimodal, "assess_document", None)
         if callable(assess_document):
-            return assess_document(
-                filename=filename,
-                raw_bytes=raw_bytes,
-                source_type=source_type,
-                document_type_hint=document_type_hint,
-            )
+            try:
+                return assess_document(
+                    filename=filename,
+                    raw_bytes=raw_bytes,
+                    source_type=source_type,
+                    document_type_hint=document_type_hint,
+                    allow_model=False,
+                )
+            except TypeError:
+                return assess_document(
+                    filename=filename,
+                    raw_bytes=raw_bytes,
+                    source_type=source_type,
+                    document_type_hint=document_type_hint,
+                )
 
         extract = getattr(self.multimodal, "extract", None)
         if not callable(extract) or document_type_hint is None:

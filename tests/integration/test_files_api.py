@@ -435,12 +435,12 @@ def test_upload_file_can_use_backend_context_text_hint_without_frontend_document
     assert payload["document_assessment"]["document_type_hint"] == "ds2019"
 
 
-def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus(
+def test_upload_file_queues_explicit_type_without_blocking_on_relevance_model(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    session_id = "sess-not-helpful"
+    session_id = "sess-fast-upload"
     seed_session(db_session_factory, session_id)
 
     with db_session_factory() as db:
@@ -454,12 +454,11 @@ def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus
         db.add(record)
         db.commit()
 
-    class IrrelevantExtractionResult:
-        fields: list[object] = []
-
     monkeypatch.setattr(
         "app.services.file_service.MultimodalExtractionService.extract",
-        lambda self, **kwargs: IrrelevantExtractionResult(),
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AssertionError("upload response must not call extraction model")
+        ),
     )
 
     response = client.post(
@@ -478,25 +477,20 @@ def test_upload_file_reports_not_helpful_for_irrelevant_document_and_keeps_focus
     payload = response.json()
     assert payload["requested_documents"] == []
     assert payload["remaining_required_documents"] == []
-    assert payload["gate_progress"]["overall_status"] == "pending_documents"
-    assert payload["gate_progress"]["uploaded_count"] == 0
+    assert payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+    assert payload["gate_progress"]["uploaded_count"] == 1
     assert payload["main_flow_feedback"] == {
-        "status": "not_helpful",
-        "supported_document_type": None,
+        "status": "helpful",
+        "supported_document_type": "funding_proof",
         "current_focus_document_type": "funding_proof",
         "message": (
-            "这份材料已保存，但目前还不能支持一个明确证明点。"
-            "你可以继续面签对话，系统会在案例理解中保留它。"
+            "这份材料已加入案例证据，候选证明点为 funding_proof。"
+            "你可以继续面签对话，系统会在 Case Board 中更新理解结果。"
         ),
     }
-    assert payload["document_assessment"]["main_flow_feedback"] == {
-        "status": "not_helpful",
-        "current_focus_document_type": "funding_proof",
-        "message": (
-            "这份材料已保存，但目前还不能支持一个明确证明点。"
-            "你可以继续面签对话，系统会在案例理解中保留它。"
-        ),
-    }
+    assert payload["document_assessment"]["main_flow_feedback"] == payload[
+        "main_flow_feedback"
+    ]
 
 
 def test_upload_file_maps_funding_alias_into_gate_flow(

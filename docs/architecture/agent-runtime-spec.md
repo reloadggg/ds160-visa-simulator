@@ -72,6 +72,36 @@ graph runtime 不迁移旧 agent-like 层级，只迁移业务合同。
 
 旧 API 字段只能由 `GraphResponseMapper` 从这些事实源投影，不得反向影响 graph state。
 
+## OpenAI-Compatible Adapter Boundary
+
+`/v1/chat/completions` 和 `/v1/responses` 是产品层 adapter，不是独立记忆层，也不是模型供应商代理。
+
+允许：
+
+- 接收 OpenAI-compatible 请求形状。
+- 从 `metadata.session_id` 或 `previous_response_id` 找回本地 session。
+- 将 public `user` / `assistant` 历史导入本地 transcript。
+- 为本轮 user message 生成或接收 `client_message_id`，交给 `MessageService` 做幂等写入。
+- 把 `MessageService` 的结果投影成 Chat Completions 或 Responses 风格响应。
+
+禁止：
+
+- 依赖上游 OpenAI-compatible provider 保存 DS-160 会话状态。
+- 只把最后一条 user message 传给主流程而丢弃前文。
+- 让 adapter 绕过 `MessageService` 直接写最终 assistant turn。
+- 把 imported historical user turns 写成真实 `client_message_id`，导致历史导入占用本轮幂等语义。
+
+本地记忆层由以下部分共同组成：
+
+- `session_turns` 作为完整 public transcript 事实源。
+- `SessionTranscriptService` 负责兼容入口历史导入和去重。
+- Case Memory 负责材料事实、用户 claim、证据和冲突。
+- `InterviewMemoryService` 负责 oral topic 是否已经回答。
+- `GraphCaseStateBuilder` 将完整 transcript、Case Memory、Interview Memory 投影成 `case_state`。
+- `GraphAdjudicationNode` 在 LLM 输出后对已回答 topic 的重复问题做确定性修复。
+
+Prompt 侧不能无限塞入完整历史。`case_state.full_transcript` 是本地完整事实源，但进入 LLM prompt 前必须经过窗口或摘要边界；当前实现保留 tail window，同时保留 transcript counts，避免长会话或重复提交撑爆模型上下文。
+
 ## Retry Budget
 
 默认预算：

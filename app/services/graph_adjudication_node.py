@@ -19,6 +19,8 @@ from app.services.runtime_errors import ModelRuntimeError, ProviderAPIError
 
 
 GRAPH_ADJUDICATION_FALLBACK_MESSAGE = "我会继续围绕你的 DS-160 材料做下一步核对。"
+MAX_PROMPT_TRANSCRIPT_TURNS = 24
+MAX_PROMPT_TRANSCRIPT_CHARS = 12_000
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ class GraphAdjudicationNode:
         prompt = json.dumps(
             {
                 "schema_version": state.schema_version,
-                "case_state": state.case_state,
+                "case_state": self._prompt_case_state(state.case_state),
                 "citation_bundle": state.citation_bundle.model_dump(mode="json"),
                 "material_review": state.material_review or {},
                 "user": message_text,
@@ -136,6 +138,7 @@ class GraphAdjudicationNode:
             return result, {}
 
         case_brief = self._payload(self._payload(state.case_state).get("case_brief"))
+        answered_topics = set(self._string_list(case_brief.get("answered_topic_keys")))
         recent_questions = [
             question
             for question in (
@@ -146,11 +149,12 @@ class GraphAdjudicationNode:
             )
             if question is not None
         ]
-        if not recent_questions:
-            return result, {}
 
         normalized_message = self._normalize_question(result.assistant_message)
         result_topic = self._question_topic(result.assistant_message)
+        repeats_answered_topic = (
+            result_topic is not None and result_topic in answered_topics
+        )
         repeated = any(
             normalized_message == self._normalize_question(question)
             or (
@@ -158,7 +162,7 @@ class GraphAdjudicationNode:
                 and result_topic == self._question_topic(question)
             )
             for question in recent_questions
-        )
+        ) or repeats_answered_topic
         if not repeated:
             return result, {}
 
@@ -171,14 +175,19 @@ class GraphAdjudicationNode:
                 topic
                 for topic in (self._question_topic(question) for question in recent_questions)
                 if topic is not None
-            },
+            }
+            | answered_topics,
         )
         if replacement is None:
             return result, {}
         return (
             result.model_copy(update={"assistant_message": replacement}),
             {
-                "question_repair_reason": "repeated_recent_question",
+                "question_repair_reason": (
+                    "answered_topic_repeated"
+                    if repeats_answered_topic
+                    else "repeated_recent_question"
+                ),
                 "question_repaired": True,
             },
         )
@@ -265,9 +274,11 @@ class GraphAdjudicationNode:
                 "学校",
                 "项目",
                 "专业",
+                "attend",
                 "program",
                 "school",
                 "major",
+                "university",
             )
         ):
             return "program_school"
@@ -305,6 +316,9 @@ class GraphAdjudicationNode:
                     "questions. Do not repeat the same question after a non-answer or after "
                     "the user says the materials already contain the answer; acknowledge the "
                     "materials briefly and move to a different adjudicable topic.\n"
+                    "- case_state.case_brief.answered_topic_keys lists oral topics already "
+                    "answered by the applicant across the full transcript. Do not ask those "
+                    "topics again unless there is a specific conflict to clarify.\n"
                     "- When case_state.case_brief.latest_user_referred_to_materials is true, "
                     "first use known_documented_facts and evidence_digest before asking. "
                     "A safe next question should be about motivation, funding reasoning, "
@@ -543,3 +557,60 @@ class GraphAdjudicationNode:
         if not isinstance(value, list):
             return []
         return [dict(item) for item in value if isinstance(item, dict)]
+
+    def _string_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            normalized = self._string_or_none(item)
+            if normalized and normalized not in result:
+                result.append(normalized)
+        return result
+
+    def _prompt_case_state(self, case_state: dict[str, Any]) -> dict[str, Any]:
+        prompt_case_state = dict(case_state)
+        full_transcript = prompt_case_state.get("full_transcript")
+        if not isinstance(full_transcript, list):
+            return prompt_case_state
+
+        prompt_window = self._transcript_prompt_window(full_transcript)
+        if len(prompt_window) == len(full_transcript):
+            prompt_case_state["full_transcript"] = prompt_window
+            return prompt_case_state
+
+        prompt_case_state["full_transcript"] = prompt_window
+        transcript = dict(self._payload(prompt_case_state.get("transcript")))
+        transcript["prompt_window"] = {
+            "strategy": "tail_window",
+            "source": "full_transcript",
+            "retained_turn_count": len(prompt_window),
+            "omitted_turn_count": len(full_transcript) - len(prompt_window),
+            "max_turns": MAX_PROMPT_TRANSCRIPT_TURNS,
+            "max_chars": MAX_PROMPT_TRANSCRIPT_CHARS,
+        }
+        prompt_case_state["transcript"] = transcript
+        return prompt_case_state
+
+    def _transcript_prompt_window(
+        self,
+        full_transcript: list[Any],
+    ) -> list[dict[str, Any]]:
+        retained_reversed: list[dict[str, Any]] = []
+        retained_chars = 0
+        for item in reversed(full_transcript):
+            if not isinstance(item, dict):
+                continue
+            content = self._string_or_none(item.get("content")) or ""
+            next_chars = retained_chars + len(content)
+            if (
+                retained_reversed
+                and (
+                    len(retained_reversed) >= MAX_PROMPT_TRANSCRIPT_TURNS
+                    or next_chars > MAX_PROMPT_TRANSCRIPT_CHARS
+                )
+            ):
+                break
+            retained_reversed.append(dict(item))
+            retained_chars = next_chars
+        return list(reversed(retained_reversed))

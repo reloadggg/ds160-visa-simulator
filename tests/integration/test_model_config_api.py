@@ -1,5 +1,4 @@
 from fastapi.testclient import TestClient
-import httpx
 import pytest
 
 from app.core import settings as settings_module
@@ -29,26 +28,32 @@ def test_model_list_proxies_openai_compatible_models(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requested: dict[str, str] = {}
+    requested: dict[str, object] = {}
     monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
 
-    def fake_get(self, url: str, *, headers: dict[str, str]):
-        requested["url"] = url
-        requested["authorization"] = headers["Authorization"]
-        return httpx.Response(
-            200,
-            request=httpx.Request("GET", url),
-            json={
+    class FakeModelListResponse:
+        def model_dump(self, *, mode: str):
+            requested["mode"] = mode
+            return {
                 "object": "list",
                 "data": [
                     {"id": "gpt-4.1-mini"},
                     {"id": "gpt-4.1"},
                     {"id": "gpt-4.1-mini"},
                 ],
-            },
-        )
+            }
 
-    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    class FakeModels:
+        def list(self):
+            requested["list_called"] = True
+            return FakeModelListResponse()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            requested["kwargs"] = kwargs
+            self.models = FakeModels()
+
+    monkeypatch.setattr("app.api.routers.model_config.OpenAI", FakeOpenAI)
 
     response = client.post(
         "/v1/model-config/models",
@@ -59,9 +64,13 @@ def test_model_list_proxies_openai_compatible_models(
     )
 
     assert response.status_code == 200
-    assert requested == {
-        "url": "https://models.example.test/v1/models",
-        "authorization": "Bearer user-key",
+    assert requested["mode"] == "json"
+    assert requested["list_called"] is True
+    assert requested["kwargs"] == {
+        "api_key": "user-key",
+        "base_url": "https://models.example.test/v1",
+        "timeout": settings_module.settings.openai_timeout_seconds,
+        "max_retries": 0,
     }
     assert response.json() == {
         "models": [

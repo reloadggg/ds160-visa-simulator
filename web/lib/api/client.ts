@@ -168,6 +168,7 @@ export async function sendMessage(
   sessionId: string,
   content: string,
   modelConfig?: UserModelRuntimeConfig | null,
+  clientMessageId?: string,
 ): Promise<MessageResponse> {
   const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
     method: "POST",
@@ -175,6 +176,7 @@ export async function sendMessage(
     body: JSON.stringify({
       role: "user",
       content,
+      client_message_id: clientMessageId,
       model_config: toBackendModelConfig(modelConfig),
     }),
   })
@@ -186,6 +188,7 @@ export async function sendMessageStream(
   sessionId: string,
   content: string,
   modelConfig: UserModelRuntimeConfig | null,
+  clientMessageId: string | undefined,
   onEvent: (event: MessageStreamEvent) => void,
 ): Promise<MessageResponse> {
   const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages/stream`), {
@@ -194,6 +197,7 @@ export async function sendMessageStream(
     body: JSON.stringify({
       role: "user",
       content,
+      client_message_id: clientMessageId,
       model_config: toBackendModelConfig(modelConfig),
     }),
   })

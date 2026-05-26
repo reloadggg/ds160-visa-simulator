@@ -65,7 +65,6 @@ class ProfileRecomputeService:
             self.sessions.save(record)
         else:
             self.db.add(record)
-            self.db.flush()
         return profile
 
     def _apply_field_evidence(

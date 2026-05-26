@@ -398,6 +398,60 @@ def test_upload_uses_backend_context_text_to_infer_document_type_hint(
         engine.dispose()
 
 
+def test_upload_assessment_does_not_call_model_on_request_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'file-service-fast-assessment.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    class StubMultimodal:
+        def assess_document(self, **kwargs):
+            assert kwargs["allow_model"] is False
+            from app.services.multimodal_extraction_service import (
+                MultimodalUploadAssessment,
+                UploadDocumentTypeCandidate,
+            )
+
+            return MultimodalUploadAssessment(
+                document_type_candidates=[
+                    UploadDocumentTypeCandidate(
+                        document_type=kwargs["document_type_hint"],
+                        confidence=0.9,
+                    )
+                ],
+                relevance="high",
+                supported_claims=["/funding/primary_source"],
+                confidence=0.9,
+            )
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-existing", declared_family="f1"))
+            db.commit()
+
+        with testing_session_local() as db:
+            service = FileService(db)
+            monkeypatch.setattr(service, "multimodal", StubMultimodal())
+            result = service.upload(
+                "sess-existing",
+                "funding.pdf",
+                build_pdf_bytes("Parent sponsor bank statement"),
+                "application/pdf",
+                document_type="funding_proof",
+            )
+
+            assert result.document_type == "funding_proof"
+            assert result.supported_claims == ["/funding/primary_source"]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_upload_feedback_does_not_use_gate_primary_as_case_focus(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

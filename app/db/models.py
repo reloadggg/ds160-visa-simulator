@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, JSON, Index, Integer, LargeBinary, String, Text
+from sqlalchemy import DateTime, JSON, Index, Integer, LargeBinary, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -35,6 +35,13 @@ class SessionTurnRecord(Base):
             "turn_index",
             unique=True,
         ),
+        Index(
+            "ux_session_turns_session_id_client_message_id",
+            "session_id",
+            "client_message_id",
+            unique=True,
+            sqlite_where=text("client_message_id IS NOT NULL"),
+        ),
     )
 
     turn_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -44,6 +51,11 @@ class SessionTurnRecord(Base):
     content: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(64))
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    client_message_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
 
 
 class DocumentRecord(Base):

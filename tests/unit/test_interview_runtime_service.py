@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
 from app.agents.schemas import InterviewNextAction
@@ -211,6 +212,147 @@ def test_turn_decision_trace_includes_policy_citations() -> None:
             "url": "https://example.test/ds160",
         }
     ]
+
+
+def test_question_action_retries_transient_provider_error_once(monkeypatch) -> None:
+    service = InterviewRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-retry")
+    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
+    attempts = 0
+
+    class FakeRunner:
+        def __init__(self, model, instructions):
+            del model, instructions
+
+        def run(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            if attempts == 1:
+                raise ModelHTTPError(
+                    status_code=504,
+                    model_name="gpt-5.4",
+                    body={"code": "upstream_timeout"},
+                )
+            return SimpleNamespace(
+                output=InterviewNextAction(
+                    assistant_message="Please explain your study plan.",
+                    requested_documents=[],
+                    decision_hint="continue_interview",
+                ),
+                tool_calls=[],
+                retry_count=0,
+                provider="openai_compatible",
+                model="gpt-5.4",
+            )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AdjudicationAgentRunner",
+        FakeRunner,
+    )
+    monkeypatch.setattr(
+        service.model_factory,
+        "build",
+        lambda *a, **k: (
+            "fake-model",
+            {
+                "provider": "openai_compatible",
+                "model": "gpt-5.4",
+                "instructions": "test",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        service.capability_orchestrator,
+        "orchestrate",
+        lambda *a, **k: SimpleNamespace(
+            capability_plan=[],
+            trace_entries=[],
+            tool_outputs={},
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_build_dynamic_turn_context",
+        lambda **kwargs: {"prompt_roles": {"system": "stable_policy"}},
+    )
+
+    action, trace = service._question_action(
+        "sess-retry",
+        profile,
+        score,
+        "continue_interview",
+        recent_turns=[],
+    )
+
+    assert attempts == 2
+    assert action.assistant_message == "Please explain your study plan."
+    assert trace.retry_count == 1
+
+
+def test_question_action_does_not_retry_auth_error(monkeypatch) -> None:
+    service = InterviewRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-no-retry")
+    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
+    attempts = 0
+
+    class FakeRunner:
+        def __init__(self, model, instructions):
+            del model, instructions
+
+        def run(self, **kwargs):
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            raise ModelHTTPError(
+                status_code=401,
+                model_name="gpt-5.4",
+                body={"code": "invalid_api_key"},
+            )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AdjudicationAgentRunner",
+        FakeRunner,
+    )
+    monkeypatch.setattr(
+        service.model_factory,
+        "build",
+        lambda *a, **k: (
+            "fake-model",
+            {
+                "provider": "openai_compatible",
+                "model": "gpt-5.4",
+                "instructions": "test",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        service.capability_orchestrator,
+        "orchestrate",
+        lambda *a, **k: SimpleNamespace(
+            capability_plan=[],
+            trace_entries=[],
+            tool_outputs={},
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_build_dynamic_turn_context",
+        lambda **kwargs: {"prompt_roles": {"system": "stable_policy"}},
+    )
+
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        service._question_action(
+            "sess-no-retry",
+            profile,
+            score,
+            "continue_interview",
+            recent_turns=[],
+        )
+
+    assert attempts == 1
+    assert exc_info.value.status_code == 401
+
 
 def test_raise_if_question_model_unavailable_blocks_interview_question_path() -> None:
     service = InterviewRuntimeService(db=object())

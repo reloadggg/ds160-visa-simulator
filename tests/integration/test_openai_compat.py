@@ -187,7 +187,7 @@ def test_chat_completions_uses_same_runtime_gate_initialization(
 ) -> None:
     monkeypatch.setattr(
         "app.services.message_service.MessageService.handle_user_turn",
-        lambda self, session_id, message_text: {
+        lambda self, session_id, message_text, **kwargs: {
             "assistant_message": "handled",
             "governor_decision": "continue_interview",
             "score_summary": {
@@ -233,7 +233,12 @@ def test_chat_completions_reuses_existing_session_when_metadata_session_id_prese
 ) -> None:
     handled_session_ids: list[str] = []
 
-    def fake_handle_user_turn(self, session_id: str, message_text: str) -> dict:
+    def fake_handle_user_turn(
+        self,
+        session_id: str,
+        message_text: str,
+        **kwargs,
+    ) -> dict:
         handled_session_ids.append(session_id)
         return {
             "assistant_message": f"handled: {message_text}",
@@ -297,22 +302,428 @@ def test_chat_completions_reuses_existing_session_when_metadata_session_id_prese
     second_payload = second_response.json()
     assert handled_session_ids == [first_session_id, first_session_id]
     assert second_payload["choices"][0]["message"]["content"] == "handled: Second turn"
-    assert second_payload["metadata"] == {
-        "session_id": first_session_id,
-        "phase_state": "interview",
-        "context_mode": "existing_session",
-        "governor_decision": "continue_interview",
-        "requested_documents": [],
-        "remaining_required_documents": [],
-        "turn_decision": {},
-        "document_review": {},
-        "prompt_trace": {},
-        "runtime_view_state": {},
-    }
+    metadata = second_payload["metadata"]
+    assert metadata["session_id"] == first_session_id
+    assert metadata["phase_state"] == "interview"
+    assert metadata["context_mode"] == "existing_session"
+    assert metadata["governor_decision"] == "continue_interview"
+    assert metadata["requested_documents"] == []
+    assert metadata["remaining_required_documents"] == []
+    assert metadata["document_review"] == {}
+    assert metadata["prompt_trace"] == {}
+    assert isinstance(metadata["turn_decision"], dict)
+    assert isinstance(metadata["runtime_view_state"], dict)
 
     with db_session_factory() as db:
         session_count = db.scalar(select(func.count()).select_from(SessionRecord))
         assert session_count == 1
+
+
+def test_chat_completions_imports_full_prior_messages_before_latest_user(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    observed_turns_before_runtime: list[tuple[str, str]] = []
+
+    def fake_handle_user_turn(
+        self,
+        session_id: str,
+        message_text: str,
+        **kwargs,
+    ) -> dict:
+        with db_session_factory() as db:
+            observed_turns_before_runtime.extend(
+                (
+                    turn.role,
+                    turn.content,
+                )
+                for turn in db.scalars(
+                    select(SessionTurnRecord)
+                    .where(SessionTurnRecord.session_id == session_id)
+                    .order_by(SessionTurnRecord.turn_index)
+                ).all()
+            )
+        return {
+            "assistant_message": f"handled: {message_text}",
+            "governor_decision": "continue_interview",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {},
+            "document_review": {},
+            "prompt_trace": {},
+            "runtime_view_state": {},
+        }
+
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        fake_handle_user_turn,
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [
+                {"role": "system", "content": "internal instruction"},
+                {"role": "user", "content": "I will attend Example University."},
+                {"role": "assistant", "content": "What will you study?"},
+                {"role": "user", "content": "Data science."},
+            ],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["metadata"]["session_id"]
+    assert observed_turns_before_runtime == [
+        ("user", "I will attend Example University."),
+        ("assistant", "What will you study?"),
+    ]
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [(turn.role, turn.content) for turn in turns] == [
+        ("user", "I will attend Example University."),
+        ("assistant", "What will you study?"),
+    ]
+    assert turns[0].source == "chat_completions_import"
+    assert turns[1].source == "chat_completions_import"
+
+
+def test_chat_completions_derives_idempotency_key_without_explicit_metadata_key(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        return {
+            "assistant_message": f"handled #{run_count}: {message_text}",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {"run_count": run_count},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+
+    first_response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "Repeatable text"}],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+    session_id = first_response.json()["metadata"]["session_id"]
+    second_response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "Repeatable text"}],
+            "metadata": {"session_id": session_id},
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert run_count == 1
+    assert second_response.json()["choices"][0]["message"]["content"] == (
+        first_response.json()["choices"][0]["message"]["content"]
+    )
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [turn.role for turn in turns] == ["user", "assistant"]
+    assert turns[0].client_message_id is not None
+
+
+def test_chat_completions_supports_http_idempotency_key_for_new_session_replay(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        return {
+            "assistant_message": f"handled once: {message_text}",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {"run_count": run_count},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    request_body = {
+        "model": "visa-simulator-v1",
+        "messages": [{"role": "user", "content": "New session retried request"}],
+        "metadata": {"declared_family": "f1"},
+    }
+
+    first_response = client.post(
+        "/v1/chat/completions",
+        json=request_body,
+        headers={"Idempotency-Key": "compat-new-session-retry"},
+    )
+    second_response = client.post(
+        "/v1/chat/completions",
+        json=request_body,
+        headers={"Idempotency-Key": "compat-new-session-retry"},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert run_count == 1
+    assert second_response.json()["metadata"]["session_id"] == (
+        first_response.json()["metadata"]["session_id"]
+    )
+    assert second_response.json()["metadata"]["context_mode"] == "idempotency_replay"
+
+    with db_session_factory() as db:
+        turns = db.scalars(select(SessionTurnRecord)).all()
+
+    assert [turn.role for turn in turns] == ["user", "assistant"]
+
+
+def test_chat_completions_honors_explicit_metadata_client_message_id(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        return {
+            "assistant_message": f"handled once: {message_text}",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {"run_count": run_count},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+
+    first_response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "My parents will pay."}],
+            "metadata": {
+                "declared_family": "f1",
+                "client_message_id": "compat-client-repeat-1",
+            },
+        },
+    )
+    session_id = first_response.json()["metadata"]["session_id"]
+    second_response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "My parents will pay."}],
+            "metadata": {
+                "session_id": session_id,
+                "client_message_id": "compat-client-repeat-1",
+            },
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert run_count == 1
+    assert second_response.json()["choices"][0]["message"]["content"] == (
+        first_response.json()["choices"][0]["message"]["content"]
+    )
+
+
+def test_chat_completions_imported_history_enters_case_and_interview_memory(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: {
+            "assistant_message": "handled",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {},
+        },
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [
+                {"role": "assistant", "content": "毕业后你准备做什么工作？"},
+                {"role": "user", "content": "我毕业后会回国做数据分析师。"},
+                {"role": "assistant", "content": "Who will pay your tuition?"},
+                {"role": "user", "content": "My parents will pay for my studies."},
+                {"role": "user", "content": "Continue."},
+            ],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["metadata"]["session_id"]
+
+    with db_session_factory() as db:
+        imported_users = db.scalars(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "user",
+                SessionTurnRecord.source == "chat_completions_import",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert imported_users[0].metadata_json["interview_memory"]["topic"] == (
+        "post_study_plan"
+    )
+    assert imported_users[1].metadata_json["interview_memory"]["topic"] == "funding"
+    assert imported_users[1].metadata_json["case_memory_claims"][0]["field_path"] == (
+        "/funding/primary_source"
+    )
+    assert imported_users[1].client_message_id is None
+
+
+def test_chat_completions_imported_repeated_text_preserves_ordinal_history(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        lambda self, session_id, message_text, **kwargs: {
+            "assistant_message": "handled",
+            "governor_decision": "continue_interview",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {},
+            "document_review": {},
+            "prompt_trace": {},
+            "runtime_view_state": {},
+        },
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [
+                {"role": "assistant", "content": "Please confirm."},
+                {"role": "user", "content": "Yes."},
+                {"role": "assistant", "content": "Please confirm."},
+                {"role": "user", "content": "Yes."},
+                {"role": "user", "content": "Continue."},
+            ],
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["metadata"]["session_id"]
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [(turn.role, turn.content) for turn in turns] == [
+        ("assistant", "Please confirm."),
+        ("user", "Yes."),
+        ("assistant", "Please confirm."),
+        ("user", "Yes."),
+    ]
+    assert all(turn.client_message_id is None for turn in turns if turn.role == "user")
+
+
+def test_chat_completions_normalizes_oversized_client_message_id(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: {
+            "assistant_message": "handled",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {},
+        },
+    )
+    long_key = "x" * 512
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "Use long key."}],
+            "metadata": {
+                "declared_family": "f1",
+                "client_message_id": long_key,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["metadata"]["session_id"]
+
+    with db_session_factory() as db:
+        user_turn = db.scalar(
+            select(SessionTurnRecord).where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "user",
+            )
+        )
+
+    assert user_turn is not None
+    assert user_turn.client_message_id is not None
+    assert len(user_turn.client_message_id) <= 128
+    assert user_turn.client_message_id.startswith("clientmsg:")
 
 
 def test_chat_completions_returns_404_for_unknown_metadata_session_id(
@@ -342,7 +753,7 @@ def test_chat_completions_returns_503_when_message_runtime_lacks_model_config(
 ) -> None:
     monkeypatch.setattr(
         "app.services.message_service.MessageService.handle_user_turn",
-        lambda self, session_id, message_text: (_ for _ in ()).throw(
+        lambda self, session_id, message_text, **kwargs: (_ for _ in ()).throw(
             ModelUnavailableError(
                 detail="当前后端未配置可用的对话模型，无法生成面签问答。请检查 OPENAI_API_KEY, OPENAI_BASE_URL。"
             )
@@ -368,7 +779,7 @@ def test_chat_completions_preserves_model_runtime_status_code(
 ) -> None:
     monkeypatch.setattr(
         "app.services.message_service.MessageService.handle_user_turn",
-        lambda self, session_id, message_text: (_ for _ in ()).throw(
+        lambda self, session_id, message_text, **kwargs: (_ for _ in ()).throw(
             ModelRuntimeError(
                 detail="当前对话模型认证失败，API Key 可能已失效或被禁用。",
                 status_code=401,

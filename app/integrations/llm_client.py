@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import httpx
+from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from app.core.settings import settings
 from app.services.runtime_policies import RuntimePolicyRegistry
@@ -127,37 +127,27 @@ class LLMClient:
         request_payload: dict[str, Any],
     ) -> tuple[str, list[dict[str, Any]]]:
         retryable_errors = (
-            httpx.ConnectError,
-            httpx.ReadTimeout,
-            httpx.RemoteProtocolError,
+            APIConnectionError,
+            APITimeoutError,
         )
         for attempt in range(2):
             content_parts: list[str] = []
             raw_chunks: list[dict[str, Any]] = []
             try:
-                with httpx.stream(
-                    "POST",
-                    self._chat_completions_url(),
-                    headers={
-                        "Authorization": f"Bearer {settings.openai_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=request_payload,
+                stream = self._openai_client().chat.completions.create(
+                    **request_payload,
                     timeout=settings.openai_timeout_seconds,
-                ) as response:
-                    response.raise_for_status()
-                    for line in response.iter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
-                        chunk = json.loads(data)
-                        raw_chunks.append(chunk)
-                        delta = chunk["choices"][0].get("delta", {})
-                        chunk_content = delta.get("content")
-                        if chunk_content:
-                            content_parts.append(chunk_content)
+                )
+                for chunk in stream:
+                    chunk_payload = chunk.model_dump(mode="json")
+                    raw_chunks.append(chunk_payload)
+                    choices = getattr(chunk, "choices", None) or []
+                    if not choices:
+                        continue
+                    delta = choices[0].delta
+                    chunk_content = getattr(delta, "content", None)
+                    if chunk_content:
+                        content_parts.append(chunk_content)
                 return "".join(content_parts), raw_chunks
             except retryable_errors:
                 if attempt == 1:
@@ -197,8 +187,10 @@ class LLMClient:
             body = body[:-1]
         return "\n".join(body).strip()
 
-    def _chat_completions_url(self) -> str:
-        base_url = settings.openai_base_url.rstrip("/")
-        if base_url.endswith("/v1"):
-            return f"{base_url}/chat/completions"
-        return f"{base_url}/v1/chat/completions"
+    def _openai_client(self) -> OpenAI:
+        return OpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            timeout=settings.openai_timeout_seconds,
+            max_retries=0,
+        )

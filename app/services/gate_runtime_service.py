@@ -300,5 +300,4 @@ class GateRuntimeService:
         if save:
             return self.sessions.save(record)
         self.db.add(record)
-        self.db.flush()
         return record

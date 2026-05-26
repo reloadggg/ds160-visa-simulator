@@ -1,10 +1,21 @@
 from collections.abc import Generator
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from app.core import settings as settings_module
-from app.core.simple_auth import LOGIN_FAILURES
+from app.core.simple_auth import (
+    LOGIN_FAILURES,
+    _get_auth_session,
+    _hash_secret,
+    create_auth_session,
+)
+from app.db.base import Base
+from app.db.models import AuthSessionRecord
 from app.main import app
 
 
@@ -28,6 +39,7 @@ def enabled_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings_module.settings, "app_auth_cookie_domain", None)
     monkeypatch.setattr(settings_module.settings, "app_auth_login_rate_limit_attempts", 2)
     monkeypatch.setattr(settings_module.settings, "app_auth_login_rate_limit_window_seconds", 60)
+    monkeypatch.setattr(settings_module.settings, "app_auth_touch_interval_seconds", 60)
     monkeypatch.setattr(settings_module.settings, "app_auth_csrf_protection", True)
     monkeypatch.setattr(settings_module.settings, "app_auth_protect_docs", True)
     monkeypatch.setattr(settings_module.settings, "app_compat_api_key", None)
@@ -136,6 +148,55 @@ def test_me_reports_cookie_session_status(
     assert response.json()["expires_at"].endswith("Z")
 
 
+def test_auth_touch_is_throttled_to_reduce_sqlite_writes(
+    tmp_path,
+    enabled_auth: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "app_auth_touch_interval_seconds", 60)
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'auth-touch.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    with Session(engine) as db:
+        created = create_auth_session(db, _FakeRequest(), now=_fake_now())
+        first_seen_at = db.get(
+            AuthSessionRecord,
+            _hash_secret(created.session_id),
+        ).last_seen_at
+
+        same_window = _get_auth_session(
+            db,
+            created.session_id,
+            now=_fake_now() + timedelta(seconds=30),
+            touch=True,
+        )
+        db.refresh(same_window)
+        after_same_window = same_window.last_seen_at
+
+        next_window = _get_auth_session(
+            db,
+            created.session_id,
+            now=_fake_now() + timedelta(seconds=61),
+            touch=True,
+        )
+        db.refresh(next_window)
+        after_next_window = next_window.last_seen_at
+
+    assert after_same_window == first_seen_at
+    assert after_next_window == _fake_now() + timedelta(seconds=61)
+
+
+def _fake_now() -> datetime:
+    return datetime(2026, 5, 26, 12, 0, 0)
+
+
+class _FakeRequest:
+    headers = {"user-agent": "pytest"}
+    client = SimpleNamespace(host="127.0.0.1")
+
+
 def test_invalid_password_is_rejected_and_rate_limited(
     client: TestClient,
     enabled_auth: None,
@@ -177,6 +238,22 @@ def test_machine_api_can_use_separate_compat_token(
     response = client.post(
         "/v1/chat/completions",
         json={"model": "test", "messages": []},
+        headers={"Authorization": "Bearer compat-secret"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_responses_api_can_use_separate_compat_token(
+    client: TestClient,
+    enabled_auth: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "app_compat_api_key", "compat-secret")
+
+    response = client.post(
+        "/v1/responses",
+        json={"model": "test", "input": ""},
         headers={"Authorization": "Bearer compat-secret"},
     )
 

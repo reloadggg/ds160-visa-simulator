@@ -180,11 +180,21 @@ def _get_auth_session(
     idle_timeout = settings.app_auth_idle_timeout_seconds
     if idle_timeout > 0 and record.last_seen_at + timedelta(seconds=idle_timeout) <= current_time:
         return None
-    if touch:
+    if touch and _should_touch_auth_session(record, current_time):
         record.last_seen_at = current_time
         db.add(record)
         db.commit()
     return record
+
+
+def _should_touch_auth_session(
+    record: AuthSessionRecord,
+    current_time: datetime,
+) -> bool:
+    touch_interval = settings.app_auth_touch_interval_seconds
+    if touch_interval <= 0:
+        return True
+    return record.last_seen_at + timedelta(seconds=touch_interval) <= current_time
 
 
 def get_current_auth_session(
@@ -266,7 +276,10 @@ def _origin_allowed(request: Request) -> bool:
 
 
 def _machine_api_authorized(request: Request) -> bool:
-    if request.url.path.rstrip("/") != "/v1/chat/completions":
+    if request.url.path.rstrip("/") not in {
+        "/v1/chat/completions",
+        "/v1/responses",
+    }:
         return False
     if not settings.app_compat_api_key:
         return False

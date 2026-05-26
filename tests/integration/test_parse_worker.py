@@ -14,6 +14,8 @@ from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
 from app.agents.schemas import InterviewNextAction
+from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.gate_runtime_service import GateRuntimeService
 from app.workers.parse_worker import ParseWorker
 from app.workers.parse_worker import stop_parse_worker_runtime
 
@@ -65,6 +67,52 @@ def client(
     asyncio.run(stop_parse_worker_runtime(app))
     app.dependency_overrides.clear()
     app.state.parse_worker_session_factory = None
+
+
+def test_gate_refresh_save_false_does_not_hold_sqlite_write_lock(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-refresh-lock.sqlite3'}",
+        connect_args={"check_same_thread": False, "timeout": 0.05},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+
+    session_id = "sess-gate-refresh-lock"
+    first_db = testing_session_local()
+    second_db = testing_session_local()
+    try:
+        first_db.add(
+            SessionRecord(
+                session_id=session_id,
+                declared_family="f1",
+                gate_status_json=build_initial_gate_status(
+                    declared_family="f1",
+                    scenario_key="lock_regression",
+                    required_documents=["funding_proof"],
+                ),
+            )
+        )
+        first_db.commit()
+
+        record = GateRuntimeService(first_db).refresh_session(session_id, save=False)
+
+        assert record.phase_state == "interview"
+        user_turn = SessionTurnRepository(second_db).append_user_turn(
+            session_id=session_id,
+            content="I uploaded the funding proof.",
+            source="user_message",
+            metadata_json={"client_message_id": "lock-regression-1"},
+        )
+
+        assert user_turn.turn_index == 1
+    finally:
+        first_db.rollback()
+        first_db.close()
+        second_db.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
 
 
 def test_parse_worker_processes_uploaded_document_before_next_message(

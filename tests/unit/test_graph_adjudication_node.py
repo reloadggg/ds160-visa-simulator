@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+from app.db.models import SessionRecord, SessionTurnRecord
 from app.domain.agent_runtime import DS160GraphState, GraphRunResult
 from app.services.graph_adjudication_node import GraphAdjudicationNode
+from app.services.graph_case_state_builder import GraphCaseStateBuilder
 from app.services.llm_node_runner import LLMNodeRequest, LLMNodeResponse
 
 
@@ -283,6 +285,69 @@ def test_graph_adjudication_prompt_uses_sanitized_case_state(monkeypatch) -> Non
     assert "学校材料冲突包" not in serialized_prompt
 
 
+def test_graph_adjudication_prompt_uses_bounded_transcript_window() -> None:
+    class CapturingRunner:
+        def __init__(self) -> None:
+            self.requests: list[LLMNodeRequest] = []
+
+        def run(self, request: LLMNodeRequest) -> LLMNodeResponse:
+            self.requests.append(request)
+            return LLMNodeResponse(
+                output=GraphRunResult(
+                    assistant_message="请继续说明你的学习计划。",
+                    assistant_message_author="adjudication_agent",
+                    decision="continue_interview",
+                ),
+                metadata={},
+            )
+
+    runner = CapturingRunner()
+    full_transcript = [
+        {
+            "turn_id": f"turn-{index}",
+            "turn_index": index,
+            "role": "user" if index % 2 else "assistant",
+            "content": f"message-{index}",
+        }
+        for index in range(1, 41)
+    ]
+    state = DS160GraphState(
+        session_id="sess-graph-adjudication",
+        run_id="graph-run-windowed-transcript",
+        case_state={
+            "full_transcript": full_transcript,
+            "transcript": {
+                "turn_count": len(full_transcript),
+                "roles": {"user": 20, "assistant": 20},
+            },
+            "history_summary": {"turn_count": len(full_transcript)},
+        },
+    )
+
+    GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object()),
+        llm_runner=runner,
+    ).run(
+        state,
+        message_text="continue",
+        declared_family="f1",
+    )
+
+    prompt_payload = json.loads(runner.requests[0].prompt)
+    prompt_case_state = prompt_payload["case_state"]
+    assert prompt_case_state["full_transcript"] == full_transcript[-24:]
+    assert prompt_case_state["transcript"]["turn_count"] == 40
+    assert prompt_case_state["transcript"]["prompt_window"] == {
+        "strategy": "tail_window",
+        "source": "full_transcript",
+        "retained_turn_count": 24,
+        "omitted_turn_count": 16,
+        "max_turns": 24,
+        "max_chars": 12000,
+    }
+    assert state.case_state["full_transcript"] == full_transcript
+
+
 def test_graph_adjudication_instructions_guard_against_redundant_material_questions(
     monkeypatch,
 ) -> None:
@@ -498,6 +563,88 @@ def test_graph_adjudication_repairs_semantically_repeated_post_study_question(
     assert result.metadata["question_repair_reason"] == "repeated_recent_question"
 
 
+def test_graph_adjudication_repairs_question_for_answered_topic_outside_recent_window(
+    monkeypatch,
+) -> None:
+    repeated = GraphRunResult(
+        assistant_message="毕业后你准备回国做什么工作？",
+        assistant_message_author="adjudication_agent",
+        decision="continue_interview",
+    )
+
+    def fake_run_agent(self, *, model, runtime, state, message_text):
+        return repeated
+
+    monkeypatch.setattr(GraphAdjudicationNode, "_run_agent", fake_run_agent)
+    state = DS160GraphState(
+        session_id="sess-graph-adjudication",
+        run_id="graph-run-repair-answered-topic",
+        case_state={
+            "case_brief": {
+                "answered_topic_keys": ["post_study_plan"],
+                "recent_assistant_questions": [
+                    {"question": "第一年费用的资金来源是什么？"}
+                ],
+            },
+        },
+    )
+
+    result = GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object())
+    ).run(
+        state,
+        message_text="我已经回答过毕业后的计划了",
+        declared_family="f1",
+    )
+
+    assert result.state.final_response is not None
+    assert result.state.final_response.assistant_message == (
+        "为什么不在国内读同类项目？"
+    )
+    assert result.metadata["question_repaired"] is True
+    assert result.metadata["question_repair_reason"] == "answered_topic_repeated"
+
+
+def test_graph_adjudication_repairs_answered_topic_without_recent_questions(
+    monkeypatch,
+) -> None:
+    repeated = GraphRunResult(
+        assistant_message="毕业后你准备回国做什么工作？",
+        assistant_message_author="adjudication_agent",
+        decision="continue_interview",
+    )
+
+    def fake_run_agent(self, *, model, runtime, state, message_text):
+        return repeated
+
+    monkeypatch.setattr(GraphAdjudicationNode, "_run_agent", fake_run_agent)
+    state = DS160GraphState(
+        session_id="sess-graph-adjudication",
+        run_id="graph-run-repair-answered-topic-no-recent",
+        case_state={
+            "case_brief": {
+                "answered_topic_keys": ["post_study_plan"],
+                "recent_assistant_questions": [],
+            },
+        },
+    )
+
+    result = GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object())
+    ).run(
+        state,
+        message_text="我已经回答过毕业后的计划了",
+        declared_family="f1",
+    )
+
+    assert result.state.final_response is not None
+    assert result.state.final_response.assistant_message == (
+        "为什么不在国内读同类项目？"
+    )
+    assert result.metadata["question_repaired"] is True
+    assert result.metadata["question_repair_reason"] == "answered_topic_repeated"
+
+
 def test_graph_adjudication_keeps_sponsor_job_distinct_from_post_study_plan(
     monkeypatch,
 ) -> None:
@@ -534,3 +681,131 @@ def test_graph_adjudication_keeps_sponsor_job_distinct_from_post_study_plan(
     assert result.state.final_response is not None
     assert result.state.final_response.assistant_message == "你父亲做什么工作？"
     assert "question_repaired" not in result.metadata
+
+
+def test_graph_adjudication_golden_replay_does_not_repeat_answered_school_program_funding(
+    monkeypatch,
+) -> None:
+    repeated = GraphRunResult(
+        assistant_message="Who will fund your education?",
+        assistant_message_author="adjudication_agent",
+        decision="continue_interview",
+    )
+
+    def fake_run_agent(self, *, model, runtime, state, message_text):
+        return repeated
+
+    monkeypatch.setattr(GraphAdjudicationNode, "_run_agent", fake_run_agent)
+    record = SessionRecord(
+        session_id="sess-golden-repeat",
+        phase_state="interview",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+    )
+    turns = [
+        SessionTurnRecord(
+            turn_id="turn-assistant-school",
+            turn_index=1,
+            session_id=record.session_id,
+            role="assistant",
+            content="Which school will you attend?",
+            source="graph_runtime",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-user-school",
+            turn_index=2,
+            session_id=record.session_id,
+            role="user",
+            content="I will attend Example University.",
+            source="user_message",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-assistant-program",
+            turn_index=3,
+            session_id=record.session_id,
+            role="assistant",
+            content="What program will you study?",
+            source="graph_runtime",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-user-program",
+            turn_index=4,
+            session_id=record.session_id,
+            role="user",
+            content="I will study the Master of Computer Science program.",
+            source="user_message",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-assistant-funding",
+            turn_index=5,
+            session_id=record.session_id,
+            role="assistant",
+            content="Who will fund your first year tuition and living costs?",
+            source="graph_runtime",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-user-funding",
+            turn_index=6,
+            session_id=record.session_id,
+            role="user",
+            content="My parents will pay my tuition and living costs.",
+            source="user_message",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-assistant-academic",
+            turn_index=7,
+            session_id=record.session_id,
+            role="assistant",
+            content="What academic experience prepared you for this program?",
+            source="graph_runtime",
+            metadata_json={},
+        ),
+        SessionTurnRecord(
+            turn_id="turn-user-academic",
+            turn_index=8,
+            session_id=record.session_id,
+            role="user",
+            content="My computer engineering coursework prepared me for it.",
+            source="user_message",
+            metadata_json={},
+        ),
+    ]
+    case_state = GraphCaseStateBuilder(max_recent_turns=1).build(record, turns)
+    assert case_state["transcript"]["turn_count"] == len(turns)
+    assert case_state["case_brief"]["recent_assistant_questions"] == [
+        {
+            "turn_id": "turn-assistant-academic",
+            "turn_index": 7,
+            "question": "What academic experience prepared you for this program?",
+        }
+    ]
+    assert set(case_state["case_brief"]["answered_topic_keys"]) >= {
+        "program_school",
+        "funding",
+    }
+
+    state = DS160GraphState(
+        session_id=record.session_id,
+        run_id="graph-run-golden-repeat",
+        case_state=case_state,
+    )
+    result = GraphAdjudicationNode(
+        model_factory=StubModelFactory(model=object())
+    ).run(
+        state,
+        message_text="I already answered my school, program, and funding plan.",
+        declared_family="f1",
+    )
+
+    assert result.state.final_response is not None
+    assert result.state.final_response.assistant_message == (
+        "毕业后你准备做什么工作？"
+    )
+    assert result.metadata["question_repaired"] is True
+    assert result.metadata["question_repair_reason"] == "answered_topic_repeated"

@@ -13,6 +13,7 @@ from app.core.settings import settings
 from app.db.session import get_db
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.message_service import (
+    DuplicateTurnInProgressError,
     MessageService,
     SessionClosedError,
     SessionNotFoundError,
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/v1/sessions/{session_id}/messages", tags=["messages"
 class MessageRequest(BaseModel):
     role: Literal["user"]
     content: str
+    client_message_id: str | None = None
     user_model_config: UserModelConfigPayload | None = None
 
     @model_validator(mode="before")
@@ -50,13 +52,22 @@ def post_message(
     try:
         runtime_config = to_runtime_config(payload.user_model_config)
         with user_model_runtime(runtime_config):
-            return MessageService(db).handle_user_turn(session_id, payload.content)
+            return MessageService(db).handle_user_turn(
+                session_id,
+                payload.content,
+                client_message_id=payload.client_message_id,
+            )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SessionClosedError as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except DuplicateTurnInProgressError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="这条消息正在处理中，请等待上一轮结果返回。",
+        ) from exc
     except ModelRuntimeError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -83,12 +94,25 @@ def stream_message(
         yield _sse_event("analyzing", {"stage": "interview_runtime"})
         try:
             with user_model_runtime(runtime_config):
-                result = MessageService(db).handle_user_turn(session_id, payload.content)
+                result = MessageService(db).handle_user_turn(
+                    session_id,
+                    payload.content,
+                    client_message_id=payload.client_message_id,
+                )
         except SessionNotFoundError as exc:
             yield _sse_event("error", {"status": 404, "detail": str(exc)})
             return
         except SessionClosedError as exc:
             yield _sse_event("error", {"status": 409, "detail": exc.detail})
+            return
+        except DuplicateTurnInProgressError:
+            yield _sse_event(
+                "error",
+                {
+                    "status": 409,
+                    "detail": "这条消息正在处理中，请等待上一轮结果返回。",
+                },
+            )
             return
         except ModelRuntimeError as exc:
             yield _sse_event(

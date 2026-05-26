@@ -9,6 +9,7 @@ from app.api.routers.files import router as files_router
 from app.api.routers.messages import router as messages_router
 from app.api.routers.model_config import router as model_config_router
 from app.api.routers.openai_compat import router as openai_compat_router
+from app.api.routers.openai_responses import router as openai_responses_router
 from app.api.routers.rag import router as rag_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
@@ -39,6 +40,17 @@ SESSION_TURN_COLUMN_DEFS = {
     "turn_index": ("INTEGER", "0"),
 }
 SESSION_TURN_ORDER_INDEX_NAME = "ux_session_turns_session_id_turn_index"
+SESSION_TURN_CLIENT_MESSAGE_INDEX_NAME = "ux_session_turns_session_id_client_message_id"
+
+
+def bootstrap_sqlite_runtime(db_engine: Engine) -> None:
+    if db_engine.dialect.name != "sqlite":
+        return
+
+    with db_engine.begin() as connection:
+        connection.execute(text("PRAGMA journal_mode=WAL"))
+        connection.execute(text("PRAGMA busy_timeout=30000"))
+        connection.execute(text("PRAGMA synchronous=NORMAL"))
 
 
 def _bootstrap_table_columns(
@@ -162,6 +174,70 @@ def _bootstrap_session_turn_order_index(db_engine: Engine) -> None:
         )
 
 
+def _backfill_session_turn_client_message_ids(db_engine: Engine) -> None:
+    if db_engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(db_engine)
+    if "session_turns" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("session_turns")}
+    if "client_message_id" in columns or "metadata_json" not in columns:
+        return
+
+    with db_engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE session_turns ADD COLUMN client_message_id VARCHAR(128)")
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE session_turns
+                SET client_message_id = json_extract(metadata_json, '$.client_message_id')
+                WHERE role = 'user'
+                  AND client_message_id IS NULL
+                  AND json_extract(metadata_json, '$.client_message_id') IS NOT NULL
+                """
+            )
+        )
+
+
+def _bootstrap_session_turn_client_message_index(db_engine: Engine) -> None:
+    if db_engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(db_engine)
+    if "session_turns" not in inspector.get_table_names():
+        return
+
+    with db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE session_turns
+                SET client_message_id = NULL
+                WHERE client_message_id IS NOT NULL
+                  AND rowid NOT IN (
+                      SELECT MIN(rowid)
+                      FROM session_turns
+                      WHERE client_message_id IS NOT NULL
+                      GROUP BY session_id, client_message_id
+                  )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {SESSION_TURN_CLIENT_MESSAGE_INDEX_NAME}
+                ON session_turns (session_id, client_message_id)
+                WHERE client_message_id IS NOT NULL
+                """
+            )
+        )
+
+
 def bootstrap_session_turns_table(db_engine: Engine) -> None:
     SessionTurnRecord.__table__.create(bind=db_engine, checkfirst=True)
     _bootstrap_table_columns(
@@ -170,7 +246,16 @@ def bootstrap_session_turns_table(db_engine: Engine) -> None:
         column_defs=SESSION_TURN_COLUMN_DEFS,
     )
     _backfill_session_turn_indexes(db_engine)
+    inspector = inspect(db_engine)
+    columns = (
+        {column["name"] for column in inspector.get_columns("session_turns")}
+        if "session_turns" in inspector.get_table_names()
+        else set()
+    )
+    if "client_message_id" not in columns:
+        _backfill_session_turn_client_message_ids(db_engine)
     _bootstrap_session_turn_order_index(db_engine)
+    _bootstrap_session_turn_client_message_index(db_engine)
 
 
 @asynccontextmanager
@@ -191,6 +276,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.middleware("http")(simple_auth_middleware)
+bootstrap_sqlite_runtime(engine)
 Base.metadata.create_all(bind=engine)
 bootstrap_sessions_table(engine)
 bootstrap_documents_table(engine)
@@ -203,6 +289,7 @@ app.include_router(model_config_router)
 app.include_router(rag_router)
 app.include_router(reports_router)
 app.include_router(openai_compat_router)
+app.include_router(openai_responses_router)
 
 
 @app.get("/healthz")

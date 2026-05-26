@@ -38,6 +38,8 @@ from app.services.scoring_service import ScoringService
 from app.services.session_read_model_service import SessionReadModelService
 from app.services.visa_policy_retrieval_service import VisaPolicyRetrievalService
 
+TURN_DECISION_PROVIDER_MAX_RETRIES = 1
+
 
 @dataclass
 class InterviewTurnAnalysis:
@@ -329,21 +331,38 @@ class InterviewRuntimeService:
                     runtime.get("model_unavailable_missing_env_vars") or []
                 ),
             )
+        runner = AdjudicationAgentRunner(
+            model=model,
+            instructions=runtime.get("instructions")
+            or self.model_factory.build_instructions(
+                "adjudication_agent",
+                declared_family=declared_family,
+            ),
+        )
+        retry_count = 0
+        while True:
+            try:
+                run_result = runner.run(
+                    deps=self._build_agent_deps(session_id),
+                    dynamic_turn_context=dynamic_turn_context,
+                    tool_outputs=capability_result.tool_outputs,
+                    user_message=latest_user_message,
+                    boundary_decision=governor_decision,
+                )
+                break
+            except Exception as exc:
+                normalized = self._normalize_turn_decision_error(
+                    exc,
+                    runtime=runtime,
+                )
+                if not self._should_retry_turn_decision_provider_error(
+                    normalized,
+                    retry_count=retry_count,
+                ):
+                    raise normalized from exc
+                retry_count += 1
+
         try:
-            run_result = AdjudicationAgentRunner(
-                model=model,
-                instructions=runtime.get("instructions")
-                or self.model_factory.build_instructions(
-                    "adjudication_agent",
-                    declared_family=declared_family,
-                ),
-            ).run(
-                deps=self._build_agent_deps(session_id),
-                dynamic_turn_context=dynamic_turn_context,
-                tool_outputs=capability_result.tool_outputs,
-                user_message=latest_user_message,
-                boundary_decision=governor_decision,
-            )
             action = self._finalize_question_action(
                 governor_decision,
                 score,
@@ -362,7 +381,7 @@ class InterviewRuntimeService:
                 action=action,
                 fallback_used=False,
                 tool_calls=run_result.tool_calls,
-                retry_count=run_result.retry_count,
+                retry_count=retry_count + run_result.retry_count,
                 provider=run_result.provider or runtime.get("provider"),
                 model=run_result.model or runtime.get("model"),
                 boundary_decision=governor_decision,
@@ -373,6 +392,18 @@ class InterviewRuntimeService:
                 exc,
                 runtime=runtime,
             ) from exc
+
+    def _should_retry_turn_decision_provider_error(
+        self,
+        error: ModelRuntimeError,
+        *,
+        retry_count: int,
+    ) -> bool:
+        if retry_count >= TURN_DECISION_PROVIDER_MAX_RETRIES:
+            return False
+        if isinstance(error, ProviderAPIError):
+            return error.status_code in {500, 502, 503, 504}
+        return error.status_code == 503 and error.upstream_code != "missing_model_config"
 
     def _build_turn_decision_agent_runtime(
         self,

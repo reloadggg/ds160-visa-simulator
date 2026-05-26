@@ -665,7 +665,10 @@ Response:
 
 ### `POST /v1/chat/completions`
 
-兼容 OpenAI Chat Completions 的对话入口。
+兼容 OpenAI Chat Completions 的状态化对话入口。该入口是 DS-160
+产品层 adapter，不是模型供应商透传代理：历史上下文、材料、Case Memory
+和 Interview Memory 都保存在本地 session 中，最终用户可见回复仍由
+`MessageService` 主流程写入。
 
 Request:
 
@@ -673,11 +676,14 @@ Request:
 {
   "model": "ds160-runtime",
   "messages": [
-    {"role": "user", "content": "I want to apply for an F-1 visa."}
+    {"role": "user", "content": "I want to apply for an F-1 visa."},
+    {"role": "assistant", "content": "Which school will you attend?"},
+    {"role": "user", "content": "I will attend Example University."}
   ],
   "metadata": {
     "declared_family": "f1",
-    "session_id": "sess-existing"
+    "session_id": "sess-existing",
+    "client_message_id": "client-turn-0003"
   }
 }
 ```
@@ -685,8 +691,15 @@ Request:
 Rules:
 
 - `messages` 至少包含一条 `user` 消息
-- `metadata.session_id` 存在时复用会话
+- 最后一条 `user` message 是本轮输入；它之前的 public `user` /
+  `assistant` messages 会先导入本地 session transcript
+- `system` message 只作为请求上下文，不会进入 public transcript
+- 推荐始终传 `metadata.session_id` 复用会话
 - `metadata.session_id` 不存在时需要 `metadata.declared_family`
+- 推荐每个真实用户消息传稳定的 `metadata.client_message_id`
+- 幂等键优先级为 `metadata.client_message_id`、`metadata.idempotency_key`、
+  HTTP `Idempotency-Key`、后端自动派生 key
+- 重放同一个已完成请求会返回同一个 assistant turn；同 key 仍处理中时返回 `409`
 - 开启 `APP_AUTH_PASSWORD` 后，外部机器调用应使用 `APP_COMPAT_API_KEY`
 
 Response:
@@ -717,6 +730,65 @@ Response:
 }
 ```
 
+### `POST /v1/responses`
+
+兼容 OpenAI Responses 风格的状态化入口。当前支持范围限于
+`input`、`instructions`、`metadata`、`previous_response_id`，不承诺完整
+官方 Responses API 全量字段、工具调用或远端会话保存能力。
+
+首次请求推荐传 `metadata.declared_family` 和稳定的
+`metadata.client_message_id`：
+
+```json
+{
+  "model": "ds160-runtime",
+  "input": "I want to apply for an F-1 visa.",
+  "metadata": {
+    "declared_family": "f1",
+    "client_message_id": "client-response-0001"
+  }
+}
+```
+
+后续请求可以使用上轮返回的 `id` 作为 `previous_response_id`，或显式传
+`metadata.session_id`：
+
+```json
+{
+  "model": "ds160-runtime",
+  "previous_response_id": "resp_sess_abc123_2",
+  "input": "I will attend Example University.",
+  "metadata": {
+    "client_message_id": "client-response-0002"
+  }
+}
+```
+
+Rules:
+
+- `previous_response_id` 必须能映射到本地已存在的 assistant turn
+- 同时传 `metadata.session_id` 和 `previous_response_id` 时，两者必须指向同一 session
+- `instructions` 会作为请求级指令传入主流程，但不会替代本地 session memory
+- 幂等键优先级与 `/v1/chat/completions` 一致
+- 产品状态以本地 `session_id`、turns、documents、Case Memory 和 Interview Memory 为准
+
+Response excerpt:
+
+```json
+{
+  "id": "resp_sess_abc123_2",
+  "object": "response",
+  "status": "completed",
+  "output_text": "string",
+  "metadata": {
+    "session_id": "sess-abc123",
+    "phase_state": "interview",
+    "context_mode": "existing_session",
+    "runtime_view_state": {}
+  }
+}
+```
+
 ## Verification
 
 API 文档对应的主要测试文件：
@@ -730,3 +802,4 @@ API 文档对应的主要测试文件：
 - `tests/integration/test_model_config_api.py`
 - `tests/integration/test_rag_api.py`
 - `tests/integration/test_openai_compat.py`
+- `tests/integration/test_openai_responses.py`

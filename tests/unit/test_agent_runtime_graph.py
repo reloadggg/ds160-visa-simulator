@@ -41,6 +41,31 @@ def test_deterministic_graph_emits_ordered_contract_events() -> None:
     )
 
 
+def test_deterministic_graph_uses_session_id_as_langgraph_thread_id(monkeypatch) -> None:
+    graph = DeterministicDS160TurnGraph(
+        nodes={
+            "adjudicate": fake_adjudication_node(),
+            "deterministic_grounding_guard": fake_guard_node(),
+        }
+    )
+    captured_config = {}
+    original_invoke = graph.compiled_graph.invoke
+
+    def tracked_invoke(*args, **kwargs):
+        captured_config.update(kwargs.get("config") or {})
+        return original_invoke(*args, **kwargs)
+
+    monkeypatch.setattr(graph.compiled_graph, "invoke", tracked_invoke)
+
+    graph.run(
+        session_id="sess-stable-thread",
+        run_id="run-per-turn",
+        message_text="hello",
+    )
+
+    assert captured_config["configurable"]["thread_id"] == "sess-stable-thread"
+
+
 def test_deterministic_graph_respects_llm_retry_budget() -> None:
     graph = DeterministicDS160TurnGraph(
         nodes={

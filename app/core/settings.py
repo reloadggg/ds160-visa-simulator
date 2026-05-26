@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     app_auth_cookie_domain: str | None = None
     app_auth_login_rate_limit_attempts: int = 5
     app_auth_login_rate_limit_window_seconds: int = 60
+    app_auth_touch_interval_seconds: int = 60
     app_auth_csrf_protection: bool = True
     app_auth_protect_docs: bool = True
     app_compat_api_key: str | None = None
