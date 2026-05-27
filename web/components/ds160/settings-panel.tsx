@@ -1,6 +1,6 @@
 "use client"
 
-import { type ChangeEvent, useRef, useState } from "react"
+import { type ChangeEvent, useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -67,6 +67,7 @@ interface SettingsPanelProps {
   feedback?: string | null
   isDebugBundleGenerating?: boolean
   debugBundleProgress?: string[]
+  debugMaterialSeedText?: string
   userModelConfig: UserModelConfig
   availableModels: ModelListItem[]
   isLoadingModels: boolean
@@ -82,7 +83,10 @@ interface SettingsPanelProps {
   onCopySessionId: () => void
   onExportSession: () => void
   onExportConversationImage: () => void
-  onDebugMaterialBundleScenario: (scenario: DebugMaterialBundleScenario) => void
+  onDebugMaterialBundleScenario: (
+    scenario: DebugMaterialBundleScenario,
+    seedText?: string,
+  ) => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
 }
@@ -95,6 +99,7 @@ export function SettingsPanel({
   feedback,
   isDebugBundleGenerating = false,
   debugBundleProgress = [],
+  debugMaterialSeedText = "",
   userModelConfig,
   availableModels,
   isLoadingModels,
@@ -119,7 +124,13 @@ export function SettingsPanel({
   const [ragUploadForm, setRagUploadForm] = useState(EMPTY_RAG_UPLOAD_FORM)
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
     useState<DebugMaterialBundleScenario>(DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO)
+  const [materialSeedText, setMaterialSeedText] = useState(debugMaterialSeedText)
   const selectedDebugBundleOption = getDebugMaterialBundleOption(selectedDebugBundleScenario)
+  useEffect(() => {
+    setMaterialSeedText((current) =>
+      current.trim() ? current : debugMaterialSeedText,
+    )
+  }, [debugMaterialSeedText])
   const updateModelConfig = (patch: Partial<UserModelConfig>) => {
     onUserModelConfigChange({
       ...userModelConfig,
@@ -156,7 +167,7 @@ export function SettingsPanel({
     setRagUploadForm(EMPTY_RAG_UPLOAD_FORM)
   }
   const handleDebugBundleSubmit = () => {
-    onDebugMaterialBundleScenario(selectedDebugBundleScenario)
+    onDebugMaterialBundleScenario(selectedDebugBundleScenario, materialSeedText)
   }
 
   const ragStatusLabel = (() => {
@@ -574,6 +585,20 @@ export function SettingsPanel({
                 </Select>
                 <div className="min-h-10 text-xs leading-5 text-muted-foreground">
                   {selectedDebugBundleOption.description}
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="debug-material-seed">材料生成依据</Label>
+                <Textarea
+                  id="debug-material-seed"
+                  value={materialSeedText}
+                  onChange={(event) => setMaterialSeedText(event.target.value)}
+                  placeholder="例如：我会去 UC Irvine 读 Data Science，父母资助，第一年费用约 8 万美元。"
+                  className="min-h-24 resize-y"
+                />
+                <div className="text-xs leading-5 text-muted-foreground">
+                  默认取当前会话第一条用户消息；生成器会用它对齐学校、专业、资金来源和材料字段。
                 </div>
               </div>
 

@@ -11,6 +11,7 @@ from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
 from app.core import settings as settings_module
 from app.db.session import get_db
 from app.main import app
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 
 
 def install_material_refresh_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -638,10 +639,11 @@ def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistant_message"] == "材料已经加入案例理解。请继续说明它和你的签证计划有什么关系。"
+    assert payload["assistant_message"] == ""
     assert payload["turn_decision"]["decision"] == "continue_interview"
+    assert payload["turn_decision"]["assistant_message_author"] == "native_interviewer"
     assert payload["material_refresh"]["assistant_turn_created"] is False
-    assert payload["material_refresh"]["prompt_trace"]["graph_trigger"] == "material_change"
+    assert payload["material_refresh"]["prompt_trace"]["native_trigger"] == "material_change"
     assert (
         payload["material_refresh"]["prompt_trace"]["material_change_reason"]
         == "material_added:ds160"
@@ -659,18 +661,13 @@ def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_
     assert record is not None
     material_refresh = record.interviewer_state_json["last_material_refresh"]
     assert material_refresh["agent_runtime"] == "graph"
-    assert material_refresh["selected_public_runtime"] == "graph"
-    assert material_refresh["prompt_trace"]["graph_trigger"] == "material_change"
+    assert material_refresh["selected_public_runtime"] == "native_interviewer"
+    assert material_refresh["prompt_trace"]["native_trigger"] == "material_change"
     assert (
         material_refresh["prompt_trace"]["material_change_reason"]
         == "material_added:ds160"
     )
-    assert material_refresh["graph_events"][0]["payload"]["trigger"] == "material_change"
-    assert (
-        material_refresh["graph_events"][0]["payload"]["material_change_reason"]
-        == "material_added:ds160"
-    )
-    assert material_refresh["graph_events"][-1]["event_type"] == "final"
+    assert "graph_events" not in material_refresh
     assert material_refresh["assistant_turn_created"] is False
 
 
@@ -682,9 +679,9 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
     monkeypatch.setattr(
-        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_material_change",
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
         lambda self, record, *, reason: (_ for _ in ()).throw(
-            RuntimeError("graph material refresh exploded")
+            RuntimeError("native material refresh exploded")
         ),
     )
     refresh_calls = install_material_refresh_stub(monkeypatch)
@@ -702,9 +699,9 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
     assert response.json()["material_refresh"]["graph_runtime_error"] == {
         "status": "error",
         "agent_runtime": "graph",
-        "selected_public_runtime": "graph",
+        "selected_public_runtime": "native_interviewer",
         "error_type": "RuntimeError",
-        "error_message": "graph material refresh exploded",
+        "error_message": "native material refresh exploded",
         "fallback_runtime": "legacy",
     }
 
@@ -719,9 +716,9 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
     assert record.interviewer_state_json["last_material_refresh"]["graph_runtime_error"] == {
         "status": "error",
         "agent_runtime": "graph",
-        "selected_public_runtime": "graph",
+        "selected_public_runtime": "native_interviewer",
         "error_type": "RuntimeError",
-        "error_message": "graph material refresh exploded",
+        "error_message": "native material refresh exploded",
         "fallback_runtime": "legacy",
     }
 
@@ -780,6 +777,21 @@ def test_runtime_trace_endpoint_returns_graph_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
+        lambda self, declared_family: {
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAIAgentsInterviewerRunner.run",
+        lambda self, **kwargs: NativeInterviewerOutput(
+            assistant_message="请说明这个项目如何支持你的学习计划。",
+            decision="continue_interview",
+        ),
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -801,7 +813,7 @@ def test_runtime_trace_endpoint_returns_graph_events(
     )
 
     assert message_response.status_code == 200
-    run_id = message_response.json()["graph_run_id"]
+    run_id = message_response.json()["native_run_id"]
     trace_response = client.get(f"/v1/sessions/{session_id}/runtime-traces/{run_id}")
 
     assert trace_response.status_code == 200
@@ -809,10 +821,10 @@ def test_runtime_trace_endpoint_returns_graph_events(
     assert payload["session_id"] == session_id
     assert payload["run_id"] == run_id
     assert payload["agent_runtime"] == "graph"
-    assert payload["selected_public_runtime"] == "graph"
-    assert payload["graph_trace"]["run_id"] == run_id
-    assert payload["graph_events"][0]["event_type"] == "accepted"
-    assert payload["graph_events"][-1]["event_type"] == "final"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["native_run_id"] == run_id
+    assert payload["graph_trace"] == {}
+    assert payload["graph_events"] == []
 
     missing_response = client.get(
         f"/v1/sessions/{session_id}/runtime-traces/graph-run-missing"

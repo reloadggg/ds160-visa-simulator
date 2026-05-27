@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import DocumentRecord, SessionTurnRecord
 from app.domain.case_memory import (
+    CaseConflict,
     CaseClaim,
     DocumentTypeCandidate,
     EvidenceCard,
@@ -28,6 +29,11 @@ from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.ai_material_bundle_generator_service import (
+    AIMaterialBundleGeneratorService,
+    GeneratedBundleScenario,
+    GeneratedMaterialBundleOutput,
+)
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
@@ -143,12 +149,16 @@ class DebugMaterialBundleService:
         *,
         scenario: str,
         include_synthetic_user_turns: bool = True,
+        seed_text: str | None = None,
+        generation_mode: str = "ai_if_seeded",
     ) -> dict[str, Any]:
         final_payload: dict[str, Any] | None = None
         for event in self.create_bundle_events(
             session_id,
             scenario=scenario,
             include_synthetic_user_turns=include_synthetic_user_turns,
+            seed_text=seed_text,
+            generation_mode=generation_mode,
             include_accepted=False,
         ):
             if event.event == "final":
@@ -163,6 +173,8 @@ class DebugMaterialBundleService:
         *,
         scenario: str,
         include_synthetic_user_turns: bool = True,
+        seed_text: str | None = None,
+        generation_mode: str = "ai_if_seeded",
         include_accepted: bool = True,
     ) -> Iterator[DebugMaterialBundleEvent]:
         if include_accepted:
@@ -172,9 +184,13 @@ class DebugMaterialBundleService:
         if record is None:
             raise LookupError(f"Session not found: {session_id}")
 
-        bundle_spec = self._build_bundle_spec(
-            self._normalize_scenario(scenario),
+        normalized_scenario = self._normalize_scenario(scenario)
+        bundle_spec, generation_metadata = self._build_bundle_spec_for_request(
+            record,
+            normalized_scenario,
             include_synthetic_user_turns=include_synthetic_user_turns,
+            seed_text=seed_text,
+            generation_mode=generation_mode,
         )
         bundle_id = f"dbg-bundle-{uuid4().hex[:12]}"
         yield DebugMaterialBundleEvent(
@@ -185,6 +201,7 @@ class DebugMaterialBundleService:
                 "scenario": bundle_spec.scenario,
                 "scenario_label": bundle_spec.scenario_label,
                 "document_count": len(bundle_spec.documents),
+                "generation_source": generation_metadata["source"],
             },
         )
 
@@ -305,6 +322,7 @@ class DebugMaterialBundleService:
             "phase_state": record.phase_state,
             "gate_status": record.gate_status_json,
             "main_flow_refresh_error": refresh_error,
+            "generation": generation_metadata,
         }
         yield DebugMaterialBundleEvent("final", final_payload)
 
@@ -493,6 +511,166 @@ class DebugMaterialBundleService:
             expected_findings=expected_findings,
             synthetic_turns=synthetic_turns,
         )
+
+    def _build_bundle_spec_for_request(
+        self,
+        record,
+        scenario: DebugMaterialBundleScenario,
+        *,
+        include_synthetic_user_turns: bool,
+        seed_text: str | None,
+        generation_mode: str,
+    ) -> tuple[DebugMaterialBundleSpec, dict[str, Any]]:
+        normalized_mode = generation_mode.strip().lower()
+        normalized_seed = (seed_text or "").strip()
+        should_try_ai = normalized_mode in {"ai", "ai_if_seeded"} and bool(
+            normalized_seed
+        )
+        if should_try_ai:
+            try:
+                generated, trace = AIMaterialBundleGeneratorService(self.db).generate(
+                    record=record,
+                    scenario=scenario,  # type: ignore[arg-type]
+                    seed_text=normalized_seed,
+                    include_synthetic_user_turns=include_synthetic_user_turns,
+                )
+                return self._bundle_spec_from_generated_output(
+                    scenario,
+                    generated,
+                ), {
+                    "source": "ai",
+                    "mode": normalized_mode,
+                    "seed_text_present": True,
+                    "fallback_used": False,
+                    "trace": trace,
+                }
+            except ModelRuntimeError as exc:
+                if normalized_mode == "ai":
+                    raise
+                fallback_spec = self._build_bundle_spec(
+                    scenario,
+                    include_synthetic_user_turns=include_synthetic_user_turns,
+                )
+                return fallback_spec, {
+                    "source": "deterministic",
+                    "mode": normalized_mode,
+                    "seed_text_present": True,
+                    "fallback_used": True,
+                    "fallback_reason": exc.detail,
+                }
+
+        fallback_spec = self._build_bundle_spec(
+            scenario,
+            include_synthetic_user_turns=include_synthetic_user_turns,
+        )
+        return fallback_spec, {
+            "source": "deterministic",
+            "mode": normalized_mode or "deterministic",
+            "seed_text_present": bool(normalized_seed),
+            "fallback_used": False,
+        }
+
+    def _bundle_spec_from_generated_output(
+        self,
+        scenario: DebugMaterialBundleScenario,
+        generated: GeneratedMaterialBundleOutput,
+    ) -> DebugMaterialBundleSpec:
+        documents = [
+            SyntheticDocumentSpec(
+                document_type=document.document_type,
+                filename=document.filename,
+                text=self._safe_material_text(document.raw_text),
+                fields=dict(document.fields),
+                counts_toward_gate=document.counts_toward_gate,
+            )
+            for document in generated.documents
+        ]
+        synthetic_turns = [
+            SyntheticTurnSpec(
+                role=turn.role,
+                content=turn.content,
+                field_claims=dict(turn.field_claims),
+            )
+            for turn in generated.synthetic_turns
+        ]
+        return DebugMaterialBundleSpec(
+            scenario=scenario,
+            scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
+            documents=documents,
+            expected_findings=self._expected_findings_for_scenario(scenario),
+            synthetic_turns=synthetic_turns,
+        )
+
+    def _expected_findings_for_scenario(
+        self,
+        scenario: DebugMaterialBundleScenario,
+    ) -> list[ExpectedFinding]:
+        if scenario == "school_mismatch_bundle":
+            return [
+                ExpectedFinding(
+                    kind="cross_document_conflict",
+                    field_path="/education/school_name",
+                    document_types=["i20", "admission_letter"],
+                    description=(
+                        "I-20 and admission letter contain different school names."
+                    ),
+                    severity="high",
+                )
+            ]
+        if scenario == "identity_mismatch_bundle":
+            return [
+                ExpectedFinding(
+                    kind="cross_document_conflict",
+                    field_path="/identity/passport_number",
+                    document_types=["ds160", "passport_bio"],
+                    description=(
+                        "DS-160 confirmation and passport bio page contain "
+                        "different passport numbers."
+                    ),
+                    severity="high",
+                )
+            ]
+        if scenario == "funding_shortfall_bundle":
+            return [
+                ExpectedFinding(
+                    kind="funding_shortfall",
+                    field_path="/funding/available_funds",
+                    document_types=["i20", "funding_proof"],
+                    description=(
+                        "Available funds are below the first-year cost listed "
+                        "on the I-20."
+                    ),
+                    severity="high",
+                )
+            ]
+        if scenario == "sponsor_chain_gap_bundle":
+            return [
+                ExpectedFinding(
+                    kind="funding_source_chain_gap",
+                    field_path="/funding/source_detail",
+                    document_types=["funding_proof"],
+                    description=(
+                        "Funding source relies on equity transfer proceeds, "
+                        "but no separate registration, transfer, tax, or "
+                        "payment trail documents are present."
+                    ),
+                    severity="medium",
+                )
+            ]
+        if scenario == "claim_vs_document_bundle":
+            return [
+                ExpectedFinding(
+                    kind="claim_vs_document_conflict",
+                    field_path="/funding/primary_source",
+                    document_types=["funding_proof"],
+                    description=(
+                        "The user says the case is self-funded, while funding "
+                        "documents show parent sponsorship."
+                    ),
+                    severity="high",
+                )
+            ]
+        return []
 
     def _normal_documents(self) -> list[SyntheticDocumentSpec]:
         return [
@@ -904,6 +1082,12 @@ class DebugMaterialBundleService:
             )
             for item in evidence_items
         ]
+        conflicts = self._material_conflicts(
+            document=document,
+            bundle_spec=bundle_spec,
+            claims=claims,
+            evidence_cards=evidence_cards,
+        )
         proof_points = [
             ProofPoint(
                 proof_point_id=f"proof-{document.document_id}-{index}",
@@ -929,6 +1113,7 @@ class DebugMaterialBundleService:
             evidence_cards=evidence_cards,
             extracted_claims=claims,
             proof_points=proof_points,
+            conflicts=conflicts,
             suggested_followups=[
                 InterviewNextMove(
                     move_type="ask",
@@ -940,6 +1125,47 @@ class DebugMaterialBundleService:
             ],
             confidence=1.0,
         )
+
+    def _material_conflicts(
+        self,
+        *,
+        document: DocumentRecord,
+        bundle_spec: DebugMaterialBundleSpec,
+        claims: list[CaseClaim],
+        evidence_cards: list[EvidenceCard],
+    ) -> list[CaseConflict]:
+        conflicts: list[CaseConflict] = []
+        for finding in bundle_spec.expected_findings:
+            if finding.kind not in {
+                "cross_document_conflict",
+                "claim_vs_document_conflict",
+            }:
+                continue
+            related_claim_ids = [
+                claim.claim_id for claim in claims if claim.field_path == finding.field_path
+            ]
+            related_evidence_ids = [
+                evidence.evidence_id
+                for evidence in evidence_cards
+                if finding.field_path
+                in str(evidence.metadata.get("field_path") or "")
+            ]
+            if not related_claim_ids and not related_evidence_ids:
+                continue
+            conflicts.append(
+                CaseConflict(
+                    conflict_id=(
+                        f"conflict-{document.document_id}-"
+                        f"{finding.field_path.strip('/').replace('/', '-')}"
+                    ),
+                    claim_ids=related_claim_ids,
+                    evidence_ids=related_evidence_ids,
+                    summary=finding.description,
+                    severity=finding.severity,
+                    suggested_followup="Ask the applicant to clarify the material conflict.",
+                )
+            )
+        return conflicts
 
     def _case_board_delta(
         self,
@@ -969,7 +1195,7 @@ class DebugMaterialBundleService:
             "open_proof_points": [
                 item.model_dump(mode="json") for item in result.proof_points
             ],
-            "conflicts": [],
+            "conflicts": [item.model_dump(mode="json") for item in result.conflicts],
             "next_move": result.suggested_followups[0].model_dump(mode="json"),
         }
 

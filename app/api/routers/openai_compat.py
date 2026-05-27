@@ -173,6 +173,9 @@ def chat_completions(
                 result,
             ),
             "runtime_view_state": runtime_view_state,
+            "agent_runtime": result.get("agent_runtime"),
+            "selected_public_runtime": result.get("selected_public_runtime"),
+            "native_run_id": result.get("native_run_id"),
         },
     }
 

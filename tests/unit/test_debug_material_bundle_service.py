@@ -12,6 +12,7 @@ from app.services.debug_material_bundle_service import (
     DEBUG_MATERIAL_BUNDLE_SCENARIOS,
     DebugMaterialBundleService,
 )
+from app.services.ai_material_bundle_generator_service import GeneratedMaterialBundleOutput
 
 ORACLE_TEXT_PHRASES = (
     "issue:",
@@ -302,3 +303,136 @@ def test_claim_vs_document_bundle_records_synthetic_turn_claim(
     assert record is not None
     claim_history = record.profile_json["ds160_view"]["field_claim_history"]
     assert claim_history["/funding/primary_source"][0]["value"] == "self"
+
+
+def test_seeded_material_bundle_uses_ai_generated_documents(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.refresh_after_material_change",
+        lambda self, session_id, *, reason: {},
+    )
+
+    def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
+        assert seed_text == "我会去 New York University 读 MS Computer Science，父母资助。"
+        return GeneratedMaterialBundleOutput(
+            documents=[
+                {
+                    "document_type": "ds160",
+                    "filename": "ai_ds160.txt",
+                    "raw_text": (
+                        "Online Nonimmigrant Visa Application\n"
+                        "Applicant: TEST APPLICANT\n"
+                        "Purpose: STUDENT (F1)\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "TEST APPLICANT",
+                        "/visa_intent/travel_purpose": "STUDENT (F1)",
+                    },
+                },
+                {
+                    "document_type": "passport_bio",
+                    "filename": "ai_passport.txt",
+                    "raw_text": (
+                        "PASSPORT BIOGRAPHIC PAGE\n"
+                        "Full Name: TEST APPLICANT\n"
+                        "Passport No.: X12345678\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "TEST APPLICANT",
+                        "/identity/passport_number": "X12345678",
+                    },
+                },
+                {
+                    "document_type": "i20",
+                    "filename": "ai_i20.txt",
+                    "raw_text": (
+                        "Certificate of Eligibility for Nonimmigrant Student Status\n"
+                        "School Name: New York University\n"
+                        "Program of Study: MS Computer Science\n"
+                    ),
+                    "fields": {
+                        "/education/school_name": "New York University",
+                        "/education/program_name": "MS Computer Science",
+                    },
+                },
+                {
+                    "document_type": "admission_letter",
+                    "filename": "ai_admission.txt",
+                    "raw_text": (
+                        "New York University\n"
+                        "Office of Graduate Admission\n"
+                        "Program: MS Computer Science\n"
+                    ),
+                    "fields": {
+                        "/education/school_name": "New York University",
+                        "/education/program_name": "MS Computer Science",
+                    },
+                },
+                {
+                    "document_type": "funding_proof",
+                    "filename": "ai_funding.txt",
+                    "raw_text": (
+                        "Bank Balance Certificate\n"
+                        "Primary Source of Support: parents\n"
+                        "Available Balance: USD 90000\n"
+                    ),
+                    "fields": {
+                        "/funding/primary_source": "parents",
+                        "/funding/available_funds": "90000",
+                    },
+                },
+            ],
+        ), {"generator": "stub"}
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fake_generate,
+    )
+    session_id = seed_session(db_session)
+
+    payload = DebugMaterialBundleService(db_session).create_bundle(
+        session_id,
+        scenario="normal_f1_bundle",
+        seed_text="我会去 New York University 读 MS Computer Science，父母资助。",
+    )
+
+    documents = {document["document_type"]: document for document in payload["documents"]}
+    assert payload["generation"]["source"] == "ai"
+    assert documents["i20"]["fields"]["/education/school_name"] == "New York University"
+    assert documents["admission_letter"]["fields"]["/education/program_name"] == (
+        "MS Computer Science"
+    )
+
+
+def test_seeded_material_bundle_falls_back_when_ai_generation_fails(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.refresh_after_material_change",
+        lambda self, session_id, *, reason: {},
+    )
+
+    def fake_generate(self, **kwargs):
+        from app.services.runtime_errors import ModelRuntimeError
+
+        raise ModelRuntimeError(detail="stub provider unavailable", status_code=503)
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fake_generate,
+    )
+    session_id = seed_session(db_session)
+
+    payload = DebugMaterialBundleService(db_session).create_bundle(
+        session_id,
+        scenario="normal_f1_bundle",
+        seed_text="我会去 New York University 读 MS Computer Science，父母资助。",
+    )
+
+    assert payload["generation"]["source"] == "deterministic"
+    assert payload["generation"]["fallback_used"] is True
+    assert "stub provider unavailable" in payload["generation"]["fallback_reason"]
+    assert payload["documents"]

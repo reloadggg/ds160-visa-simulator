@@ -406,6 +406,8 @@ export async function createDebugMaterialBundle(
   sessionId: string,
   scenario: DebugMaterialBundleScenario | string,
   includeSyntheticUserTurns = true,
+  seedText?: string | null,
+  generationMode = "ai_if_seeded",
 ): Promise<DebugMaterialBundleResponse> {
   const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles`), {
     method: "POST",
@@ -413,6 +415,8 @@ export async function createDebugMaterialBundle(
     body: JSON.stringify({
       scenario,
       include_synthetic_user_turns: includeSyntheticUserTurns,
+      seed_text: seedText,
+      generation_mode: generationMode,
     }),
   })
   return handleResponse<DebugMaterialBundleResponse>(response)
@@ -423,6 +427,8 @@ export async function createDebugMaterialBundleStream(
   scenario: DebugMaterialBundleScenario | string,
   includeSyntheticUserTurns: boolean,
   onEvent: (event: DebugMaterialBundleStreamEvent) => void,
+  seedText?: string | null,
+  generationMode = "ai_if_seeded",
 ): Promise<DebugMaterialBundleResponse> {
   const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles/stream`), {
     method: "POST",
@@ -430,6 +436,8 @@ export async function createDebugMaterialBundleStream(
     body: JSON.stringify({
       scenario,
       include_synthetic_user_turns: includeSyntheticUserTurns,
+      seed_text: seedText,
+      generation_mode: generationMode,
     }),
   })
 
@@ -437,7 +445,13 @@ export async function createDebugMaterialBundleStream(
     return handleResponse<DebugMaterialBundleResponse>(response)
   }
   if (!response.body) {
-    return createDebugMaterialBundle(sessionId, scenario, includeSyntheticUserTurns)
+    return createDebugMaterialBundle(
+      sessionId,
+      scenario,
+      includeSyntheticUserTurns,
+      seedText,
+      generationMode,
+    )
   }
 
   const reader = response.body.getReader()

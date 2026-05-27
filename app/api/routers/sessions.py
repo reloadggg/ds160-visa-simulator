@@ -32,6 +32,8 @@ class DebugFillCurrentGapRequest(BaseModel):
 class DebugMaterialBundleRequest(BaseModel):
     scenario: str = "normal_f1_bundle"
     include_synthetic_user_turns: bool = True
+    seed_text: str | None = None
+    generation_mode: str = "ai_if_seeded"
 
 
 @router.post("", status_code=201)
@@ -108,6 +110,8 @@ def debug_create_material_bundle(
             session_id,
             scenario=payload.scenario,
             include_synthetic_user_turns=payload.include_synthetic_user_turns,
+            seed_text=payload.seed_text,
+            generation_mode=payload.generation_mode,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -134,6 +138,8 @@ def debug_create_material_bundle_stream(
                 session_id,
                 scenario=payload.scenario,
                 include_synthetic_user_turns=payload.include_synthetic_user_turns,
+                seed_text=payload.seed_text,
+                generation_mode=payload.generation_mode,
             ):
                 yield _sse_event(event.event, event.data)
         except LookupError as exc:
@@ -172,8 +178,10 @@ def get_runtime_trace(
     )
     for turn in db.scalars(statement):
         metadata = dict(turn.metadata_json or {})
-        if metadata.get("graph_run_id") != run_id:
+        if metadata.get("graph_run_id") != run_id and metadata.get("native_run_id") != run_id:
             continue
+        graph_trace = dict(metadata.get("graph_trace", {}) or {})
+        graph_events = list(metadata.get("graph_events", []) or [])
         return {
             "session_id": session_id,
             "run_id": run_id,
@@ -181,8 +189,10 @@ def get_runtime_trace(
             "turn_index": turn.turn_index,
             "agent_runtime": metadata.get("agent_runtime"),
             "selected_public_runtime": metadata.get("selected_public_runtime"),
-            "graph_trace": dict(metadata.get("graph_trace", {}) or {}),
-            "graph_events": list(metadata.get("graph_events", []) or []),
+            "native_run_id": metadata.get("native_run_id"),
+            "graph_run_id": metadata.get("graph_run_id"),
+            "graph_trace": graph_trace,
+            "graph_events": graph_events,
             "graph_runtime_error": metadata.get("graph_runtime_error"),
         }
     raise HTTPException(status_code=404, detail="runtime trace not found")

@@ -143,6 +143,14 @@ export interface DebugMaterialBundleResponse {
   phase_state?: string
   gate_status?: BackendSessionGateStatus | null
   main_flow_refresh_error?: string | null
+  generation?: {
+    source?: "ai" | "deterministic" | string
+    mode?: string
+    seed_text_present?: boolean
+    fallback_used?: boolean
+    fallback_reason?: string
+    trace?: Record<string, unknown>
+  }
 }
 
 export type DebugMaterialBundleStreamEvent =

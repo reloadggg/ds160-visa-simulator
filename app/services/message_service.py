@@ -21,6 +21,9 @@ from app.services.interview_memory_service import (
     InterviewMemoryService,
 )
 from app.services.interviewer_runtime_service import InterviewerRuntimeService
+from app.services.native_interviewer_runtime_service import (
+    NativeInterviewerRuntimeService,
+)
 from app.services.runtime_view_contract_service import RuntimeViewContractService
 from app.services.session_read_model_service import SessionReadModelService
 
@@ -60,6 +63,7 @@ class MessageService:
         self.gate_runtime = GateRuntimeService(db)
         self.interviewer_runtime = InterviewerRuntimeService(db)
         self.graph_runtime = GraphRuntimeAdapter(db)
+        self.native_interviewer_runtime = NativeInterviewerRuntimeService(db)
         self.session_read_model = SessionReadModelService(db)
         self.case_memory = CaseMemoryService(db)
         self.interview_memory = InterviewMemoryService()
@@ -413,7 +417,7 @@ class MessageService:
     ) -> dict:
         if runtime_mode == "graph":
             try:
-                response = self.graph_runtime.run_turn(
+                response = self.native_interviewer_runtime.run_turn(
                     record,
                     message_text,
                     user_turn=user_turn,
@@ -429,13 +433,13 @@ class MessageService:
                 response["graph_runtime_error"] = {
                     "status": "error",
                     "agent_runtime": settings.agent_runtime,
-                    "selected_public_runtime": "graph",
+                    "selected_public_runtime": "native_interviewer",
                     "error_type": exc.__class__.__name__,
                     "error_message": str(exc),
                     "fallback_runtime": "legacy",
                 }
                 return response
-            response["selected_public_runtime"] = "graph"
+            response["selected_public_runtime"] = "native_interviewer"
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
 
@@ -456,7 +460,7 @@ class MessageService:
     ) -> dict:
         if runtime_mode == "graph":
             try:
-                response = self.graph_runtime.run_material_change(
+                response = self.native_interviewer_runtime.run_material_change(
                     record,
                     reason=self._graph_material_change_reason(reason),
                 )
@@ -467,13 +471,13 @@ class MessageService:
                 response["graph_runtime_error"] = {
                     "status": "error",
                     "agent_runtime": settings.agent_runtime,
-                    "selected_public_runtime": "graph",
+                    "selected_public_runtime": "native_interviewer",
                     "error_type": exc.__class__.__name__,
                     "error_message": str(exc),
                     "fallback_runtime": "legacy",
                 }
                 return response
-            response["selected_public_runtime"] = "graph"
+            response["selected_public_runtime"] = "native_interviewer"
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
 
@@ -630,6 +634,8 @@ class MessageService:
             "document_review": dict(response.get("document_review", {}) or {}),
             "advisory_context": dict(response.get("advisory_context", {}) or {}),
             "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+            "native_run_id": response.get("native_run_id"),
+            "selected_public_runtime": response.get("selected_public_runtime"),
             "graph_run_id": response.get("graph_run_id"),
             "graph_trace": dict(response.get("graph_trace", {}) or {}),
         }
@@ -694,6 +700,9 @@ class MessageService:
             else "graph_runtime_adapter"
             if response.get("agent_runtime") == "graph"
             and response.get("selected_public_runtime", "graph") == "graph"
+            else "native_interviewer_runtime"
+            if response.get("agent_runtime") == "graph"
+            and response.get("selected_public_runtime") == "native_interviewer"
             else "interviewer_runtime_service"
         )
         assistant_turn = self.session_turn_repo.append_assistant_turn(
@@ -709,6 +718,7 @@ class MessageService:
                 "graph_shadow": response.get("graph_shadow"),
                 "agent_runtime": response.get("agent_runtime"),
                 "selected_public_runtime": response.get("selected_public_runtime"),
+                "native_run_id": response.get("native_run_id"),
                 "graph_run_id": response.get("graph_run_id"),
                 "graph_trace": response.get("graph_trace"),
                 "graph_events": response.get("graph_events"),

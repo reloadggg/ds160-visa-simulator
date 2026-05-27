@@ -47,10 +47,34 @@ class AgentModelFactory:
         stage_key: str,
         declared_family: str | None = None,
     ) -> tuple[OpenAIChatModel | None, dict[str, Any]]:
+        runtime = self.build_runtime_config(
+            module_key,
+            stage_key,
+            declared_family=declared_family,
+        )
+        if (
+            runtime.get("provider") not in SUPPORTED_PROVIDERS
+            or runtime.get("model_unavailable_reason")
+        ):
+            return None, runtime
+
+        user_config = current_user_model_config()
+        api_key = user_config.api_key if user_config is not None else os.getenv("OPENAI_API_KEY")
+        base_url = user_config.base_url if user_config is not None else os.getenv("OPENAI_BASE_URL")
+        provider = OpenAIProvider(base_url=base_url, api_key=api_key)
+        model = OpenAIChatModel(runtime["model"], provider=provider)
+        return model, runtime
+
+    def build_runtime_config(
+        self,
+        module_key: str,
+        stage_key: str,
+        declared_family: str | None = None,
+    ) -> dict[str, Any]:
         try:
             runtime = self.registry.get(module_key, stage_key)
         except KeyError:
-            return None, dict(EMPTY_RUNTIME)
+            return dict(EMPTY_RUNTIME)
 
         if module_key.endswith("_agent"):
             prompt_payload = self.prompt_registry.load_prompt_payload(
@@ -76,7 +100,7 @@ class AgentModelFactory:
             )
 
         if runtime.get("provider") not in SUPPORTED_PROVIDERS:
-            return None, runtime
+            return runtime
 
         user_config = current_user_model_config()
         api_key = user_config.api_key if user_config is not None else os.getenv("OPENAI_API_KEY")
@@ -105,11 +129,9 @@ class AgentModelFactory:
                 "当前后端未配置可用的对话模型，无法生成面签问答。"
                 f"请检查 {', '.join(missing_env_vars)}。"
             )
-            return None, runtime
+            return runtime
 
-        provider = OpenAIProvider(base_url=base_url, api_key=api_key)
-        model = OpenAIChatModel(runtime["model"], provider=provider)
-        return model, runtime
+        return runtime
 
     def build_instructions(
         self,

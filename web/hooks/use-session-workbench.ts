@@ -324,7 +324,11 @@ function buildDebugBundleFinalMessage(
     (document) => document.document_type_label ?? document.filename,
   )
   const option = getDebugMaterialBundleOption(bundle.scenario)
-  return `已生成${option.label}：${formatRequestedDocuments(documentNames)}。材料已写入材料库，可以直接打开查看正文和提取字段。`
+  const source =
+    bundle.generation?.source === "ai"
+      ? "AI 已根据你的会话信息生成"
+      : "已生成"
+  return `${source}${option.label}：${formatRequestedDocuments(documentNames)}。材料已写入材料库，可以直接打开查看正文和提取字段。`
 }
 
 function inferAttachmentKind(
@@ -2402,8 +2406,16 @@ export function useSessionWorkbench() {
     }
   }, [interviewReview, sessionId, visaType])
 
+  const debugMaterialSeedText = useMemo(() => {
+    return (
+      messages.find(
+        (message) => message.role === "user" && message.content.trim(),
+      )?.content.trim() ?? ""
+    )
+  }, [messages])
+
   const runDebugMaterialBundle = useCallback(
-    async (scenario: DebugMaterialBundleScenario) => {
+    async (scenario: DebugMaterialBundleScenario, seedText?: string) => {
       if (!sessionId || isDebugBundleGenerating) {
         setSettingsFeedback(
           !sessionId ? "当前没有可生成材料包的会话。" : "材料包正在生成中。",
@@ -2420,9 +2432,12 @@ export function useSessionWorkbench() {
       }
 
       const progressLines: string[] = []
+      const normalizedSeedText = seedText?.trim() || debugMaterialSeedText
       const progressMessageId = appendMessage({
         role: "system",
-        content: `正在生成${getDebugMaterialBundleOption(scenario).label}...`,
+        content: normalizedSeedText
+          ? `正在根据会话信息生成${getDebugMaterialBundleOption(scenario).label}...`
+          : `正在生成${getDebugMaterialBundleOption(scenario).label}...`,
         status: "sending",
       })
       const updateProgress = (line: string) => {
@@ -2445,6 +2460,8 @@ export function useSessionWorkbench() {
           (event) => {
             updateProgress(describeDebugBundleEvent(event))
           },
+          normalizedSeedText,
+          normalizedSeedText ? "ai_if_seeded" : "deterministic",
         )
         updateMessageStatus(progressMessageId, "sent")
         setSession((prev) =>
@@ -2487,7 +2504,11 @@ export function useSessionWorkbench() {
           })
         }
         await refreshReports(sessionId)
-        if (result.main_flow_refresh_error) {
+        if (result.generation?.fallback_used && result.generation.fallback_reason) {
+          setSettingsFeedback(
+            `AI 材料生成失败，已使用备用材料包：${result.generation.fallback_reason}`,
+          )
+        } else if (result.main_flow_refresh_error) {
           setSettingsFeedback(
             `材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
           )
@@ -2508,6 +2529,7 @@ export function useSessionWorkbench() {
     },
     [
       appendMessage,
+      debugMaterialSeedText,
       getErrorMessage,
       isDebugBundleGenerating,
       mockMode,
@@ -2519,7 +2541,8 @@ export function useSessionWorkbench() {
   )
 
   const handleDebugMaterialBundleScenario = useCallback(
-    (scenario: DebugMaterialBundleScenario) => runDebugMaterialBundle(scenario),
+    (scenario: DebugMaterialBundleScenario, seedText?: string) =>
+      runDebugMaterialBundle(scenario, seedText),
     [runDebugMaterialBundle],
   )
 
@@ -2609,6 +2632,7 @@ export function useSessionWorkbench() {
     settingsFeedback,
     isDebugBundleGenerating,
     debugBundleProgress,
+    debugMaterialSeedText,
     userModelConfig,
     availableModels,
     isLoadingModels,

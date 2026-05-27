@@ -352,8 +352,8 @@ def test_parse_worker_material_refresh_updates_graph_state_without_assistant_tur
     assert record is not None
     material_refresh = record.interviewer_state_json["last_material_refresh"]
     assert material_refresh["agent_runtime"] == "graph"
-    assert material_refresh["selected_public_runtime"] == "graph"
-    assert material_refresh["prompt_trace"]["graph_trigger"] == "material_change"
+    assert material_refresh["selected_public_runtime"] == "native_interviewer"
+    assert material_refresh["prompt_trace"]["native_trigger"] == "material_change"
     assert material_refresh["prompt_trace"]["material_change_reason"] == "case_understanding"
     assert material_refresh["assistant_turn_created"] is False
 
@@ -366,9 +366,9 @@ def test_parse_worker_keeps_completed_job_when_material_refresh_fails(
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
     monkeypatch.setattr(
-        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_material_change",
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
         lambda self, record, *, reason: (_ for _ in ()).throw(
-            RuntimeError("graph material refresh failed after parse")
+            RuntimeError("native material refresh failed after parse")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})

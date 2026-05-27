@@ -25,6 +25,7 @@ from app.domain.runtime import RuntimeTraceEntry, build_initial_gate_status
 from app.main import app
 from app.agents.user_model_config import current_user_model_config
 from app.core import settings as settings_module
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 from app.services.runtime_errors import ModelRuntimeError
 from app.workers.parse_worker import ParseWorker
 
@@ -114,6 +115,29 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
 def disable_runtime_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+
+def install_native_interviewer_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    assistant_message: str = "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？",
+    decision: str = "continue_interview",
+) -> None:
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
+        lambda self, declared_family: {
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAIAgentsInterviewerRunner.run",
+        lambda self, **kwargs: NativeInterviewerOutput(
+            assistant_message=assistant_message,
+            decision=decision,
+        ),
+    )
 
 
 def seed_ready_for_interview_session(
@@ -538,6 +562,7 @@ def test_message_turn_graph_starts_without_materials_after_f1_selection(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    install_native_interviewer_stub(monkeypatch)
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
         lambda self, record, message_text: (_ for _ in ()).throw(
@@ -556,7 +581,10 @@ def test_message_turn_graph_starts_without_materials_after_f1_selection(
     assert response.status_code == 200
     payload = response.json()
     assert payload["agent_runtime"] == "graph"
-    assert payload["assistant_message"] == "为什么选择去美国读这个项目？"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["assistant_message"] == (
+        "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
+    )
     assert payload["requested_documents"] == []
     assert payload["gate_progress"]["overall_status"] == "pending_documents"
 
@@ -575,7 +603,7 @@ def test_message_turn_graph_starts_without_materials_after_f1_selection(
     assert document_count == 0
     assert [(turn.role, turn.source) for turn in turns] == [
         ("user", "user_message"),
-        ("assistant", "graph_runtime_adapter"),
+        ("assistant", "native_interviewer_runtime"),
     ]
 
 
@@ -1190,6 +1218,7 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    install_native_interviewer_stub(monkeypatch)
 
     def legacy_must_not_run(self, record, message_text: str) -> dict:
         raise AssertionError("legacy runtime should not run in graph mode")
@@ -1208,14 +1237,19 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistant_message"] == "为什么选择去美国读这个项目？"
+    assert payload["assistant_message"] == (
+        "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
+    )
     assert payload["agent_runtime"] == "graph"
-    assert payload["graph_run_id"].startswith("graph-run-")
-    assert payload["graph_trace"]["event_count"] > 0
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["native_run_id"].startswith("native-run-")
+    assert "graph_run_id" not in payload
+    assert "graph_trace" not in payload
     assert "graph_events" not in payload
     assert "graph_runtime_error" not in payload
-    assert payload["turn_decision"]["assistant_message_author"] == "adjudication_agent"
-    assert payload["prompt_trace"]["graph_run_id"] == payload["graph_run_id"]
+    assert payload["turn_decision"]["assistant_message_author"] == "native_interviewer"
+    assert payload["prompt_trace"]["native_run_id"] == payload["native_run_id"]
+    assert payload["prompt_trace"]["prompt_pack_id"] == "ds160.native_interviewer"
     assert payload["runtime_view_state"]["source_turn_id"]
 
     with db_session_factory() as db:
@@ -1228,20 +1262,22 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
 
     assert [(turn.role, turn.source) for turn in turns] == [
         ("user", "user_message"),
-        ("assistant", "graph_runtime_adapter"),
+        ("assistant", "native_interviewer_runtime"),
     ]
     assistant_turn = turns[1]
     metadata = assistant_turn.metadata_json
     assert metadata["agent_runtime"] == "graph"
-    assert metadata["graph_run_id"] == payload["graph_run_id"]
+    assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["native_run_id"] == payload["native_run_id"]
     assert metadata["runtime_view_state"]["source_turn_id"] == assistant_turn.turn_id
-    assert metadata["runtime_view_state"]["prompt_trace"]["graph_run_id"] == payload["graph_run_id"]
+    assert metadata["runtime_view_state"]["prompt_trace"]["native_run_id"] == payload["native_run_id"]
     assert metadata["turn_record"]["assistant_turn_id"] == assistant_turn.turn_id
     assert metadata["turn_record"]["user_turn_id"] == turns[0].turn_id
-    assert metadata["graph_events"][-1]["event_type"] == "final"
+    assert "graph_events" not in metadata or metadata["graph_events"] is None
     assert record is not None
     assert record.current_governor_decision == "continue_interview"
     assert record.interviewer_state_json["owner"] == "graph_runtime"
+    assert record.interviewer_state_json["selected_public_runtime"] == "native_interviewer"
 
 
 def test_message_turn_graph_canary_hundred_percent_uses_graph(
@@ -1251,6 +1287,7 @@ def test_message_turn_graph_canary_hundred_percent_uses_graph(
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_canary")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_canary_percent", 100)
+    install_native_interviewer_stub(monkeypatch)
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
         lambda self, record, message_text: (_ for _ in ()).throw(
@@ -1267,6 +1304,7 @@ def test_message_turn_graph_canary_hundred_percent_uses_graph(
 
     assert response.status_code == 200
     assert response.json()["agent_runtime"] == "graph"
+    assert response.json()["selected_public_runtime"] == "native_interviewer"
 
     with db_session_factory() as db:
         assistant_turn = db.scalar(
@@ -1279,7 +1317,7 @@ def test_message_turn_graph_canary_hundred_percent_uses_graph(
         )
 
     assert assistant_turn is not None
-    assert assistant_turn.source == "graph_runtime_adapter"
+    assert assistant_turn.source == "native_interviewer_runtime"
 
 
 def test_message_turn_graph_failure_fails_open_to_legacy(
@@ -1290,9 +1328,9 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
     monkeypatch.setattr(
-        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_turn",
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
         lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
-            RuntimeError("graph exploded")
+            RuntimeError("native exploded")
         ),
     )
     monkeypatch.setattr(
@@ -1338,28 +1376,24 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
     assert turns[1].metadata_json["graph_runtime_error"] == {
         "status": "error",
         "agent_runtime": "graph",
-        "selected_public_runtime": "graph",
+        "selected_public_runtime": "native_interviewer",
         "error_type": "RuntimeError",
-        "error_message": "graph exploded",
+        "error_message": "native exploded",
         "fallback_runtime": "legacy",
     }
 
 
-def test_message_turn_graph_typed_adjudication_missing_model_uses_safe_fallback(
+def test_message_turn_graph_native_missing_model_returns_503_without_canned_fallback(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
-    monkeypatch.setattr(
-        settings_module.settings,
-        "agent_runtime_typed_adjudication_enabled",
-        True,
-    )
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
         lambda self, record, message_text: (_ for _ in ()).throw(
-            AssertionError("legacy runtime should not run for graph typed fallback")
+            AssertionError("legacy runtime should not run when native model is missing")
         ),
     )
 
@@ -1370,33 +1404,18 @@ def test_message_turn_graph_typed_adjudication_missing_model_uses_safe_fallback(
         json={"role": "user", "content": "I will study computer science."},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["agent_runtime"] == "graph"
-    assert payload["turn_decision"]["assistant_message_author"] == (
-        "deterministic_safe_fallback"
-    )
-    assert payload["turn_decision"]["guard_status"] == "fallback_required"
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.json()["detail"]
+    assert "OPENAI_BASE_URL" in response.json()["detail"]
 
     with db_session_factory() as db:
-        assistant_turn = db.scalar(
+        turns = db.scalars(
             select(SessionTurnRecord)
-            .where(
-                SessionTurnRecord.session_id == session_id,
-                SessionTurnRecord.role == "assistant",
-            )
+            .where(SessionTurnRecord.session_id == session_id)
             .order_by(SessionTurnRecord.turn_index)
-        )
+        ).all()
 
-    assert assistant_turn is not None
-    adjudication_event = next(
-        event
-        for event in assistant_turn.metadata_json["graph_events"]
-        if event["event_type"] == "adjudication_completed"
-    )
-    assert adjudication_event["payload"]["fallback_used"] is True
-    assert adjudication_event["payload"]["fallback_reason"] == "model_unavailable"
-    assert adjudication_event["payload"]["llm_calls_used"] == 0
+    assert turns == []
 
 
 def test_messages_stream_graph_mode_keeps_sse_contract(
@@ -1405,6 +1424,7 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    install_native_interviewer_stub(monkeypatch)
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     with client.stream(
@@ -1419,7 +1439,10 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
     assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
     final_payload = events[-1][1]
     assert final_payload["agent_runtime"] == "graph"
-    assert final_payload["assistant_message"] == "为什么选择去美国读这个项目？"
+    assert final_payload["selected_public_runtime"] == "native_interviewer"
+    assert final_payload["assistant_message"] == (
+        "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
+    )
     assert "graph_events" not in final_payload
 
 

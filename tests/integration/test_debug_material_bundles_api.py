@@ -11,10 +11,12 @@ from app.db.base import Base
 from app.db.evidence_models import EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
-from app.domain.agent_runtime import GraphRunResult
 from app.main import app
+from app.services.ai_material_bundle_generator_service import (
+    GeneratedMaterialBundleOutput,
+)
 from app.services.capability_orchestrator import CapabilityOrchestrator
-from app.services.llm_node_runner import LLMNodeRequest, LLMNodeResponse
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 
 
 @pytest.fixture()
@@ -126,6 +128,113 @@ def test_debug_material_bundle_stream_emits_progress_and_final(
     assert "identity_mismatch_bundle" in body
 
 
+def test_debug_material_bundle_api_accepts_seeded_ai_generation(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    captured: dict[str, str] = {}
+
+    def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
+        captured["scenario"] = scenario
+        captured["seed_text"] = seed_text
+        return GeneratedMaterialBundleOutput(
+            documents=[
+                {
+                    "document_type": "ds160",
+                    "filename": "ai_ds160.txt",
+                    "raw_text": (
+                        "Online Nonimmigrant Visa Application\n"
+                        "Applicant: TEST APPLICANT\n"
+                        "Purpose: STUDENT (F1)\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "TEST APPLICANT",
+                        "/visa_intent/travel_purpose": "STUDENT (F1)",
+                    },
+                },
+                {
+                    "document_type": "passport_bio",
+                    "filename": "ai_passport.txt",
+                    "raw_text": (
+                        "PASSPORT BIOGRAPHIC PAGE\n"
+                        "Full Name: TEST APPLICANT\n"
+                        "Passport No.: X12345678\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "TEST APPLICANT",
+                        "/identity/passport_number": "X12345678",
+                    },
+                },
+                {
+                    "document_type": "i20",
+                    "filename": "ai_i20.txt",
+                    "raw_text": (
+                        "Certificate of Eligibility for Nonimmigrant Student Status\n"
+                        "School Name: New York University\n"
+                        "Program of Study: MS Computer Science\n"
+                    ),
+                    "fields": {
+                        "/education/school_name": "New York University",
+                        "/education/program_name": "MS Computer Science",
+                    },
+                },
+                {
+                    "document_type": "admission_letter",
+                    "filename": "ai_admission.txt",
+                    "raw_text": (
+                        "New York University\n"
+                        "Office of Graduate Admission\n"
+                        "Program: MS Computer Science\n"
+                    ),
+                    "fields": {
+                        "/education/school_name": "New York University",
+                        "/education/program_name": "MS Computer Science",
+                    },
+                },
+                {
+                    "document_type": "funding_proof",
+                    "filename": "ai_funding.txt",
+                    "raw_text": (
+                        "Bank Balance Certificate\n"
+                        "Primary Source of Support: parents\n"
+                        "Available Balance: USD 90000\n"
+                    ),
+                    "fields": {
+                        "/funding/primary_source": "parents",
+                        "/funding/available_funds": "90000",
+                    },
+                },
+            ],
+        ), {"generator": "stub"}
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fake_generate,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={
+            "scenario": "normal_f1_bundle",
+            "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured == {
+        "scenario": "normal_f1_bundle",
+        "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+    }
+    assert payload["generation"]["source"] == "ai"
+    assert payload["documents"][2]["fields"]["/education/school_name"] == (
+        "New York University"
+    )
+
+
 def test_claim_vs_document_bundle_fallback_detects_claim_history_conflict(
     client: TestClient,
     db_session_factory,
@@ -194,9 +303,9 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     payload = response.json()
     assert payload["scenario"] == "school_mismatch_bundle"
     assert payload["turn_decision"]["decision"] == "high_risk_review"
-    assert payload["turn_decision"]["next_safe_action"] == "ask_clarification"
+    assert payload["turn_decision"]["assistant_message_author"] == "native_interviewer"
     assert payload["material_refresh"]["assistant_turn_created"] is False
-    assert payload["material_refresh"]["prompt_trace"]["graph_trigger"] == "material_change"
+    assert payload["material_refresh"]["prompt_trace"]["native_trigger"] == "material_change"
     assert (
         payload["material_refresh"]["prompt_trace"]["material_change_reason"]
         == "materials_updated"
@@ -228,15 +337,13 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     assert record is not None
     metadata = record.interviewer_state_json["last_material_refresh"]
     assert metadata["agent_runtime"] == "graph"
-    assert metadata["selected_public_runtime"] == "graph"
+    assert metadata["selected_public_runtime"] == "native_interviewer"
     assert metadata["governor_decision"] == "high_risk_review"
-    assert metadata["prompt_trace"]["graph_trigger"] == "material_change"
+    assert metadata["prompt_trace"]["native_trigger"] == "material_change"
     assert metadata["prompt_trace"]["material_change_reason"] == "materials_updated"
     serialized_graph_metadata = str(
         {
             "prompt_trace": metadata.get("prompt_trace"),
-            "graph_events": metadata.get("graph_events"),
-            "graph_trace": metadata.get("graph_trace"),
             "document_review": metadata.get("document_review"),
         }
     )
@@ -251,60 +358,53 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     assert "dbg-bundle-" not in serialized_review_context
 
 
-def test_debug_material_bundle_typed_graph_prompt_does_not_leak_oracle_context(
+def test_debug_material_bundle_native_prompt_does_not_leak_oracle_context(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
     monkeypatch.setattr(
-        settings_module.settings,
-        "agent_runtime_typed_adjudication_enabled",
-        True,
-    )
-    monkeypatch.setattr(
-        "app.services.graph_runtime_adapter.settings.agent_runtime_typed_adjudication_enabled",
-        True,
-    )
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key, declared_family=None: (
-            object(),
-            {
-                "provider": "openai_compatible",
-                "model": "gpt-5.4",
-                "reasoning_effort": "high",
-            },
-        ),
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
+        lambda self, declared_family: {
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+            "reasoning_effort": "high",
+        },
     )
     captured_prompts: list[str] = []
 
-    def fake_run(self, request: LLMNodeRequest) -> LLMNodeResponse:
-        captured_prompts.append(request.prompt)
-        return LLMNodeResponse(
-            output=GraphRunResult(
-                assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
-                assistant_message_author="adjudication_agent",
-                decision="continue_interview",
-            ),
-            metadata={},
+    def fake_run(self, **kwargs):
+        captured_prompts.append(kwargs["prompt"])
+        return NativeInterviewerOutput(
+            assistant_message="我会继续围绕你的 DS-160 材料做下一步核对。",
+            decision="continue_interview",
         )
 
     monkeypatch.setattr(
-        "app.services.llm_node_runner.PydanticAILLMNodeRunner.run",
+        "app.services.native_interviewer_runtime_service.OpenAIAgentsInterviewerRunner.run",
         fake_run,
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
-    response = client.post(
+    bundle_response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
         json={"scenario": "school_mismatch_bundle"},
+    )
+
+    assert bundle_response.status_code == 200
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "我想继续说明我的学校材料。"},
     )
 
     assert response.status_code == 200
     assert len(captured_prompts) == 1
     prompt_payload = json.loads(captured_prompts[0])
-    assert prompt_payload["user"] == "materials_updated"
+    assert prompt_payload["current_user_message"] == "我想继续说明我的学校材料。"
+    assert prompt_payload["interview_context"]["context_policy"][
+        "legacy_extracted_hints_are_untrusted"
+    ] is True
     serialized_prompt = captured_prompts[0]
     assert "debug_material_bundle" in serialized_prompt
     assert "expected_findings" not in serialized_prompt
@@ -323,9 +423,9 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
     monkeypatch.setattr(
-        "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_material_change",
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
         lambda self, record, *, reason: (_ for _ in ()).throw(
-            RuntimeError("graph material refresh exploded")
+            RuntimeError("native material refresh exploded")
         ),
     )
 
@@ -387,9 +487,9 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
     assert payload["material_refresh"]["graph_runtime_error"] == {
         "status": "error",
         "agent_runtime": "graph",
-        "selected_public_runtime": "graph",
+        "selected_public_runtime": "native_interviewer",
         "error_type": "RuntimeError",
-        "error_message": "graph material refresh exploded",
+        "error_message": "native material refresh exploded",
         "fallback_runtime": "legacy",
     }
 

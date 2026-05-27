@@ -11,6 +11,7 @@ from app.core import settings as settings_module
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 from app.services.runtime_errors import ModelRuntimeError, ModelUnavailableError
 
 
@@ -44,6 +45,28 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
+def install_native_interviewer_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    assistant_message: str = "你提到父母会资助。请具体说明他们的资金来源和这笔钱如何覆盖第一年费用？",
+) -> None:
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
+        lambda self, declared_family: {
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAIAgentsInterviewerRunner.run",
+        lambda self, **kwargs: NativeInterviewerOutput(
+            assistant_message=assistant_message,
+            decision="continue_interview",
+        ),
+    )
+
+
 def test_chat_completions_maps_to_domain_flow(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -71,7 +94,7 @@ def test_chat_completions_maps_to_domain_flow(
     choice = payload["choices"][0]["message"]
     assert choice["role"] == "assistant"
     assert choice["content"]
-    assert set(payload["metadata"]) == {
+    assert {
         "session_id",
         "phase_state",
         "context_mode",
@@ -82,7 +105,7 @@ def test_chat_completions_maps_to_domain_flow(
         "document_review",
         "prompt_trace",
         "runtime_view_state",
-    }
+    }.issubset(set(payload["metadata"]))
     assert payload["metadata"]["session_id"].startswith("sess-")
     assert payload["metadata"]["phase_state"] == "interview"
     assert payload["metadata"]["context_mode"] == "new_session"
@@ -145,6 +168,7 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    install_native_interviewer_stub(monkeypatch)
 
     response = client.post(
         "/v1/chat/completions",
@@ -158,12 +182,17 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
     assert response.status_code == 200
     payload = response.json()
     metadata = payload["metadata"]
-    assert payload["choices"][0]["message"]["content"] == "为什么选择去美国读这个项目？"
+    assert payload["choices"][0]["message"]["content"] == (
+        "你提到父母会资助。请具体说明他们的资金来源和这笔钱如何覆盖第一年费用？"
+    )
+    assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["native_run_id"].startswith("native-run-")
     assert metadata["turn_decision"]["decision"] == "continue_interview"
-    assert metadata["turn_decision"]["assistant_message_author"] == "adjudication_agent"
-    assert metadata["prompt_trace"]["prompt_pack_id"] == "ds160.graph_runtime"
+    assert metadata["turn_decision"]["assistant_message_author"] == "native_interviewer"
+    assert metadata["prompt_trace"]["prompt_pack_id"] == "ds160.native_interviewer"
+    assert metadata["prompt_trace"]["native_run_id"] == metadata["native_run_id"]
     assert metadata["runtime_view_state"]["source_turn_id"]
-    assert metadata["runtime_view_state"]["prompt_trace"]["graph_run_id"]
+    assert metadata["runtime_view_state"]["prompt_trace"]["native_run_id"]
 
     with db_session_factory() as db:
         assistant_turn = db.scalar(
@@ -176,8 +205,9 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
         )
 
     assert assistant_turn is not None
-    assert assistant_turn.source == "graph_runtime_adapter"
-    assert assistant_turn.metadata_json["graph_events"][-1]["event_type"] == "final"
+    assert assistant_turn.source == "native_interviewer_runtime"
+    assert assistant_turn.metadata_json["selected_public_runtime"] == "native_interviewer"
+    assert assistant_turn.metadata_json["native_run_id"] == metadata["native_run_id"]
 
 
 def test_chat_completions_uses_same_runtime_gate_initialization(
