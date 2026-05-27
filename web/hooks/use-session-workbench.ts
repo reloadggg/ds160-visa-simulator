@@ -20,6 +20,7 @@ import {
   getInternalReport,
   getRequiredPackage,
   getRagStatus,
+  getRuntimeDebugSnapshot,
   getUserReport,
   listUserModels,
   sendMessage,
@@ -28,6 +29,7 @@ import {
   uploadRagFile,
 } from "@/lib/api/client"
 import { getApiBaseUrl } from "@/lib/api/config"
+import { APP_VERSION } from "@/lib/app-version"
 import { getDebugMaterialBundleOption } from "@/lib/debug-material-bundles"
 import {
   getMockRequiredPackage,
@@ -60,6 +62,8 @@ import type {
   RagUploadMetadata,
   RagStatus,
   RequiredPackage,
+  RuntimeDebugEvent,
+  RuntimeDebugSnapshot,
   Session,
   SessionHistoryEntry,
   UploadedMaterial,
@@ -72,6 +76,7 @@ import type {
 const HISTORY_STORAGE_KEY = "ds160-web-history-v1"
 const MODEL_CONFIG_STORAGE_KEY = "ds160-user-model-config-v1"
 const MAX_PERSISTED_PREVIEW_BYTES = 2 * 1024 * 1024
+const MAX_RUNTIME_DEBUG_EVENTS = 160
 
 const DEFAULT_USER_MODEL_CONFIG: UserModelConfig = {
   enabled: false,
@@ -278,6 +283,29 @@ function describeDebugBundleEvent(
       return `材料包生成失败：${event.data.detail ?? "未知错误"}`
     default:
       return "材料包生成状态已更新。"
+  }
+}
+
+function runtimeDebugEventFromMaterialEvent(
+  event: DebugMaterialBundleStreamEvent,
+): RuntimeDebugEvent {
+  const status =
+    event.event === "error"
+      ? "failed"
+      : event.event === "progress"
+        ? "still_running"
+        : event.event === "debug_bundle_started"
+          ? "started"
+          : "completed"
+  return {
+    phase: "material_bundle",
+    step: event.event,
+    status,
+    summary: describeDebugBundleEvent(event),
+    payload:
+      event.data && typeof event.data === "object" && !Array.isArray(event.data)
+        ? (event.data as Record<string, unknown>)
+        : {},
   }
 }
 
@@ -1304,6 +1332,15 @@ export function useSessionWorkbench() {
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null)
   const [isDebugBundleGenerating, setIsDebugBundleGenerating] = useState(false)
   const [debugBundleProgress, setDebugBundleProgress] = useState<string[]>([])
+  const [runtimeDebugSnapshot, setRuntimeDebugSnapshot] =
+    useState<RuntimeDebugSnapshot | null>(null)
+  const [runtimeDebugEvents, setRuntimeDebugEvents] = useState<
+    RuntimeDebugEvent[]
+  >([])
+  const [latestDebugMaterialBundle, setLatestDebugMaterialBundle] =
+    useState<DebugMaterialBundleResponse | null>(null)
+  const [isLoadingRuntimeDebug, setIsLoadingRuntimeDebug] = useState(false)
+  const [runtimeDebugError, setRuntimeDebugError] = useState<string | null>(null)
   const [userModelConfig, setUserModelConfig] = useState<UserModelConfig>(() =>
     loadUserModelConfig(),
   )
@@ -1502,6 +1539,108 @@ export function useSessionWorkbench() {
     },
     [fetchUserReport],
   )
+
+  const recordRuntimeDebugEvent = useCallback((event: RuntimeDebugEvent) => {
+    setRuntimeDebugEvents((prev) =>
+      [
+        ...prev,
+        {
+          ...event,
+          received_at: event.received_at ?? new Date().toISOString(),
+        },
+      ].slice(-MAX_RUNTIME_DEBUG_EVENTS),
+    )
+  }, [])
+
+  const refreshRuntimeDebugSnapshot = useCallback(
+    async (targetSessionId?: string | null): Promise<RuntimeDebugSnapshot | null> => {
+      const nextSessionId = targetSessionId ?? sessionId
+      if (!nextSessionId) {
+        setRuntimeDebugError("当前没有可调试的会话。")
+        return null
+      }
+      if (mockMode) {
+        const mockSnapshot: RuntimeDebugSnapshot = {
+          schema_version: "ds160.runtime_debug.v1.mock",
+          backend: {
+            version: "mock",
+            agent_runtime: "mock",
+            debug_enabled: true,
+          },
+          session: {
+            session_id: nextSessionId,
+            phase_state: session?.phase_state ?? "interview",
+            declared_family: visaType,
+          },
+          runtime_view_state: MOCK_INTERNAL_REPORT.runtime_view_state ?? {},
+          runtime_trace: MOCK_INTERNAL_REPORT.runtime_trace ?? [],
+          material_generation: {},
+          errors: [],
+        }
+        setRuntimeDebugSnapshot(mockSnapshot)
+        setRuntimeDebugError(null)
+        return mockSnapshot
+      }
+
+      setIsLoadingRuntimeDebug(true)
+      setRuntimeDebugError(null)
+      try {
+        const snapshot = await getRuntimeDebugSnapshot(nextSessionId)
+        setRuntimeDebugSnapshot(snapshot)
+        return snapshot
+      } catch (error) {
+        setRuntimeDebugError(
+          getErrorMessage(error, "获取运行时调试快照失败。"),
+        )
+        return null
+      } finally {
+        setIsLoadingRuntimeDebug(false)
+      }
+    },
+    [getErrorMessage, mockMode, session?.phase_state, sessionId, visaType],
+  )
+
+  const handleCopyRuntimeDebugPackage = useCallback(async () => {
+    if (!sessionId) {
+      setSettingsFeedback("当前没有可复制的调试会话。")
+      return
+    }
+    const snapshot =
+      runtimeDebugSnapshot ?? (await refreshRuntimeDebugSnapshot(sessionId))
+    const payload = {
+      schema_version: "ds160.frontend_debug_package.v1",
+      copied_at: new Date().toISOString(),
+      frontend: APP_VERSION,
+      session_id: sessionId,
+      runtime_snapshot: snapshot,
+      live_events: runtimeDebugEvents,
+      latest_debug_material_bundle: latestDebugMaterialBundle,
+      client_state: {
+        visa_type: visaType,
+        message_count: messages.length,
+        material_count: uploadedMaterials.length,
+        last_message: messages.at(-1)
+          ? sanitizeHistoryMessage(messages.at(-1) as ChatMessage)
+          : null,
+      },
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+      setSettingsFeedback("调试包已复制到剪贴板。")
+    } catch {
+      downloadJsonFile(`ds160-debug-${sessionId}.json`, payload)
+      setSettingsFeedback("无法写入剪贴板，已下载调试 JSON。")
+    }
+  }, [
+    latestDebugMaterialBundle,
+    messages,
+    refreshRuntimeDebugSnapshot,
+    runtimeDebugEvents,
+    runtimeDebugSnapshot,
+    sessionId,
+    uploadedMaterials.length,
+    visaType,
+  ])
 
   const queueComposerCommand = useCallback((type: ComposerCommand["type"]) => {
     setComposerCommand({
@@ -1717,6 +1856,10 @@ export function useSessionWorkbench() {
     setComposerCommand(null)
     setIsDebugBundleGenerating(false)
     setDebugBundleProgress([])
+    setRuntimeDebugSnapshot(null)
+    setRuntimeDebugEvents([])
+    setLatestDebugMaterialBundle(null)
+    setRuntimeDebugError(null)
     setPendingResetAfterSummary(false)
   }, [])
 
@@ -1729,6 +1872,10 @@ export function useSessionWorkbench() {
       setModalError(null)
       setUploadedMaterials([])
       setDebugBundleProgress([])
+      setRuntimeDebugSnapshot(null)
+      setRuntimeDebugEvents([])
+      setLatestDebugMaterialBundle(null)
+      setRuntimeDebugError(null)
 
       try {
         if (mockMode) {
@@ -2027,6 +2174,10 @@ export function useSessionWorkbench() {
                       )
                       return
                     }
+                    if (event.event === "debug_event") {
+                      recordRuntimeDebugEvent(event.data)
+                      return
+                    }
                     if (event.event === "final") {
                       upsertStreamProgress("本轮回复已生成。", "sent")
                       setSettingsFeedback("本轮回复已生成。")
@@ -2074,6 +2225,7 @@ export function useSessionWorkbench() {
               })
             }
             await refreshReports(sessionId)
+            await refreshRuntimeDebugSnapshot(sessionId)
           }
         }
       } catch (error) {
@@ -2103,6 +2255,8 @@ export function useSessionWorkbench() {
       isUploading,
       mockMode,
       refreshReports,
+      refreshRuntimeDebugSnapshot,
+      recordRuntimeDebugEvent,
       sessionId,
       updateMessageAttachment,
       updateMessageContent,
@@ -2519,11 +2673,13 @@ export function useSessionWorkbench() {
           scenario,
           true,
           (event) => {
+            recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
             updateProgress(describeDebugBundleEvent(event))
           },
           normalizedSeedText || null,
           "ai_if_available",
         )
+        setLatestDebugMaterialBundle(result)
         updateMessageStatus(progressMessageId, "sent")
         setSession((prev) =>
           prev
@@ -2565,6 +2721,7 @@ export function useSessionWorkbench() {
           })
         }
         await refreshReports(sessionId)
+        await refreshRuntimeDebugSnapshot(sessionId)
         if (result.generation?.fallback_used && result.generation.fallback_reason) {
           setSettingsFeedback(
             `AI 材料生成失败，已使用备用材料包：${result.generation.fallback_reason}`,
@@ -2602,6 +2759,8 @@ export function useSessionWorkbench() {
       isDebugBundleGenerating,
       mockMode,
       refreshReports,
+      refreshRuntimeDebugSnapshot,
+      recordRuntimeDebugEvent,
       sessionId,
       updateMessageContent,
       updateMessageStatus,
@@ -2644,6 +2803,10 @@ export function useSessionWorkbench() {
     setModalError(null)
     setIsDebugBundleGenerating(false)
     setDebugBundleProgress([])
+    setRuntimeDebugSnapshot(null)
+    setRuntimeDebugEvents([])
+    setLatestDebugMaterialBundle(null)
+    setRuntimeDebugError(null)
     setIsReportModalOpen(false)
     setPendingResetAfterSummary(false)
     setSessionTime(0)
@@ -2700,6 +2863,11 @@ export function useSessionWorkbench() {
     settingsFeedback,
     isDebugBundleGenerating,
     debugBundleProgress,
+    runtimeDebugSnapshot,
+    runtimeDebugEvents,
+    latestDebugMaterialBundle,
+    isLoadingRuntimeDebug,
+    runtimeDebugError,
     debugMaterialSeedText,
     userModelConfig,
     availableModels,
@@ -2726,6 +2894,8 @@ export function useSessionWorkbench() {
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,
+    refreshRuntimeDebugSnapshot,
+    handleCopyRuntimeDebugPackage,
     handleDebugMaterialBundleScenario,
     handleDebugFillCurrentGap,
     handleClearHistory,

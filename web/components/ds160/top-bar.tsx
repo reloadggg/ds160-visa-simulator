@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Textarea } from "@/components/ui/textarea"
+import { APP_VERSION_LABEL } from "@/lib/app-version"
 import { DEBUG_MATERIAL_BUNDLE_OPTIONS } from "@/lib/debug-material-bundles"
 import {
   Pause,
@@ -116,6 +117,12 @@ export function TopBar({
               Mock 模式
             </Badge>
           ) : null}
+          <Badge
+            variant="outline"
+            className="hidden font-mono text-[11px] text-muted-foreground sm:inline-flex"
+          >
+            {APP_VERSION_LABEL}
+          </Badge>
         </div>
       </div>
 

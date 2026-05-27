@@ -104,6 +104,89 @@ def test_debug_material_bundle_api_persists_documents_and_evidence(
     assert record.gate_status_json["status"] == "ready_for_interview"
 
 
+def test_runtime_debug_snapshot_includes_material_generation_metadata(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    bundle_response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle"},
+    )
+    response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
+
+    assert bundle_response.status_code == 200
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "ds160.runtime_debug.v1"
+    assert payload["backend"]["version"]
+    assert payload["material_generation"]["scenario"] == "normal_f1_bundle"
+    assert payload["material_generation"]["generation"]["source"] == "deterministic"
+    assert payload["material_generation"]["generation"]["seed_source"] is None
+
+
+def test_runtime_debug_snapshot_redacts_sensitive_metadata(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.interviewer_state_json = {
+            "api_key": "secret-api-key",
+            "nested": {"access_token": "secret-token"},
+        }
+        db.add(
+            SessionTurnRecord(
+                turn_id="turn-redaction-test",
+                turn_index=1,
+                session_id=session_id,
+                role="assistant",
+                content="ok",
+                source="test",
+                metadata_json={
+                    "runtime_view_state": {
+                        "source_turn_id": "turn-redaction-test",
+                        "decision": "continue_interview",
+                        "governor_decision": "continue_interview",
+                    },
+                    "model_config": {"api_key": "secret-model-key"},
+                },
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
+
+    assert response.status_code == 200
+    serialized = json.dumps(response.json(), ensure_ascii=False)
+    assert "secret-api-key" not in serialized
+    assert "secret-token" not in serialized
+    assert "secret-model-key" not in serialized
+    assert "[redacted]" in serialized
+
+
+def test_runtime_debug_snapshot_respects_debug_switch(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "allow_debug_fill", False)
+    monkeypatch.setattr(settings_module.settings, "allow_runtime_debug", False)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "runtime debug is disabled"}
+
+
 def test_debug_material_bundle_stream_emits_progress_and_final(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

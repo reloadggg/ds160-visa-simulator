@@ -43,6 +43,7 @@ DS-160 AI 面签模拟器不是一个普通聊天机器人，也不是传统 Saa
 - 右侧是 Case Board，展示已理解事实、证据片段、冲突、薄弱证明点和下一问原因
 - 上传材料后，系统会判断材料能证明什么、是否与口头陈述冲突，而不是要求用户先手动分类
 - 会话结束或阶段性复盘时，可以生成用户报告和内部分析报告
+- 前端会直接显示版本号，调试台可查看当前 session 的 runtime、材料生成、fallback 和流式事件
 
 后端看到的是一条可追踪的 Agent 运行链路：
 
@@ -50,6 +51,14 @@ DS-160 AI 面签模拟器不是一个普通聊天机器人，也不是传统 Saa
 - runtime 会结合历史、Case Memory、材料证据、签证规则和当前风险生成下一步动作
 - Governor 决定继续追问、定向澄清冲突、进入高风险复核或模拟拒签
 - trace、score、case board、document review 和 turn record 会沉淀到数据库，方便复盘
+
+## 🧪 调试与版本确认
+
+- 前端版本显示来自 `web/package.json`，同时支持 `NEXT_PUBLIC_APP_VERSION`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME` 覆盖。
+- 后端版本显示来自 `app/core/app_version.py`，同时支持 `APP_GIT_SHA`、`APP_BUILD_TIME` 覆盖。
+- 每次部署到服务器前都要递增前端版本号；否则无法从 UI 判断是否已经更新。
+- 工作台左侧“调试台”会读取 `GET /v1/sessions/{session_id}/debug/runtime`，需要开启 `ALLOW_RUNTIME_DEBUG=true` 或复用 `ALLOW_DEBUG_FILL=true`。
+- 调试台会展示消息流/材料包流的实时事件、runtime snapshot、材料生成来源、fallback 原因和可复制调试包。
 
 ## 🏗️ 系统架构
 
@@ -237,6 +246,7 @@ DATABASE_URL=sqlite:///./app.sqlite3
 CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ALLOW_USER_MODEL_CONFIG=false
 ALLOW_USER_MODEL_STREAMING=false
+ALLOW_RUNTIME_DEBUG=false
 ALLOW_DEBUG_FILL=false
 ```
 

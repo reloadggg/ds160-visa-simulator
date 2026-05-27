@@ -15,6 +15,7 @@ from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
 from app.services.debug_material_bundle_service import DebugMaterialBundleService
 from app.services.gate_service import GateService
+from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotService
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -36,6 +37,10 @@ class DebugMaterialBundleRequest(BaseModel):
     include_synthetic_user_turns: bool = True
     seed_text: str | None = None
     generation_mode: str = "ai_if_available"
+
+
+def _runtime_debug_enabled() -> bool:
+    return RuntimeDebugSnapshotService.debug_enabled()
 
 
 @router.post("", status_code=201)
@@ -201,6 +206,19 @@ def debug_create_material_bundle_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/{session_id}/debug/runtime")
+def get_runtime_debug_snapshot(
+    session_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    if not _runtime_debug_enabled():
+        raise HTTPException(status_code=403, detail="runtime debug is disabled")
+    try:
+        return RuntimeDebugSnapshotService(db).build(session_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{session_id}/runtime-traces/{run_id}")

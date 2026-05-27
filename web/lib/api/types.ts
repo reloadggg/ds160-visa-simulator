@@ -88,8 +88,49 @@ export interface RagUploadMetadata {
 export type MessageStreamEvent =
   | { event: "accepted"; data: Record<string, unknown> }
   | { event: "analyzing"; data: Record<string, unknown> }
+  | { event: "debug_event"; data: RuntimeDebugEvent }
   | { event: "final"; data: BackendMessageResponse }
   | { event: "error"; data: { status?: number; detail?: string } }
+
+export interface RuntimeDebugEvent {
+  request_id?: string
+  session_id?: string
+  phase: string
+  step: string
+  status: "started" | "completed" | "failed" | "skipped" | "still_running" | string
+  summary?: string
+  duration_ms?: number | null
+  payload?: Record<string, unknown>
+  error?: string | Record<string, unknown> | null
+  received_at?: string
+}
+
+export interface RuntimeDebugSnapshot {
+  schema_version: string
+  backend?: {
+    version?: string | null
+    git_sha?: string | null
+    build_time?: string | null
+    agent_runtime?: string | null
+    agent_runtime_trace_enabled?: boolean | null
+    debug_enabled?: boolean | null
+  }
+  session?: Record<string, unknown>
+  current_runtime?: Record<string, unknown>
+  latest_turn?: Record<string, unknown> | null
+  recent_turns?: Array<Record<string, unknown>>
+  runtime_trace?: Array<Record<string, unknown>>
+  score_history?: Array<Record<string, unknown>>
+  governor_history?: Array<Record<string, unknown>>
+  runtime_ledger?: Record<string, unknown>
+  runtime_view_state?: Record<string, unknown>
+  interviewer_state?: Record<string, unknown>
+  last_material_refresh?: Record<string, unknown>
+  document_review?: Record<string, unknown>
+  material_generation?: Record<string, unknown>
+  errors?: Array<Record<string, unknown>>
+  [key: string]: unknown
+}
 
 export type DebugMaterialBundleScenario =
   | "normal_f1_bundle"

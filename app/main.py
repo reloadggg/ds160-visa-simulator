@@ -13,6 +13,7 @@ from app.api.routers.openai_responses import router as openai_responses_router
 from app.api.routers.rag import router as rag_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
+from app.core.app_version import APP_VERSION
 from app.core.settings import settings
 from app.core.simple_auth import simple_auth_middleware
 from app.db.base import Base
@@ -267,7 +268,7 @@ async def lifespan(app: FastAPI):
         await stop_parse_worker_runtime(app)
 
 
-app = FastAPI(title="DS-160 Visa Simulator", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="DS-160 Visa Simulator", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins_list,

@@ -751,8 +751,11 @@ def test_messages_stream_allows_default_model_without_user_streaming_switch(
     assert response.status_code == 200
     assert "event: accepted" in body
     assert "event: analyzing" in body
+    assert "event: debug_event" in body
     assert "event: final" in body
     events = parse_sse_events(body)
+    debug_events = [payload for event, payload in events if event == "debug_event"]
+    assert any(item["step"] == "message_service.handle_user_turn" for item in debug_events)
     assert events[-1][1]["assistant_message"] == "What will you study?"
 
 
@@ -866,9 +869,13 @@ def test_messages_stream_emits_final_payload_contract(
     assert response.status_code == 200
     assert "event: accepted" in body
     assert "event: analyzing" in body
+    assert "event: debug_event" in body
     assert "event: final" in body
     events = parse_sse_events(body)
-    assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
+    event_names = [event for event, _data in events]
+    assert event_names[:2] == ["accepted", "debug_event"]
+    assert "analyzing" in event_names
+    assert event_names[-1] == "final"
     final_payload = events[-1][1]
     assert final_payload["assistant_message"] == "Who will pay your first year expenses?"
     assert final_payload["turn_decision"]["decision"] == "continue_interview"
@@ -944,7 +951,10 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
 
     assert response.status_code == 200
     events = parse_sse_events(body)
-    assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
+    event_names = [event for event, _data in events]
+    assert event_names[:2] == ["accepted", "debug_event"]
+    assert "analyzing" in event_names
+    assert event_names[-1] == "final"
     final_payload = events[-1][1]
     assert final_payload["assistant_message"] == "What will you study?"
     assert "graph_shadow" not in final_payload
@@ -1436,7 +1446,10 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
 
     assert response.status_code == 200
     events = parse_sse_events(body)
-    assert [event for event, _data in events] == ["accepted", "analyzing", "final"]
+    event_names = [event for event, _data in events]
+    assert event_names[:2] == ["accepted", "debug_event"]
+    assert "analyzing" in event_names
+    assert event_names[-1] == "final"
     final_payload = events[-1][1]
     assert final_payload["agent_runtime"] == "graph"
     assert final_payload["selected_public_runtime"] == "native_interviewer"

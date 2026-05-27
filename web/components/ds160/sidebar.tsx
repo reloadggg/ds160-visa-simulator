@@ -2,8 +2,9 @@
 
 import Image from "next/image"
 import { cn } from "@/lib/utils"
+import { APP_VERSION_LABEL, appVersionDetailLabel } from "@/lib/app-version"
 import { PROJECT_INFO } from "@/lib/project-info"
-import { Clock, FolderOpen, Github, MessageSquare, Settings } from "lucide-react"
+import { Bug, Clock, FolderOpen, Github, MessageSquare, Settings } from "lucide-react"
 
 interface SidebarProps {
   activeItem: string
@@ -14,6 +15,7 @@ export const navItems = [
   { id: "workbench", label: "面签工作台", icon: MessageSquare },
   { id: "history", label: "历史记录", icon: Clock },
   { id: "materials", label: "材料库", icon: FolderOpen },
+  { id: "debug", label: "调试台", icon: Bug },
   { id: "settings", label: "设置", icon: Settings },
 ]
 
@@ -28,7 +30,7 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
           </div>
           <div className="min-w-0">
             <h1 className="truncate font-semibold text-foreground">面签模拟器</h1>
-            <p className="text-xs text-muted-foreground">工作台</p>
+            <p className="text-xs font-mono text-muted-foreground">{APP_VERSION_LABEL}</p>
           </div>
         </div>
       </div>
@@ -66,6 +68,9 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
           </div>
           <div className="mt-1 truncate text-sm font-medium text-foreground">
             {PROJECT_INFO.creatorName}
+          </div>
+          <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+            {appVersionDetailLabel()}
           </div>
           <a
             href={PROJECT_INFO.githubUrl}

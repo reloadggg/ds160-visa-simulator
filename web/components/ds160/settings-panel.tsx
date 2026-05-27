@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { PROJECT_INFO } from "@/lib/project-info"
+import { appVersionDetailLabel } from "@/lib/app-version"
 import {
   DEBUG_MATERIAL_BUNDLE_OPTIONS,
   DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO,
@@ -219,6 +220,13 @@ export function SettingsPanel({
                 </div>
               </div>
               <Badge variant="outline">{mockMode ? "已开启" : "已关闭"}</Badge>
+            </div>
+
+            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="text-sm font-medium text-foreground">前端版本</div>
+              <div className="mt-1 break-all font-mono text-xs leading-6 text-muted-foreground">
+                {appVersionDetailLabel()}
+              </div>
             </div>
 
             <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">

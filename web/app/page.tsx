@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 
 import { AnalysisPanel } from "@/components/ds160/analysis-panel"
@@ -8,6 +8,7 @@ import { ChatPanel } from "@/components/ds160/chat-panel"
 import { HistoryPanel } from "@/components/ds160/history-panel"
 import { MaterialsPanel } from "@/components/ds160/materials-panel"
 import { ReportModal } from "@/components/ds160/report-modal"
+import { RuntimeDebugPanel } from "@/components/ds160/runtime-debug-panel"
 import { SettingsPanel } from "@/components/ds160/settings-panel"
 import { Sidebar, navItems } from "@/components/ds160/sidebar"
 import { TopBar } from "@/components/ds160/top-bar"
@@ -15,6 +16,7 @@ import { VisaSelector } from "@/components/ds160/visa-selector"
 import { AuthGuard } from "@/components/ds160/auth-guard"
 import { useAuth } from "@/hooks/use-auth"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
+import { APP_VERSION_LABEL } from "@/lib/app-version"
 import type { SessionHistoryEntry } from "@/lib/api/types"
 
 export default function DS160Workbench() {
@@ -60,6 +62,11 @@ function Workbench() {
     settingsFeedback,
     isDebugBundleGenerating,
     debugBundleProgress,
+    runtimeDebugSnapshot,
+    runtimeDebugEvents,
+    latestDebugMaterialBundle,
+    isLoadingRuntimeDebug,
+    runtimeDebugError,
     debugMaterialSeedText,
     userModelConfig,
     availableModels,
@@ -85,6 +92,8 @@ function Workbench() {
     handleExportSession,
     handleExportConversationImage,
     handleExportReviewImage,
+    refreshRuntimeDebugSnapshot,
+    handleCopyRuntimeDebugPackage,
     handleDebugMaterialBundleScenario,
     handleClearHistory,
     handleRestoreSession,
@@ -94,6 +103,13 @@ function Workbench() {
     handleRestoreSession(entry)
     setActiveNavItem("workbench")
   }
+
+  useEffect(() => {
+    if (activeNavItem !== "debug" || !sessionId) {
+      return
+    }
+    void refreshRuntimeDebugSnapshot(sessionId)
+  }, [activeNavItem, refreshRuntimeDebugSnapshot, sessionId])
 
   const renderHeader = () => {
     if (sessionId) {
@@ -121,7 +137,12 @@ function Workbench() {
     return (
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-border bg-card px-4 md:px-6">
         <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-foreground md:text-lg">DS-160 面签工作台</h2>
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="truncate text-base font-semibold text-foreground md:text-lg">DS-160 面签工作台</h2>
+            <span className="shrink-0 rounded-md border border-border bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+              {APP_VERSION_LABEL}
+            </span>
+          </div>
           <p className="hidden truncate text-sm text-muted-foreground sm:block">
             先选择签证类型开始新会话，也可以查看本地历史记录和材料归档。
           </p>
@@ -209,6 +230,18 @@ function Workbench() {
                 currentMaterials={uploadedMaterials}
                 historyEntries={sessionHistory}
                 currentSessionId={sessionId}
+              />
+            </div>
+            <div className={cn("h-full", activeNavItem === "debug" ? "block" : "hidden")}>
+              <RuntimeDebugPanel
+                sessionId={sessionId}
+                snapshot={runtimeDebugSnapshot}
+                liveEvents={runtimeDebugEvents}
+                latestDebugBundle={latestDebugMaterialBundle}
+                isLoading={isLoadingRuntimeDebug}
+                error={runtimeDebugError}
+                onRefresh={() => void refreshRuntimeDebugSnapshot(sessionId)}
+                onCopyDebugPackage={handleCopyRuntimeDebugPackage}
               />
             </div>
             <div className={cn("h-full", activeNavItem === "settings" ? "block" : "hidden")}>

@@ -31,6 +31,8 @@ import type {
   RagStatus,
   RagUploadResponse,
   RequiredPackage,
+  RuntimeDebugEvent,
+  RuntimeDebugSnapshot,
   Session,
   SessionExportPayload,
   UserModelRuntimeConfig,
@@ -272,6 +274,9 @@ function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
   if (event === "accepted" || event === "analyzing") {
     return { event, data: data as Record<string, unknown> }
   }
+  if (event === "debug_event") {
+    return { event, data: data as RuntimeDebugEvent }
+  }
   if (event === "final") {
     return { event, data: data as BackendMessageResponse }
   }
@@ -378,6 +383,16 @@ export async function exportSession(sessionId: string): Promise<SessionExportPay
     { headers: getAuthHeaders() }
   )
   return handleResponse<SessionExportPayload>(response)
+}
+
+export async function getRuntimeDebugSnapshot(
+  sessionId: string,
+): Promise<RuntimeDebugSnapshot> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/debug/runtime`),
+    { headers: getAuthHeaders() },
+  )
+  return handleResponse<RuntimeDebugSnapshot>(response)
 }
 
 export async function generateInterviewReview(sessionId: string): Promise<InterviewReviewResponse> {

@@ -97,19 +97,67 @@ def stream_message(
 
     def event_stream() -> Iterator[str]:
         yield _sse_event("accepted", {"session_id": session_id})
+        yield _sse_event(
+            "debug_event",
+            {
+                "session_id": session_id,
+                "phase": "message_turn",
+                "step": "request_accepted",
+                "status": "completed",
+                "summary": "消息流请求已被后端接收。",
+            },
+        )
         yield _sse_event("analyzing", {"stage": "interview_runtime"})
+        yield _sse_event(
+            "debug_event",
+            {
+                "session_id": session_id,
+                "phase": "message_turn",
+                "step": "interview_runtime",
+                "status": "started",
+                "summary": "开始执行面谈运行时。",
+            },
+        )
 
         result_queue: Queue[tuple[str, dict]] = Queue()
 
         def run_message_turn() -> None:
             worker_db = stream_session_factory()
             try:
+                result_queue.put(
+                    (
+                        "debug_event",
+                        {
+                            "session_id": session_id,
+                            "phase": "message_turn",
+                            "step": "message_service.handle_user_turn",
+                            "status": "started",
+                            "summary": "MessageService 已开始处理本轮用户消息。",
+                        },
+                    )
+                )
                 with user_model_runtime(runtime_config):
                     result = MessageService(worker_db).handle_user_turn(
                         session_id,
                         payload.content,
                         client_message_id=payload.client_message_id,
                     )
+                result_queue.put(
+                    (
+                        "debug_event",
+                        {
+                            "session_id": session_id,
+                            "phase": "message_turn",
+                            "step": "message_service.handle_user_turn",
+                            "status": "completed",
+                            "summary": "MessageService 已完成本轮处理，准备返回最终响应。",
+                            "payload": {
+                                "governor_decision": result.get("governor_decision"),
+                                "turn_decision": result.get("turn_decision", {}),
+                            },
+                        },
+                    )
+                )
                 result_queue.put(("final", result))
             except SessionNotFoundError as exc:
                 result_queue.put(("error", {"status": 404, "detail": str(exc)}))
@@ -155,10 +203,21 @@ def stream_message(
                         "status": "still_running",
                     },
                 )
+                yield _sse_event(
+                    "debug_event",
+                    {
+                        "session_id": session_id,
+                        "phase": "message_turn",
+                        "step": "interview_runtime",
+                        "status": "still_running",
+                        "summary": "后端仍在等待模型或运行时完成。",
+                    },
+                )
                 continue
 
             yield _sse_event(event, data)
-            return
+            if event in {"final", "error"}:
+                return
 
     return StreamingResponse(
         event_stream(),

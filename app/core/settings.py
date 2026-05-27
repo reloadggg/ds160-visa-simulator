@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     app_auth_protect_docs: bool = True
     app_compat_api_key: str | None = None
     allow_debug_fill: bool = False
+    allow_runtime_debug: bool = False
     allow_user_model_config: bool = False
     allow_user_model_streaming: bool = True
     agent_runtime: Literal["legacy", "graph_shadow", "graph_canary", "graph"] = "graph"

@@ -212,6 +212,7 @@ class DebugMaterialBundleService:
                 bundle_id=bundle_id,
                 bundle_spec=bundle_spec,
                 document_spec=document_spec,
+                generation_metadata=generation_metadata,
             )
             created_documents.append(document_payload)
             yield DebugMaterialBundleEvent(
@@ -944,6 +945,7 @@ class DebugMaterialBundleService:
         bundle_id: str,
         bundle_spec: DebugMaterialBundleSpec,
         document_spec: SyntheticDocumentSpec,
+        generation_metadata: dict[str, Any],
     ) -> tuple[DocumentRecord, dict[str, Any], int]:
         document_assessment = {
             "document_type": document_spec.document_type,
@@ -970,6 +972,7 @@ class DebugMaterialBundleService:
                 "debug_bundle_scenario": bundle_spec.scenario,
                 "debug_bundle_scenario_label": bundle_spec.scenario_label,
                 "document_type": document_spec.document_type,
+                "debug_generation": dict(generation_metadata),
                 "visible_to_model": True,
                 "counts_toward_gate": document_spec.counts_toward_gate,
                 "relevant": True,
