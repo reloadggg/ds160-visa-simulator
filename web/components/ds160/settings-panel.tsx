@@ -1,6 +1,6 @@
 "use client"
 
-import { type ChangeEvent, useEffect, useRef, useState } from "react"
+import { type ChangeEvent, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -124,13 +124,11 @@ export function SettingsPanel({
   const [ragUploadForm, setRagUploadForm] = useState(EMPTY_RAG_UPLOAD_FORM)
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
     useState<DebugMaterialBundleScenario>(DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO)
-  const [materialSeedText, setMaterialSeedText] = useState(debugMaterialSeedText)
+  const [materialSeedOverride, setMaterialSeedOverride] = useState("")
+  const materialSeedText = materialSeedOverride.trim()
+    ? materialSeedOverride
+    : debugMaterialSeedText
   const selectedDebugBundleOption = getDebugMaterialBundleOption(selectedDebugBundleScenario)
-  useEffect(() => {
-    setMaterialSeedText((current) =>
-      current.trim() ? current : debugMaterialSeedText,
-    )
-  }, [debugMaterialSeedText])
   const updateModelConfig = (patch: Partial<UserModelConfig>) => {
     onUserModelConfigChange({
       ...userModelConfig,
@@ -593,7 +591,7 @@ export function SettingsPanel({
                 <Textarea
                   id="debug-material-seed"
                   value={materialSeedText}
-                  onChange={(event) => setMaterialSeedText(event.target.value)}
+                  onChange={(event) => setMaterialSeedOverride(event.target.value)}
                   placeholder="例如：我会去 UC Irvine 读 Data Science，父母资助，第一年费用约 8 万美元。"
                   className="min-h-24 resize-y"
                 />

@@ -147,6 +147,8 @@ export interface DebugMaterialBundleResponse {
     source?: "ai" | "deterministic" | string
     mode?: string
     seed_text_present?: boolean
+    seed_source?: "request" | "session_transcript" | string | null
+    request_seed_text_present?: boolean
     fallback_used?: boolean
     fallback_reason?: string
     trace?: Record<string, unknown>
@@ -195,6 +197,13 @@ export type DebugMaterialBundleStreamEvent =
       data: {
         governor_decision?: string | null
         turn_decision?: Record<string, unknown>
+      } & Record<string, unknown>
+    }
+  | {
+      event: "progress"
+      data: {
+        stage?: string
+        message?: string
       } & Record<string, unknown>
     }
   | { event: "final"; data: DebugMaterialBundleResponse }

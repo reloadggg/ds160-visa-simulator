@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -80,7 +80,10 @@ export function TopBar({
     useState<DebugMaterialBundleScenario>(
       DEBUG_MATERIAL_BUNDLE_OPTIONS[0].scenario,
     )
-  const [materialSeedText, setMaterialSeedText] = useState(debugMaterialSeedText)
+  const [materialSeedOverride, setMaterialSeedOverride] = useState("")
+  const materialSeedText = materialSeedOverride.trim()
+    ? materialSeedOverride
+    : debugMaterialSeedText
   const selectedDebugBundleOption =
     DEBUG_MATERIAL_BUNDLE_OPTIONS.find(
       (option) => option.scenario === selectedDebugBundleScenario,
@@ -93,12 +96,6 @@ export function TopBar({
       .slice(0, 2)
       .map((part) => part[0]?.toUpperCase())
       .join("") || "U"
-
-  useEffect(() => {
-    if (debugBundleDialogOpen) {
-      setMaterialSeedText(debugMaterialSeedText)
-    }
-  }, [debugBundleDialogOpen, debugMaterialSeedText])
 
   return (
     <header className="flex h-16 min-w-0 items-center border-b border-border bg-card px-4 lg:px-6">
@@ -310,7 +307,7 @@ export function TopBar({
               <Textarea
                 id="topbar-material-seed"
                 value={materialSeedText}
-                onChange={(event) => setMaterialSeedText(event.target.value)}
+                onChange={(event) => setMaterialSeedOverride(event.target.value)}
                 placeholder="例如：我会去 NYU 读 MSCS，父母资助，第一年费用约 9 万美元。"
                 className="min-h-24 resize-y"
               />

@@ -296,6 +296,7 @@ function parseDebugMaterialBundleSseEvent(rawEvent: string): DebugMaterialBundle
     event === "gate_refreshed" ||
     event === "document_review_started" ||
     event === "governor_decided" ||
+    event === "progress" ||
     event === "final" ||
     event === "error"
   ) {
@@ -407,7 +408,7 @@ export async function createDebugMaterialBundle(
   scenario: DebugMaterialBundleScenario | string,
   includeSyntheticUserTurns = true,
   seedText?: string | null,
-  generationMode = "ai_if_seeded",
+  generationMode = "ai_if_available",
 ): Promise<DebugMaterialBundleResponse> {
   const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles`), {
     method: "POST",
@@ -428,7 +429,7 @@ export async function createDebugMaterialBundleStream(
   includeSyntheticUserTurns: boolean,
   onEvent: (event: DebugMaterialBundleStreamEvent) => void,
   seedText?: string | null,
-  generationMode = "ai_if_seeded",
+  generationMode = "ai_if_available",
 ): Promise<DebugMaterialBundleResponse> {
   const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles/stream`), {
     method: "POST",

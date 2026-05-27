@@ -99,11 +99,12 @@ class ReportService:
         elif interview_status == InterviewStateStatus.HIGH_RISK_REVIEW.value:
             outcome_label = "高风险待复核"
             summary = (
-                f"当前面谈已识别出高风险事项（{current_risk_code}），需先完成复核。"
-                if current_risk_code
-                else "当前面谈已识别出高风险事项，需先完成复核。"
+                self._document_review_issue_summary(document_review)
+                or "当前面谈已识别出高风险事项，需先完成复核。"
             )
-            recommended_improvements = ["围绕高风险点补充解释或可引用证据。"]
+            recommended_improvements = [
+                "先围绕上述高风险点给出一致解释；如材料有误，补充更新后的 I-20、录取信或对应更正材料。"
+            ]
         elif interview_status == InterviewStateStatus.VERIFY_KEY_ISSUE.value:
             outcome_label = "需核验关键问题"
             summary = (
@@ -357,6 +358,30 @@ class ReportService:
         if current_key_proof:
             return f"围绕 {current_key_proof} 说明事实来源；如果有材料，可作为证据补充上传。"
         return "继续回答关键问题，并用材料或事实细节补强证据链。"
+
+    def _document_review_issue_summary(
+        self,
+        document_review: dict[str, Any],
+    ) -> str | None:
+        for key in ("claim_conflicts", "cross_document_conflicts"):
+            for item in self._list_payload(document_review.get(key)):
+                if not isinstance(item, dict):
+                    continue
+                summary = str(item.get("summary") or "").strip()
+                if summary:
+                    return summary
+
+        for value in self._list_payload(
+            document_review.get("unresolved_verification_points")
+        ):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        reviewer_summary = str(document_review.get("reviewer_summary") or "").strip()
+        if reviewer_summary:
+            return reviewer_summary
+
+        return None
 
     def _resolve_public_status(
         self,

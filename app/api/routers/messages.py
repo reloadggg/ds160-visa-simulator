@@ -1,12 +1,13 @@
-from typing import Literal
-
 import json
 from collections.abc import Iterator
+from queue import Empty, Queue
+from threading import Thread
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, model_validator
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.user_model_config import user_model_runtime
 from app.core.settings import settings
@@ -88,39 +89,76 @@ def stream_message(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if runtime_config is not None and not settings.allow_user_model_streaming:
         raise HTTPException(status_code=403, detail="当前部署未启用用户模型流式输出。")
+    stream_session_factory = sessionmaker(
+        bind=db.get_bind(),
+        autocommit=False,
+        autoflush=False,
+    )
 
     def event_stream() -> Iterator[str]:
         yield _sse_event("accepted", {"session_id": session_id})
         yield _sse_event("analyzing", {"stage": "interview_runtime"})
-        try:
-            with user_model_runtime(runtime_config):
-                result = MessageService(db).handle_user_turn(
-                    session_id,
-                    payload.content,
-                    client_message_id=payload.client_message_id,
+
+        result_queue: Queue[tuple[str, dict]] = Queue()
+
+        def run_message_turn() -> None:
+            worker_db = stream_session_factory()
+            try:
+                with user_model_runtime(runtime_config):
+                    result = MessageService(worker_db).handle_user_turn(
+                        session_id,
+                        payload.content,
+                        client_message_id=payload.client_message_id,
+                    )
+                result_queue.put(("final", result))
+            except SessionNotFoundError as exc:
+                result_queue.put(("error", {"status": 404, "detail": str(exc)}))
+            except SessionClosedError as exc:
+                result_queue.put(("error", {"status": 409, "detail": exc.detail}))
+            except DuplicateTurnInProgressError:
+                result_queue.put(
+                    (
+                        "error",
+                        {
+                            "status": 409,
+                            "detail": "这条消息正在处理中，请等待上一轮结果返回。",
+                        },
+                    )
                 )
-        except SessionNotFoundError as exc:
-            yield _sse_event("error", {"status": 404, "detail": str(exc)})
+            except ModelRuntimeError as exc:
+                result_queue.put(
+                    ("error", {"status": exc.status_code, "detail": exc.detail})
+                )
+            except Exception as exc:
+                result_queue.put(
+                    (
+                        "error",
+                        {
+                            "status": 500,
+                            "detail": f"message stream failed: {exc}",
+                        },
+                    )
+                )
+            finally:
+                worker_db.close()
+
+        Thread(target=run_message_turn, daemon=True).start()
+
+        while True:
+            try:
+                event, data = result_queue.get(timeout=15)
+            except Empty:
+                yield _sse_event(
+                    "analyzing",
+                    {
+                        "stage": "interview_runtime",
+                        "status": "still_running",
+                    },
+                )
+                continue
+
+            yield _sse_event(event, data)
             return
-        except SessionClosedError as exc:
-            yield _sse_event("error", {"status": 409, "detail": exc.detail})
-            return
-        except DuplicateTurnInProgressError:
-            yield _sse_event(
-                "error",
-                {
-                    "status": 409,
-                    "detail": "这条消息正在处理中，请等待上一轮结果返回。",
-                },
-            )
-            return
-        except ModelRuntimeError as exc:
-            yield _sse_event(
-                "error",
-                {"status": exc.status_code, "detail": exc.detail},
-            )
-            return
-        yield _sse_event("final", result)
 
     return StreamingResponse(
         event_stream(),

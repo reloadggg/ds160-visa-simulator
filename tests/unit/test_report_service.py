@@ -266,6 +266,39 @@ def test_user_report_projects_case_board_facts_conflicts_and_proof_points() -> N
     assert payload["case_board"]["claims"][0]["claim_id"] == "claim-school"
 
 
+def test_user_report_high_risk_summary_uses_document_conflict_detail() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-high-risk-detail",
+        visa_family="f1",
+        governor_decision="high_risk_review",
+        profile_json={},
+        phase_state="interview",
+        interviewer_state_json={
+            "public_status": "high_risk_review",
+            "risk_level": "high",
+            "current_risk_code": "record_conflict",
+            "document_review": {
+                "claim_conflicts": [
+                    {
+                        "summary": (
+                            "口头陈述为纽约大学数据科学硕士，但 I-20 和录取信显示 "
+                            "Example University / Master of Example Analytics。"
+                        )
+                    }
+                ]
+            },
+        },
+    )
+
+    assert payload["summary"] == (
+        "口头陈述为纽约大学数据科学硕士，但 I-20 和录取信显示 "
+        "Example University / Master of Example Analytics。"
+    )
+    assert "record_conflict" not in payload["summary"]
+
+
 def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:
     service = ReportService()
 

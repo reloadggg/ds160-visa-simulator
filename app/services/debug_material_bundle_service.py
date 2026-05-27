@@ -150,7 +150,7 @@ class DebugMaterialBundleService:
         scenario: str,
         include_synthetic_user_turns: bool = True,
         seed_text: str | None = None,
-        generation_mode: str = "ai_if_seeded",
+        generation_mode: str = "ai_if_available",
     ) -> dict[str, Any]:
         final_payload: dict[str, Any] | None = None
         for event in self.create_bundle_events(
@@ -174,7 +174,7 @@ class DebugMaterialBundleService:
         scenario: str,
         include_synthetic_user_turns: bool = True,
         seed_text: str | None = None,
-        generation_mode: str = "ai_if_seeded",
+        generation_mode: str = "ai_if_available",
         include_accepted: bool = True,
     ) -> Iterator[DebugMaterialBundleEvent]:
         if include_accepted:
@@ -521,17 +521,23 @@ class DebugMaterialBundleService:
         seed_text: str | None,
         generation_mode: str,
     ) -> tuple[DebugMaterialBundleSpec, dict[str, Any]]:
-        normalized_mode = generation_mode.strip().lower()
-        normalized_seed = (seed_text or "").strip()
-        should_try_ai = normalized_mode in {"ai", "ai_if_seeded"} and bool(
-            normalized_seed
+        normalized_mode = (generation_mode or "ai_if_available").strip().lower()
+        requested_seed = (seed_text or "").strip()
+        resolved_seed, seed_source = self._resolve_generation_seed(
+            record,
+            requested_seed=requested_seed,
         )
+        should_try_ai = normalized_mode in {
+            "ai",
+            "ai_if_seeded",
+            "ai_if_available",
+        } and bool(resolved_seed)
         if should_try_ai:
             try:
                 generated, trace = AIMaterialBundleGeneratorService(self.db).generate(
                     record=record,
                     scenario=scenario,  # type: ignore[arg-type]
-                    seed_text=normalized_seed,
+                    seed_text=resolved_seed,
                     include_synthetic_user_turns=include_synthetic_user_turns,
                 )
                 return self._bundle_spec_from_generated_output(
@@ -541,6 +547,8 @@ class DebugMaterialBundleService:
                     "source": "ai",
                     "mode": normalized_mode,
                     "seed_text_present": True,
+                    "seed_source": seed_source,
+                    "request_seed_text_present": bool(requested_seed),
                     "fallback_used": False,
                     "trace": trace,
                 }
@@ -555,6 +563,8 @@ class DebugMaterialBundleService:
                     "source": "deterministic",
                     "mode": normalized_mode,
                     "seed_text_present": True,
+                    "seed_source": seed_source,
+                    "request_seed_text_present": bool(requested_seed),
                     "fallback_used": True,
                     "fallback_reason": exc.detail,
                 }
@@ -566,9 +576,36 @@ class DebugMaterialBundleService:
         return fallback_spec, {
             "source": "deterministic",
             "mode": normalized_mode or "deterministic",
-            "seed_text_present": bool(normalized_seed),
+            "seed_text_present": bool(resolved_seed),
+            "seed_source": seed_source,
+            "request_seed_text_present": bool(requested_seed),
             "fallback_used": False,
         }
+
+    def _resolve_generation_seed(
+        self,
+        record,
+        *,
+        requested_seed: str,
+    ) -> tuple[str, str | None]:
+        if requested_seed:
+            return requested_seed, "request"
+
+        user_turns: list[str] = []
+        for turn in self.turns.list_session_turns(record.session_id):
+            if turn.role != "user":
+                continue
+            metadata = dict(turn.metadata_json or {})
+            if turn.source.startswith("debug_") or metadata.get("synthetic"):
+                continue
+            content = str(turn.content or "").strip()
+            if content:
+                user_turns.append(content)
+
+        if user_turns:
+            return "\n\n".join(user_turns[-4:])[:4000], "session_transcript"
+
+        return "", None
 
     def _bundle_spec_from_generated_output(
         self,

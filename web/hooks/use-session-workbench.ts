@@ -270,6 +270,8 @@ function describeDebugBundleEvent(
       return "开始核对材料之间的关键细节。"
     case "governor_decided":
       return `已得到下一步状态：${humanizeBackendText(event.data.governor_decision ?? "") || "待确认"}。`
+    case "progress":
+      return event.data.message ?? "材料包仍在生成或核对中。"
     case "final":
       return "材料包生成完成。"
     case "error":
@@ -327,6 +329,8 @@ function buildDebugBundleFinalMessage(
   const source =
     bundle.generation?.source === "ai"
       ? "AI 已根据你的会话信息生成"
+      : bundle.generation?.mode !== "deterministic"
+        ? "未找到足够会话事实，已使用演示占位资料生成"
       : "已生成"
   return `${source}${option.label}：${formatRequestedDocuments(documentNames)}。材料已写入材料库，可以直接打开查看正文和提取字段。`
 }
@@ -1253,6 +1257,7 @@ export function useSessionWorkbench() {
   const [isSending, setIsSending] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const sendingRef = useRef(false)
+  const streamProgressMessageIdRef = useRef<string | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
 
   const [userReport, setUserReport] = useState<UserReport | null>(null)
@@ -1802,6 +1807,23 @@ export function useSessionWorkbench() {
       }
       sendingRef.current = true
       let userMsgId: string | null = null
+      let streamAccepted = false
+      streamProgressMessageIdRef.current = null
+      const upsertStreamProgress = (
+        content: string,
+        status: ChatMessage["status"] = "sending",
+      ) => {
+        if (streamProgressMessageIdRef.current) {
+          updateMessageContent(streamProgressMessageIdRef.current, content)
+          updateMessageStatus(streamProgressMessageIdRef.current, status)
+          return
+        }
+        streamProgressMessageIdRef.current = appendMessage({
+          role: "system",
+          content,
+          status,
+        })
+      }
       try {
         const messageAttachments = hasFiles
           ? await createMessageAttachments(nextFiles)
@@ -1982,8 +2004,37 @@ export function useSessionWorkbench() {
                   runtimeModelConfig,
                   clientMessageId,
                   (event) => {
+                    if (event.event === "accepted") {
+                      streamAccepted = true
+                      if (userMsgId) {
+                        updateMessageStatus(userMsgId, "sent")
+                      }
+                      upsertStreamProgress("消息已送达服务器，正在进入本轮分析。")
+                      setSettingsFeedback("消息已送达服务器。")
+                      return
+                    }
                     if (event.event === "analyzing") {
-                      setSettingsFeedback("正在生成本轮回复。")
+                      const stillRunning = event.data.status === "still_running"
+                      upsertStreamProgress(
+                        stillRunning
+                          ? "后端仍在核对材料、风险和下一步回复。"
+                          : "正在核对材料、风险和下一步回复。",
+                      )
+                      setSettingsFeedback(
+                        stillRunning ? "后端仍在处理中。" : "正在生成本轮回复。",
+                      )
+                      return
+                    }
+                    if (event.event === "final") {
+                      upsertStreamProgress("本轮回复已生成。", "sent")
+                      setSettingsFeedback("本轮回复已生成。")
+                      return
+                    }
+                    if (event.event === "error") {
+                      upsertStreamProgress(
+                        `处理失败：${event.data.detail ?? "未知错误"}`,
+                        "error",
+                      )
                     }
                   },
                 )
@@ -2025,7 +2076,14 @@ export function useSessionWorkbench() {
         }
       } catch (error) {
         if (userMsgId) {
-          updateMessageStatus(userMsgId, "error")
+          updateMessageStatus(userMsgId, streamAccepted ? "sent" : "error")
+        }
+        if (streamAccepted && sessionId) {
+          upsertStreamProgress(
+            "连接中断，但服务器已收到消息；已尝试刷新当前分析状态。",
+            "error",
+          )
+          await refreshReports(sessionId).catch(() => undefined)
         }
         setChatError(getErrorMessage(error, "发送失败，请重试。"))
       } finally {
@@ -2045,6 +2103,7 @@ export function useSessionWorkbench() {
       refreshReports,
       sessionId,
       updateMessageAttachment,
+      updateMessageContent,
       updateMessageStatus,
       userModelConfig,
     ],
@@ -2460,8 +2519,8 @@ export function useSessionWorkbench() {
           (event) => {
             updateProgress(describeDebugBundleEvent(event))
           },
-          normalizedSeedText,
-          normalizedSeedText ? "ai_if_seeded" : "deterministic",
+          normalizedSeedText || null,
+          "ai_if_available",
         )
         updateMessageStatus(progressMessageId, "sent")
         setSession((prev) =>
@@ -2507,6 +2566,13 @@ export function useSessionWorkbench() {
         if (result.generation?.fallback_used && result.generation.fallback_reason) {
           setSettingsFeedback(
             `AI 材料生成失败，已使用备用材料包：${result.generation.fallback_reason}`,
+          )
+        } else if (
+          result.generation?.source === "deterministic" &&
+          result.generation?.mode !== "deterministic"
+        ) {
+          setSettingsFeedback(
+            "未找到可用于 AI 生成的会话事实，已使用演示占位材料。",
           )
         } else if (result.main_flow_refresh_error) {
           setSettingsFeedback(

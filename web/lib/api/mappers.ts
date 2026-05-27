@@ -101,6 +101,13 @@ const BACKEND_TEXT_LABELS: Record<string, string> = {
   prompt_trace: "提示词追踪",
   runtime_trace: "运行轨迹",
   turn_decision: "本轮判断",
+  record_conflict: "口述与材料记录不一致",
+  PROFILE_IDENTITY_SCHOOL_MISMATCH: "学校或项目陈述与材料不一致",
+  SCHOOL_PROGRAM_MISMATCH: "学校或项目材料不一致",
+  EDU_NAME_MISMATCH: "学校名称不一致",
+  PROGRAM_MISMATCH: "项目名称不一致",
+  FUNDING_UNCLEAR: "资金来源待核实",
+  FUNDING_SOURCE_DETAIL_MISSING: "资金来源细节不足",
 }
 
 const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {

@@ -13,6 +13,7 @@ from app.services.debug_material_bundle_service import (
     DebugMaterialBundleService,
 )
 from app.services.ai_material_bundle_generator_service import GeneratedMaterialBundleOutput
+from app.repositories.session_turn_repo import SessionTurnRepository
 
 ORACLE_TEXT_PHRASES = (
     "issue:",
@@ -404,6 +405,75 @@ def test_seeded_material_bundle_uses_ai_generated_documents(
     assert documents["admission_letter"]["fields"]["/education/program_name"] == (
         "MS Computer Science"
     )
+
+
+def test_material_bundle_uses_session_transcript_seed_when_request_seed_missing(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.refresh_after_material_change",
+        lambda self, session_id, *, reason: {},
+    )
+    captured: dict[str, str] = {}
+
+    def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
+        captured["seed_text"] = seed_text
+        return GeneratedMaterialBundleOutput(
+            documents=[
+                {
+                    "document_type": "ds160",
+                    "filename": "ai_ds160.txt",
+                    "raw_text": "Online Nonimmigrant Visa Application\nApplicant: TEST APPLICANT\n",
+                    "fields": {"/identity/full_name": "TEST APPLICANT"},
+                },
+                {
+                    "document_type": "passport_bio",
+                    "filename": "ai_passport.txt",
+                    "raw_text": "PASSPORT BIOGRAPHIC PAGE\nFull Name: TEST APPLICANT\n",
+                    "fields": {"/identity/full_name": "TEST APPLICANT"},
+                },
+                {
+                    "document_type": "i20",
+                    "filename": "ai_i20.txt",
+                    "raw_text": "Certificate of Eligibility\nSchool Name: New York University\n",
+                    "fields": {"/education/school_name": "New York University"},
+                },
+                {
+                    "document_type": "admission_letter",
+                    "filename": "ai_admission.txt",
+                    "raw_text": "New York University\nOffice of Graduate Admission\n",
+                    "fields": {"/education/school_name": "New York University"},
+                },
+                {
+                    "document_type": "funding_proof",
+                    "filename": "ai_funding.txt",
+                    "raw_text": "Bank Balance Certificate\nAvailable Balance: USD 90000\n",
+                    "fields": {"/funding/available_funds": "90000"},
+                },
+            ],
+        ), {"generator": "stub"}
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fake_generate,
+    )
+    session_id = seed_session(db_session)
+    SessionTurnRepository(db_session).append_user_turn(
+        session_id=session_id,
+        content="我会去 New York University 读 MS Computer Science，父母资助。",
+        source="user_message",
+    )
+
+    payload = DebugMaterialBundleService(db_session).create_bundle(
+        session_id,
+        scenario="normal_f1_bundle",
+    )
+
+    assert "New York University" in captured["seed_text"]
+    assert payload["generation"]["source"] == "ai"
+    assert payload["generation"]["mode"] == "ai_if_available"
+    assert payload["generation"]["seed_source"] == "session_transcript"
 
 
 def test_seeded_material_bundle_falls_back_when_ai_generation_fails(

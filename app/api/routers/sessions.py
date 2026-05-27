@@ -1,5 +1,7 @@
 from collections.abc import Iterator
 import json
+from queue import Empty, Queue
+from threading import Thread
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -14,7 +16,7 @@ from app.services.debug_fill_service import DebugFillService
 from app.services.debug_material_bundle_service import DebugMaterialBundleService
 from app.services.gate_service import GateService
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import SessionTurnRecord
 
@@ -33,7 +35,7 @@ class DebugMaterialBundleRequest(BaseModel):
     scenario: str = "normal_f1_bundle"
     include_synthetic_user_turns: bool = True
     seed_text: str | None = None
-    generation_mode: str = "ai_if_seeded"
+    generation_mode: str = "ai_if_available"
 
 
 @router.post("", status_code=201)
@@ -131,26 +133,65 @@ def debug_create_material_bundle_stream(
 ) -> StreamingResponse:
     if not settings_module.settings.allow_debug_fill:
         raise HTTPException(status_code=403, detail="debug fill is disabled")
+    stream_session_factory = sessionmaker(
+        bind=db.get_bind(),
+        autocommit=False,
+        autoflush=False,
+    )
 
     def event_stream() -> Iterator[str]:
-        try:
-            for event in DebugMaterialBundleService(db).create_bundle_events(
-                session_id,
-                scenario=payload.scenario,
-                include_synthetic_user_turns=payload.include_synthetic_user_turns,
-                seed_text=payload.seed_text,
-                generation_mode=payload.generation_mode,
-            ):
-                yield _sse_event(event.event, event.data)
-        except LookupError as exc:
-            yield _sse_event("error", {"status": 404, "detail": str(exc)})
-        except ValueError as exc:
-            yield _sse_event("error", {"status": 422, "detail": str(exc)})
-        except Exception as exc:
-            yield _sse_event(
-                "error",
-                {"status": 500, "detail": f"debug material bundle failed: {exc}"},
-            )
+        yield _sse_event("accepted", {"session_id": session_id})
+        event_queue: Queue[tuple[str, dict]] = Queue()
+
+        def run_bundle_generation() -> None:
+            worker_db = stream_session_factory()
+            try:
+                for event in DebugMaterialBundleService(
+                    worker_db,
+                ).create_bundle_events(
+                    session_id,
+                    scenario=payload.scenario,
+                    include_synthetic_user_turns=payload.include_synthetic_user_turns,
+                    seed_text=payload.seed_text,
+                    generation_mode=payload.generation_mode,
+                    include_accepted=False,
+                ):
+                    event_queue.put((event.event, event.data))
+            except LookupError as exc:
+                event_queue.put(("error", {"status": 404, "detail": str(exc)}))
+            except ValueError as exc:
+                event_queue.put(("error", {"status": 422, "detail": str(exc)}))
+            except Exception as exc:
+                event_queue.put(
+                    (
+                        "error",
+                        {
+                            "status": 500,
+                            "detail": f"debug material bundle failed: {exc}",
+                        },
+                    )
+                )
+            finally:
+                worker_db.close()
+
+        Thread(target=run_bundle_generation, daemon=True).start()
+
+        while True:
+            try:
+                event, data = event_queue.get(timeout=15)
+            except Empty:
+                yield _sse_event(
+                    "progress",
+                    {
+                        "stage": "debug_material_bundle",
+                        "message": "材料包仍在生成或核对中。",
+                    },
+                )
+                continue
+
+            yield _sse_event(event, data)
+            if event in {"final", "error"}:
+                return
 
     return StreamingResponse(
         event_stream(),

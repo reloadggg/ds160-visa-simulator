@@ -14,16 +14,67 @@ interface HistoryPanelProps {
   onRestore?: (entry: SessionHistoryEntry) => void
 }
 
-const STATUS_LABELS: Record<SessionHistoryEntry["status"], string> = {
+type HistoryBadgeState =
+  | SessionHistoryEntry["status"]
+  | "review"
+  | "refusal"
+  | "pass"
+  | "evidence"
+  | "question"
+
+const STATUS_LABELS: Record<HistoryBadgeState, string> = {
   active: "进行中",
   completed: "已结束",
   abandoned: "已重置",
+  review: "审核",
+  refusal: "拒签",
+  pass: "通过",
+  evidence: "需补证",
+  question: "问答中",
 }
 
-const STATUS_STYLES: Record<SessionHistoryEntry["status"], string> = {
+const STATUS_STYLES: Record<HistoryBadgeState, string> = {
   active: "border-emerald-200 bg-emerald-50 text-emerald-700",
   completed: "border-blue-200 bg-blue-50 text-blue-700",
   abandoned: "border-slate-200 bg-slate-100 text-slate-700",
+  review: "border-amber-200 bg-amber-50 text-amber-700",
+  refusal: "border-red-200 bg-red-50 text-red-700",
+  pass: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  evidence: "border-sky-200 bg-sky-50 text-sky-700",
+  question: "border-violet-200 bg-violet-50 text-violet-700",
+}
+
+function resolveHistoryBadge(entry: SessionHistoryEntry): {
+  label: string
+  className: string
+} {
+  const interviewStatus = entry.report?.interview_status
+  let state: HistoryBadgeState = entry.status
+
+  if (interviewStatus === "simulated_refusal") {
+    state = "refusal"
+  } else if (interviewStatus === "high_risk_review") {
+    state = "review"
+  } else if (
+    interviewStatus === "waiting_key_proof" ||
+    interviewStatus === "verify_key_issue" ||
+    interviewStatus === "need_more_evidence"
+  ) {
+    state = "evidence"
+  } else if (
+    entry.status === "completed" &&
+    interviewStatus === "continue_interview" &&
+    (entry.report?.risk_level === "none" || entry.report?.risk_level === "low")
+  ) {
+    state = "pass"
+  } else if (interviewStatus === "continue_interview") {
+    state = "question"
+  }
+
+  return {
+    label: STATUS_LABELS[state],
+    className: STATUS_STYLES[state],
+  }
 }
 
 function formatDateTime(value: string): string {
@@ -75,40 +126,45 @@ export function HistoryPanel({ entries, onRestore }: HistoryPanelProps) {
           <ScrollArea className="h-[220px] pr-2 xl:h-full">
             <div className="space-y-2">
               {entries.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => setSelectedId(entry.id)}
-                  className={cn(
-                    "w-full rounded-xl border px-3 py-3 text-left transition-colors",
-                    resolvedSelectedId === entry.id
-                      ? "border-primary bg-primary/5"
-                      : "border-border bg-background hover:bg-muted/40",
-                  )}
-                >
-                  <div className="flex min-w-0 items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-foreground" title={entry.title}>{entry.title}</div>
-                      <div className="mt-1 break-words text-xs text-muted-foreground">
-                        {formatDateTime(entry.updated_at)}
-                      </div>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className={cn("shrink-0", STATUS_STYLES[entry.status])}
+                (() => {
+                  const badge = resolveHistoryBadge(entry)
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      onClick={() => setSelectedId(entry.id)}
+                      className={cn(
+                        "w-full rounded-xl border px-3 py-3 text-left transition-colors",
+                        resolvedSelectedId === entry.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border bg-background hover:bg-muted/40",
+                      )}
                     >
-                      {STATUS_LABELS[entry.status]}
-                    </Badge>
-                  </div>
-                  <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                    {entry.summary}
-                  </p>
-                  <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <span>{entry.visa_type}</span>
-                    <span>{entry.message_count} 条消息</span>
-                    <span>{entry.materials.length} 份材料</span>
-                  </div>
-                </button>
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-foreground" title={entry.title}>{entry.title}</div>
+                          <div className="mt-1 break-words text-xs text-muted-foreground">
+                            {formatDateTime(entry.updated_at)}
+                          </div>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className={cn("shrink-0", badge.className)}
+                        >
+                          {badge.label}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                        {entry.summary}
+                      </p>
+                      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>{entry.visa_type}</span>
+                        <span>{entry.message_count} 条消息</span>
+                        <span>{entry.materials.length} 份材料</span>
+                      </div>
+                    </button>
+                  )
+                })()
               ))}
             </div>
           </ScrollArea>
