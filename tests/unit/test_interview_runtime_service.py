@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -288,6 +289,109 @@ def test_question_action_retries_transient_provider_error_once(monkeypatch) -> N
     assert attempts == 2
     assert action.assistant_message == "Please explain your study plan."
     assert trace.retry_count == 1
+
+
+def test_question_action_passes_sanitized_conflict_reply_guidance(monkeypatch) -> None:
+    service = InterviewRuntimeService(db=object())
+    profile = ApplicantProfile.minimal("profile-guidance")
+    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
+    captured: dict[str, dict] = {}
+    claim_conflict = {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "summary": "申请人口头学校与 I-20 和录取信显示的学校不一致。",
+        "field_paths": ["/education/school_name"],
+        "document_ids": ["doc-i20", "doc-admission"],
+        "evidence_refs": ["evi-i20", "evi-admission"],
+    }
+    document_review = {
+        "review_status": "high_risk",
+        "recommended_next_step": "high_risk_review",
+        "claim_conflicts": [claim_conflict],
+        "cross_document_conflicts": [],
+        "reviewer_summary": "review_status=high_risk",
+    }
+
+    class FakeRunner:
+        def __init__(self, model, instructions):
+            del model, instructions
+
+        def run(self, **kwargs):
+            captured["dynamic_turn_context"] = kwargs["dynamic_turn_context"]
+            captured["tool_outputs"] = kwargs["tool_outputs"]
+            return SimpleNamespace(
+                output=InterviewNextAction(
+                    assistant_message="我看到你的学校说明和 I-20、录取信对不上，请解释一下。",
+                    requested_documents=[],
+                    decision="high_risk_review",
+                    focus_kind="risk_review",
+                    focus_risk_code="record_conflict",
+                ),
+                tool_calls=[],
+                retry_count=0,
+                provider="openai_compatible",
+                model="gpt-5.4",
+            )
+
+    monkeypatch.setattr(
+        "app.services.interview_runtime_service.AdjudicationAgentRunner",
+        FakeRunner,
+    )
+    monkeypatch.setattr(
+        service.model_factory,
+        "build",
+        lambda *a, **k: (
+            "fake-model",
+            {
+                "provider": "openai_compatible",
+                "model": "gpt-5.4",
+                "instructions": "test",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        service.capability_orchestrator,
+        "orchestrate",
+        lambda *a, **k: SimpleNamespace(
+            capability_plan=[],
+            trace_entries=[],
+            tool_outputs={"document_review": document_review},
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_build_dynamic_turn_context",
+        lambda **kwargs: {"prompt_roles": {"system": "stable_policy"}},
+    )
+
+    action, trace = service._question_action(
+        "sess-guidance",
+        profile,
+        score,
+        "continue_interview",
+        recent_turns=[],
+    )
+
+    guidance = captured["dynamic_turn_context"]["reply_guidance"]
+    active_conflict = guidance["active_conflict_to_clarify"]
+    assert action.assistant_message == "我看到你的学校说明和 I-20、录取信对不上，请解释一下。"
+    assert trace.turn_decision == "high_risk_review"
+    assert guidance["priority"] == "clarify_active_material_conflict"
+    assert active_conflict == {
+        "conflict_type": "claim_vs_document",
+        "severity": "high",
+        "subject": "口头说明的学校/项目信息与 I-20/录取信材料",
+        "field_labels": ["学校名称"],
+        "material_labels": ["口头说明", "I-20", "录取信"],
+    }
+    assert captured["tool_outputs"]["document_review"] == document_review
+
+    serialized_guidance = json.dumps(guidance, ensure_ascii=False)
+    assert "/education/school_name" not in serialized_guidance
+    assert "doc-i20" not in serialized_guidance
+    assert "evi-i20" not in serialized_guidance
+    assert "申请人口头学校" not in serialized_guidance
+    assert "review_status" not in serialized_guidance
 
 
 def test_question_action_does_not_retry_auth_error(monkeypatch) -> None:

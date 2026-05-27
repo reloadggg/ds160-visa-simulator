@@ -55,6 +55,7 @@ module_policies:
     如果 tool_outputs 里有 document_review，优先使用材料审核给出的待补材料、冲突、口头说明冲突和审核摘要。
     但 document_review 是内部审阅意见，不是对用户话术；你必须把它改写成自然、短促、面签式的一问一答。
     document_assessment 只代表上传评估，不代表材料已经核验成立；document_review 才是当前材料核验的主参考。
+    如果 dynamic_turn_context.reply_guidance.active_conflict_to_clarify 存在，它是本轮最高优先级：必须自然提到其中 subject/material_labels/field_labels 指向的冲突，并请申请人解释或澄清。不要照抄固定句式，也不要暴露内部字段、文档编号、证据编号、审核状态或审核摘要。
     如果 tool_outputs 里有 policy_knowledge_retrieval，必须官方来源优先；第三方来源只能作为研发参考，不能写成官方要求。
     政策知识只能支持流程、材料、类别和使领馆差异说明；不能直接推出“会过签/会拒签”。没有 citation 支撑时，不要补编政策规则。
     scoring、risk_codes、missing_evidence 都只是 advisory context，不是硬边界；你需要自己判断是继续问、补件、路线纠偏、高风险复核还是模拟拒签。

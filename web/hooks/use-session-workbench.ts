@@ -329,6 +329,8 @@ function buildDebugBundleFinalMessage(
   const source =
     bundle.generation?.source === "ai"
       ? "AI 已根据你的会话信息生成"
+      : bundle.generation?.fallback_used
+        ? "AI 材料生成失败，已使用备用演示资料生成"
       : bundle.generation?.mode !== "deterministic"
         ? "未找到足够会话事实，已使用演示占位资料生成"
       : "已生成"
@@ -2466,11 +2468,11 @@ export function useSessionWorkbench() {
   }, [interviewReview, sessionId, visaType])
 
   const debugMaterialSeedText = useMemo(() => {
-    return (
-      messages.find(
-        (message) => message.role === "user" && message.content.trim(),
-      )?.content.trim() ?? ""
-    )
+    const userContents = messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content.trim())
+      .filter(Boolean)
+    return userContents.slice(-4).join("\n\n")
   }, [messages])
 
   const runDebugMaterialBundle = useCallback(

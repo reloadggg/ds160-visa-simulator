@@ -320,6 +320,11 @@ class InterviewRuntimeService:
         dynamic_turn_context["capability_plan"] = list(
             capability_result.capability_plan
         )
+        reply_guidance = self._build_reply_guidance(
+            capability_result.tool_outputs
+        )
+        if reply_guidance is not None:
+            dynamic_turn_context["reply_guidance"] = reply_guidance
         self._last_capability_tool_outputs = dict(capability_result.tool_outputs)
         if model is None:
             raise ModelUnavailableError(
@@ -392,6 +397,235 @@ class InterviewRuntimeService:
                 exc,
                 runtime=runtime,
             ) from exc
+
+    def _build_reply_guidance(
+        self,
+        capability_tool_outputs: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        document_review = (
+            capability_tool_outputs.get("document_review")
+            if isinstance(capability_tool_outputs, dict)
+            else None
+        )
+        if not isinstance(document_review, dict):
+            return None
+
+        conflict = self._active_document_review_conflict(document_review)
+        if conflict is None:
+            return None
+
+        return {
+            "priority": "clarify_active_material_conflict",
+            "source": "document_review",
+            "recommended_next_step": self._runtime_text(
+                document_review.get("recommended_next_step")
+            )
+            or "clarify_conflict",
+            "active_conflict_to_clarify": self._safe_conflict_reply_context(
+                conflict
+            ),
+            "assistant_message_guidance": [
+                "用自然面签口吻承接已收到的材料，点出冲突主题，并要求申请人解释或澄清。",
+                "不要照抄固定模板；根据用户语言、最近对话和冲突主题自行组织一到两句。",
+                "不要暴露内部字段名、材料编号、证据编号、审核状态、审核摘要或内部风险编号。",
+            ],
+        }
+
+    def _active_document_review_conflict(
+        self,
+        document_review: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        cross_document_conflicts = [
+            item
+            for item in document_review.get("cross_document_conflicts", []) or []
+            if isinstance(item, dict)
+        ]
+        claim_conflicts = [
+            item
+            for item in document_review.get("claim_conflicts", []) or []
+            if isinstance(item, dict)
+        ]
+        conflicts = [*cross_document_conflicts, *claim_conflicts]
+        high_conflict = next(
+            (
+                item
+                for item in conflicts
+                if self._is_confirmed_high_reply_conflict(item)
+            ),
+            None,
+        )
+        if high_conflict is not None:
+            return high_conflict
+
+        review_status = self._runtime_text(document_review.get("review_status"))
+        recommended_next_step = self._runtime_text(
+            document_review.get("recommended_next_step")
+        )
+        if review_status not in {"needs_clarification", "high_risk"} and (
+            recommended_next_step not in {"clarify_conflict", "high_risk_review"}
+        ):
+            return None
+        return next(iter(conflicts), None)
+
+    def _is_confirmed_high_reply_conflict(
+        self,
+        conflict: dict[str, Any],
+    ) -> bool:
+        if conflict.get("severity") != "high":
+            return False
+        summary = (self._runtime_text(conflict.get("summary")) or "").casefold()
+        has_material_anchor = bool(
+            self._normalized_string_list(conflict.get("document_ids"))
+            or self._normalized_string_list(conflict.get("evidence_refs"))
+        )
+        if self._looks_like_unverified_missing_evidence(summary):
+            return has_material_anchor
+        conflict_type = self._runtime_text(conflict.get("conflict_type"))
+        if conflict_type in {"document_vs_document", "claim_vs_document"}:
+            return True
+        if conflict_type != "missing_verification":
+            return False
+        if not self._normalized_string_list(conflict.get("document_ids")):
+            return False
+        field_paths = set(self._normalized_string_list(conflict.get("field_paths")))
+        return {
+            "/education/first_year_cost",
+            "/funding/available_funds",
+        }.issubset(field_paths)
+
+    def _looks_like_unverified_missing_evidence(self, summary: str) -> bool:
+        if not summary:
+            return False
+        missing_markers = (
+            "no funding proof",
+            "no sponsor",
+            "not provided",
+            "has not been provided",
+            "missing",
+            "unverified",
+            "not verified",
+            "awaiting",
+            "缺少",
+            "未提供",
+            "未提交",
+            "未验证",
+            "待验证",
+            "待补",
+        )
+        return any(marker in summary for marker in missing_markers)
+
+    def _safe_conflict_reply_context(
+        self,
+        conflict: dict[str, Any],
+    ) -> dict[str, Any]:
+        conflict_type = (
+            self._runtime_text(conflict.get("conflict_type"))
+            or "material_conflict"
+        )
+        field_paths = set(self._normalized_string_list(conflict.get("field_paths")))
+        return {
+            "conflict_type": conflict_type,
+            "severity": self._runtime_text(conflict.get("severity")) or "unknown",
+            "subject": self._conflict_reply_subject(
+                conflict_type=conflict_type,
+                field_paths=field_paths,
+            ),
+            "field_labels": self._field_labels_for_reply(field_paths),
+            "material_labels": self._material_labels_for_reply(
+                conflict_type=conflict_type,
+                field_paths=field_paths,
+            ),
+        }
+
+    def _conflict_reply_subject(
+        self,
+        *,
+        conflict_type: str,
+        field_paths: set[str],
+    ) -> str:
+        if {
+            "/education/first_year_cost",
+            "/funding/available_funds",
+        }.issubset(field_paths):
+            return "资金证明金额与 I-20 第一年度费用"
+        if "/education/school_name" in field_paths or "/education/program_name" in field_paths:
+            if conflict_type == "claim_vs_document":
+                return "口头说明的学校/项目信息与 I-20/录取信材料"
+            return "I-20 与录取信里的学校/项目信息"
+        if "/identity/passport_number" in field_paths:
+            if conflict_type == "claim_vs_document":
+                return "口头说明的护照信息与护照材料"
+            return "DS-160 与护照首页里的护照号码"
+        if "/identity/full_name" in field_paths:
+            if conflict_type == "claim_vs_document":
+                return "口头身份说明与材料上的姓名"
+            return "多份身份材料上的姓名"
+        if "/funding/primary_source" in field_paths:
+            if conflict_type == "claim_vs_document":
+                return "口头说明的资金来源与资金证明"
+            return "资金证明和其他资助材料里的资金来源"
+        if "/funding/sponsor_relationship" in field_paths or "/family/parent_names" in field_paths:
+            if conflict_type == "claim_vs_document":
+                return "口头说明的资助人关系与亲属关系材料"
+            return "资金材料和亲属关系材料里的资助人关系"
+        if conflict_type == "claim_vs_document":
+            return "口头说明与已提交材料"
+        return "已提交材料之间的关键信息"
+
+    def _field_labels_for_reply(self, field_paths: set[str]) -> list[str]:
+        labels_by_path = {
+            "/identity/full_name": "姓名",
+            "/identity/passport_number": "护照号码",
+            "/identity/nationality": "国籍",
+            "/education/school_name": "学校名称",
+            "/education/program_name": "项目/专业名称",
+            "/education/sevis_id": "SEVIS 编号",
+            "/education/first_year_cost": "I-20 第一年度费用",
+            "/funding/primary_source": "资金来源",
+            "/funding/available_funds": "资金证明金额",
+            "/funding/sponsor_relationship": "资助人关系",
+            "/family/parent_names": "父母/资助人姓名",
+        }
+        labels = [
+            label
+            for path, label in labels_by_path.items()
+            if path in field_paths
+        ]
+        return labels or ["关键信息"]
+
+    def _material_labels_for_reply(
+        self,
+        *,
+        conflict_type: str,
+        field_paths: set[str],
+    ) -> list[str]:
+        if {
+            "/education/first_year_cost",
+            "/funding/available_funds",
+        }.issubset(field_paths):
+            return ["I-20", "资金证明"]
+        labels: list[str] = []
+        if conflict_type == "claim_vs_document":
+            labels.append("口头说明")
+        if "/education/school_name" in field_paths or "/education/program_name" in field_paths:
+            labels.extend(["I-20", "录取信"])
+        if "/identity/passport_number" in field_paths:
+            labels.extend(["DS-160 确认页", "护照首页"])
+        if "/identity/full_name" in field_paths:
+            labels.append("身份材料")
+        if "/funding/primary_source" in field_paths or "/funding/available_funds" in field_paths:
+            labels.append("资金证明")
+        if "/funding/sponsor_relationship" in field_paths or "/family/parent_names" in field_paths:
+            labels.append("亲属关系证明")
+        return self._dedupe_preserve_order(labels) or ["已提交材料"]
+
+    def _dedupe_preserve_order(self, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            if value in normalized:
+                continue
+            normalized.append(value)
+        return normalized
 
     def _should_retry_turn_decision_provider_error(
         self,
@@ -506,6 +740,16 @@ class InterviewRuntimeService:
             return None
         normalized = value.strip()
         return normalized or None
+
+    def _normalized_string_list(self, values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        normalized = [
+            value.strip()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        ]
+        return sorted(set(normalized))
 
     def _build_agent_deps(self, session_id: str) -> AgentRuntimeDeps:
         return AgentRuntimeDeps(

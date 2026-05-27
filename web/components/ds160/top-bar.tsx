@@ -312,7 +312,7 @@ export function TopBar({
                 className="min-h-24 resize-y"
               />
               <p className="text-xs leading-5 text-muted-foreground">
-                默认取第一条用户消息。这里的信息会用于让 I-20、录取信、资金证明彼此对得上。
+                默认取最近几条用户消息。这里的信息会用于让 I-20、录取信、资金证明彼此对得上。
               </p>
             </div>
             <DialogFooter>

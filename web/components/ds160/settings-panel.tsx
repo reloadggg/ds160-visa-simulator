@@ -596,7 +596,7 @@ export function SettingsPanel({
                   className="min-h-24 resize-y"
                 />
                 <div className="text-xs leading-5 text-muted-foreground">
-                  默认取当前会话第一条用户消息；生成器会用它对齐学校、专业、资金来源和材料字段。
+                  默认取当前会话最近几条用户消息；生成器会用它对齐学校、专业、资金来源和材料字段。
                 </div>
               </div>
 

@@ -1369,7 +1369,7 @@ def test_run_turn_routes_repeated_claim_document_conflict_to_review(
             "document_review": {"claim_conflicts": [claim_conflict]},
         }
         return InterviewNextAction(
-            assistant_message="你最终入读哪一所学校？",
+            assistant_message="我看到你的学校说明和 I-20、录取信对不上，请解释一下。",
             requested_documents=[],
             decision="continue_interview",
         )
@@ -1389,7 +1389,7 @@ def test_run_turn_routes_repeated_claim_document_conflict_to_review(
 
     assert response["governor_decision"] == "high_risk_review"
     assert response["turn_decision"]["decision"] == "high_risk_review"
-    assert response["assistant_message"] == "你的说法和材料不一致，请解释。"
+    assert response["assistant_message"] == "我看到你的学校说明和 I-20、录取信对不上，请解释一下。"
     assert "申请人口头学校" not in response["assistant_message"]
     assert "当前案例" not in response["assistant_message"]
     assert record.phase_state == "interview"
@@ -1428,7 +1428,7 @@ def test_align_action_uses_high_severity_conflict_even_if_status_reviewed() -> N
 
     assert aligned.decision == "high_risk_review"
     assert aligned.focus_kind == "risk_review"
-    assert aligned.assistant_message == "两份材料信息不一致，请解释。"
+    assert aligned.assistant_message == "我们继续普通面试问题。"
 
 
 def test_align_action_does_not_expose_internal_document_review_summary() -> None:
@@ -1465,7 +1465,7 @@ def test_align_action_does_not_expose_internal_document_review_summary() -> None
     )
 
     assert aligned.decision == "high_risk_review"
-    assert aligned.assistant_message == "两份材料信息不一致，请解释。"
+    assert aligned.assistant_message == "你这次去美国读什么项目？"
     assert "Passport" not in aligned.assistant_message
     assert "/identity/passport_number" not in aligned.assistant_message
     assert "doc-passport" not in aligned.assistant_message
@@ -1538,7 +1538,7 @@ def test_align_action_promotes_anchored_claim_conflict_with_missing_wording() ->
     )
 
     assert aligned.decision == "high_risk_review"
-    assert aligned.assistant_message == "你的说法和材料不一致，请解释。"
+    assert aligned.assistant_message == "你最终入读哪一所学校？"
 
 
 def test_align_action_promotes_confirmed_funding_shortfall_to_review() -> None:
@@ -1574,7 +1574,7 @@ def test_align_action_promotes_confirmed_funding_shortfall_to_review() -> None:
     )
 
     assert aligned.decision == "high_risk_review"
-    assert aligned.assistant_message == "资金证明低于 I-20 费用，请解释。"
+    assert aligned.assistant_message == "第一年的费用由谁支付？"
 
 
 def test_run_turn_downgrades_repeated_non_redline_conflict_refusal_to_review(

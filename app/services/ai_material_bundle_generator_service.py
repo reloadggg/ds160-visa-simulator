@@ -4,7 +4,14 @@ import json
 import os
 from typing import Any, Literal, Protocol, TypeVar
 
-from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, RunConfig, Runner
+from agents import (
+    Agent,
+    AgentOutputSchema,
+    ModelSettings,
+    OpenAIChatCompletionsModel,
+    RunConfig,
+    Runner,
+)
 from agents.exceptions import AgentsException
 from agents.model_settings import Reasoning
 from openai import APIStatusError, AsyncOpenAI
@@ -166,7 +173,7 @@ class OpenAIAgentsMaterialBundleRunner:
             instructions=instructions,
             model=self._build_model(runtime),
             model_settings=self._build_model_settings(runtime),
-            output_type=output_type,
+            output_type=AgentOutputSchema(output_type, strict_json_schema=False),
         )
         result = Runner.run_sync(
             agent,
@@ -444,8 +451,13 @@ class AIMaterialBundleGeneratorService:
                 status_code=exc.status_code,
             )
         if isinstance(exc, AgentsException):
+            detail = str(exc).strip()
             return ProviderAPIError(
-                detail=f"材料生成 Agent 运行失败：{exc.__class__.__name__}",
+                detail=(
+                    f"材料生成 Agent 运行失败：{exc.__class__.__name__}: {detail}"
+                    if detail
+                    else f"材料生成 Agent 运行失败：{exc.__class__.__name__}"
+                ),
                 provider=runtime.get("provider"),
                 model=runtime.get("model"),
                 status_code=503,

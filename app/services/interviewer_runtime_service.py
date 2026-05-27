@@ -246,15 +246,21 @@ class InterviewerRuntimeService:
                 decision_source="runtime_convergence_guard",
             )
         boundary = self._apply_boundary_transition(boundary, action)
+        pre_document_review_action = action
         action = self._align_action_with_document_review(
             action,
             capability_tool_outputs=dict(
                 self.interview_runtime._last_capability_tool_outputs
             ),
         )
+        if action != pre_document_review_action:
+            self._sync_last_turn_decision_trace(
+                trace_entries,
+                action,
+                decision_source="document_review_guard",
+            )
         boundary = self._apply_boundary_transition(boundary, action)
         return boundary, action, dict(self.interview_runtime._last_capability_tool_outputs)
-
 
     def _apply_turn_state(
         self,
@@ -289,7 +295,6 @@ class InterviewerRuntimeService:
         if not isinstance(findings, list):
             return []
         return list(findings)
-
 
     def _reconcile_score_with_gate(
         self,
@@ -413,12 +418,12 @@ class InterviewerRuntimeService:
             return action
         return InterviewNextAction(
             decision=GovernorDecision.HIGH_RISK_REVIEW.value,
-            assistant_message=self._review_conflict_window_message(high_conflict),
+            assistant_message=action.assistant_message,
             requested_documents=[],
             focus_kind="risk_review",
             focus_document_type=None,
-            focus_risk_code="record_conflict",
-            reason="document_review_high_risk",
+            focus_risk_code=action.focus_risk_code or "record_conflict",
+            reason=action.reason or "document_review_high_risk",
         )
 
     def _is_confirmed_high_review_conflict(self, conflict: dict[str, Any]) -> bool:
@@ -477,20 +482,6 @@ class InterviewerRuntimeService:
             "待补",
         )
         return any(marker in summary for marker in missing_markers)
-
-    def _review_conflict_window_message(self, conflict: dict[str, Any]) -> str:
-        conflict_type = self._runtime_text(conflict.get("conflict_type"))
-        field_paths = set(self._normalized_string_list(conflict.get("field_paths")))
-        if conflict_type == "claim_vs_document":
-            return "你的说法和材料不一致，请解释。"
-        if {
-            "/education/first_year_cost",
-            "/funding/available_funds",
-        }.issubset(field_paths):
-            return "资金证明低于 I-20 费用，请解释。"
-        if conflict_type == "document_vs_document":
-            return "两份材料信息不一致，请解释。"
-        return "材料核验有关键冲突，请解释。"
 
     def _gate_is_ready(self, record: SessionRecord) -> bool:
         return (record.gate_status_json or {}).get("status") == GateOverallStatus.READY_FOR_INTERVIEW
@@ -783,15 +774,21 @@ class InterviewerRuntimeService:
         ) < 2:
             return action
         risk_code = self._first_score_risk_code(score) or "record_conflict"
+        assistant_message = action.assistant_message
+        if action.decision == GovernorDecision.SIMULATED_REFUSAL.value:
+            assistant_message = self._deterministic_review_fallback_message()
         return InterviewNextAction(
             decision=GovernorDecision.HIGH_RISK_REVIEW.value,
-            assistant_message=self._review_conflict_window_message(conflict),
+            assistant_message=assistant_message,
             requested_documents=[],
             focus_kind="risk_review",
             focus_document_type=None,
             focus_risk_code=risk_code,
             reason="repeated_claim_document_conflict",
         )
+
+    def _deterministic_review_fallback_message(self) -> str:
+        return "这里有关键不一致，请先解释这一点。"
 
     def _has_refusal_redline(self, score: ScoreState) -> bool:
         return any(

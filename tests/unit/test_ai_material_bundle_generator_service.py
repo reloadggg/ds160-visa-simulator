@@ -2,6 +2,8 @@ from collections.abc import Generator
 import json
 
 import pytest
+from agents import AgentOutputSchema
+from agents.exceptions import UserError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -11,7 +13,9 @@ from app.domain.runtime import build_initial_gate_status
 from app.services.ai_material_bundle_generator_service import (
     AIMaterialBundleGeneratorService,
     GeneratedMaterialBundleOutput,
+    OpenAIAgentsMaterialBundleRunner,
 )
+from app.services.runtime_errors import ProviderAPIError
 
 
 class StubRunner:
@@ -184,3 +188,116 @@ def test_ai_material_generator_includes_seed_and_transcript_in_prompt(
     assert prompt["transcript"][0]["content"] == (
         "我会去 New York University 读 MS Computer Science，父母资助。"
     )
+
+
+def test_openai_agents_runner_uses_non_strict_output_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    class FakeResult:
+        def final_output_as(self, output_type, raise_if_incorrect_type: bool = True):
+            captured["final_output_type"] = output_type
+            captured["raise_if_incorrect_type"] = raise_if_incorrect_type
+            return GeneratedMaterialBundleOutput(
+                documents=[
+                    {
+                        "document_type": "ds160",
+                        "filename": "ai_ds160.txt",
+                        "raw_text": (
+                            "Online Nonimmigrant Visa Application\n"
+                            "Applicant: TEST APPLICANT\n"
+                        ),
+                        "fields": {"/identity/full_name": "TEST APPLICANT"},
+                    },
+                    {
+                        "document_type": "passport_bio",
+                        "filename": "ai_passport.txt",
+                        "raw_text": (
+                            "PASSPORT BIOGRAPHIC PAGE\n"
+                            "Full Name: TEST APPLICANT\n"
+                        ),
+                        "fields": {"/identity/full_name": "TEST APPLICANT"},
+                    },
+                    {
+                        "document_type": "i20",
+                        "filename": "ai_i20.txt",
+                        "raw_text": "Certificate of Eligibility\nSchool Name: New York University\n",
+                        "fields": {"/education/school_name": "New York University"},
+                    },
+                    {
+                        "document_type": "admission_letter",
+                        "filename": "ai_admission.txt",
+                        "raw_text": "New York University\nOffice of Graduate Admission\n",
+                        "fields": {"/education/school_name": "New York University"},
+                    },
+                    {
+                        "document_type": "funding_proof",
+                        "filename": "ai_funding.txt",
+                        "raw_text": (
+                            "Bank Balance Certificate\n"
+                            "Available Balance: USD 90000\n"
+                        ),
+                        "fields": {"/funding/available_funds": "90000"},
+                    },
+                ],
+            )
+
+    def fake_run_sync(agent, prompt, *, max_turns: int, run_config):
+        captured["agent"] = agent
+        captured["prompt"] = prompt
+        captured["max_turns"] = max_turns
+        captured["workflow_name"] = run_config.workflow_name
+        return FakeResult()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(
+        "app.services.ai_material_bundle_generator_service.Agent",
+        FakeAgent,
+    )
+    monkeypatch.setattr(
+        "app.services.ai_material_bundle_generator_service.Runner.run_sync",
+        fake_run_sync,
+    )
+
+    output = OpenAIAgentsMaterialBundleRunner().run(
+        prompt="{}",
+        instructions="generate materials",
+        output_type=GeneratedMaterialBundleOutput,
+        runtime={"provider": "openai_compatible", "model": "gpt-5.4"},
+    )
+
+    output_schema = captured["output_type"]
+    assert isinstance(output_schema, AgentOutputSchema)
+    assert output_schema.is_strict_json_schema() is False
+    assert captured["final_output_type"] is GeneratedMaterialBundleOutput
+    assert output.documents[2].fields["/education/school_name"] == "New York University"
+
+
+def test_ai_material_generator_agent_errors_include_detail(
+    db_session: Session,
+) -> None:
+    class FailingRunner:
+        def run(self, **kwargs):
+            raise UserError("Strict JSON schema is enabled")
+
+    record = seed_session(db_session)
+
+    with pytest.raises(ProviderAPIError) as exc_info:
+        AIMaterialBundleGeneratorService(
+            db_session,
+            model_factory=StubFactory(),
+            runner=FailingRunner(),
+        ).generate(
+            record=record,
+            scenario="normal_f1_bundle",
+            seed_text="我要去 New York University 读 MS Computer Science，父母资助。",
+            include_synthetic_user_turns=True,
+        )
+
+    assert "UserError: Strict JSON schema is enabled" in str(exc_info.value)
