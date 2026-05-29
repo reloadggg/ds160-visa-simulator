@@ -15,6 +15,7 @@ from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
 from app.services.debug_material_bundle_service import DebugMaterialBundleService
 from app.services.gate_service import GateService
+from app.services.runtime_errors import ModelRuntimeError
 from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotService
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -102,6 +103,8 @@ def debug_fill_current_gap(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ModelRuntimeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/{session_id}/debug/material-bundles")
@@ -124,6 +127,8 @@ def debug_create_material_bundle(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ModelRuntimeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 def _sse_event(event: str, payload: dict) -> str:
@@ -166,6 +171,8 @@ def debug_create_material_bundle_stream(
                 event_queue.put(("error", {"status": 404, "detail": str(exc)}))
             except ValueError as exc:
                 event_queue.put(("error", {"status": 422, "detail": str(exc)}))
+            except ModelRuntimeError as exc:
+                event_queue.put(("error", {"status": exc.status_code, "detail": exc.detail}))
             except Exception as exc:
                 event_queue.put(
                     (

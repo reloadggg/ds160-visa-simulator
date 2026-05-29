@@ -554,21 +554,18 @@ class DebugMaterialBundleService:
                     "trace": trace,
                 }
             except ModelRuntimeError as exc:
-                if normalized_mode == "ai":
-                    raise
-                fallback_spec = self._build_bundle_spec(
-                    scenario,
-                    include_synthetic_user_turns=include_synthetic_user_turns,
-                )
-                return fallback_spec, {
-                    "source": "deterministic",
-                    "mode": normalized_mode,
-                    "seed_text_present": True,
-                    "seed_source": seed_source,
-                    "request_seed_text_present": bool(requested_seed),
-                    "fallback_used": True,
-                    "fallback_reason": exc.detail,
-                }
+                raise ModelRuntimeError(
+                    detail=(
+                        "AI 材料生成失败，未写入任何演示占位材料。"
+                        f"请稍后重试或更换模型。原始错误：{exc.detail}"
+                    ),
+                    status_code=exc.status_code,
+                    provider=exc.provider,
+                    model=exc.model,
+                    upstream_code=exc.upstream_code,
+                    body=exc.body,
+                    missing_env_vars=exc.missing_env_vars,
+                ) from exc
 
         fallback_spec = self._build_bundle_spec(
             scenario,

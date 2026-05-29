@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.model_factory import AgentModelFactory
 from app.agents.user_model_config import current_user_model_config
+from app.core.settings import settings
 from app.db.models import SessionRecord
 from app.domain.document_types import normalize_document_type
 from app.repositories.session_turn_repo import SessionTurnRepository
@@ -212,6 +213,7 @@ class OpenAIAgentsMaterialBundleRunner:
             openai_client=AsyncOpenAI(
                 api_key=api_key,
                 base_url=base_url,
+                timeout=settings.openai_timeout_seconds,
             ),
         )
 

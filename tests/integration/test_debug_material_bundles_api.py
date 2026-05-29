@@ -17,6 +17,7 @@ from app.services.ai_material_bundle_generator_service import (
 )
 from app.services.capability_orchestrator import CapabilityOrchestrator
 from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
+from app.services.runtime_errors import ModelRuntimeError
 
 
 @pytest.fixture()
@@ -316,6 +317,94 @@ def test_debug_material_bundle_api_accepts_seeded_ai_generation(
     assert payload["documents"][2]["fields"]["/education/school_name"] == (
         "New York University"
     )
+
+
+def test_debug_material_bundle_api_returns_error_when_seeded_ai_generation_fails(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+
+    def fail_generate(self, **kwargs):
+        raise ModelRuntimeError(detail="stub provider returned 504", status_code=503)
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fail_generate,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={
+            "scenario": "normal_f1_bundle",
+            "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+        },
+    )
+
+    assert response.status_code == 503
+    assert "AI 材料生成失败，未写入任何演示占位材料" in response.json()["detail"]
+    assert "stub provider returned 504" in response.json()["detail"]
+
+    with db_session_factory() as db:
+        assert db.query(DocumentRecord).filter_by(session_id=session_id).count() == 0
+        assert (
+            db.query(EvidenceItemRecord).filter_by(session_id=session_id).count()
+            == 0
+        )
+        assert (
+            db.query(SessionTurnRecord).filter_by(session_id=session_id).count()
+            == 0
+        )
+
+
+def test_debug_material_bundle_stream_returns_error_when_seeded_ai_generation_fails(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+
+    def fail_generate(self, **kwargs):
+        raise ModelRuntimeError(detail="stub provider returned 504", status_code=503)
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fail_generate,
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with client.stream(
+        "POST",
+        f"/v1/sessions/{session_id}/debug/material-bundles/stream",
+        json={
+            "scenario": "normal_f1_bundle",
+            "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+        },
+    ) as response:
+        body = response.read().decode()
+
+    assert response.status_code == 200
+    assert "event: accepted" in body
+    assert "event: error" in body
+    assert "AI 材料生成失败，未写入任何演示占位材料" in body
+    assert "stub provider returned 504" in body
+    assert "event: final" not in body
+    assert "event: document_created" not in body
+
+    with db_session_factory() as db:
+        assert db.query(DocumentRecord).filter_by(session_id=session_id).count() == 0
+        assert (
+            db.query(EvidenceItemRecord).filter_by(session_id=session_id).count()
+            == 0
+        )
+        assert (
+            db.query(SessionTurnRecord).filter_by(session_id=session_id).count()
+            == 0
+        )
 
 
 def test_claim_vs_document_bundle_fallback_detects_claim_history_conflict(

@@ -358,7 +358,7 @@ function buildDebugBundleFinalMessage(
     bundle.generation?.source === "ai"
       ? "AI 已根据你的会话信息生成"
       : bundle.generation?.fallback_used
-        ? "AI 材料生成失败，已使用备用演示资料生成"
+        ? "AI 材料生成失败"
       : bundle.generation?.mode !== "deterministic"
         ? "未找到足够会话事实，已使用演示占位资料生成"
       : "已生成"
@@ -1462,7 +1462,7 @@ export function useSessionWorkbench() {
         error.status === 502 ||
         error.status === 504
       ) {
-        return "当前对话模型不可用或运行失败。"
+        return error.message || "当前对话模型不可用或运行失败。"
       }
       return `请求失败：${error.message}`
     }

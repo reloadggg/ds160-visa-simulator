@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 APP_GIT_SHA = os.getenv("APP_GIT_SHA") or os.getenv("GIT_SHA")
 APP_BUILD_TIME = os.getenv("APP_BUILD_TIME") or os.getenv("BUILD_TIME")
 

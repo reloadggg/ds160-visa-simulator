@@ -13,6 +13,7 @@ from app.services.debug_material_bundle_service import (
     DebugMaterialBundleService,
 )
 from app.services.ai_material_bundle_generator_service import GeneratedMaterialBundleOutput
+from app.services.runtime_errors import ModelRuntimeError
 from app.repositories.session_turn_repo import SessionTurnRepository
 
 ORACLE_TEXT_PHRASES = (
@@ -476,7 +477,7 @@ def test_material_bundle_uses_session_transcript_seed_when_request_seed_missing(
     assert payload["generation"]["seed_source"] == "session_transcript"
 
 
-def test_seeded_material_bundle_falls_back_when_ai_generation_fails(
+def test_seeded_material_bundle_fails_without_writing_demo_materials(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -486,8 +487,6 @@ def test_seeded_material_bundle_falls_back_when_ai_generation_fails(
     )
 
     def fake_generate(self, **kwargs):
-        from app.services.runtime_errors import ModelRuntimeError
-
         raise ModelRuntimeError(detail="stub provider unavailable", status_code=503)
 
     monkeypatch.setattr(
@@ -496,13 +495,25 @@ def test_seeded_material_bundle_falls_back_when_ai_generation_fails(
     )
     session_id = seed_session(db_session)
 
-    payload = DebugMaterialBundleService(db_session).create_bundle(
-        session_id,
-        scenario="normal_f1_bundle",
-        seed_text="我会去 New York University 读 MS Computer Science，父母资助。",
-    )
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        DebugMaterialBundleService(db_session).create_bundle(
+            session_id,
+            scenario="normal_f1_bundle",
+            seed_text="我会去 New York University 读 MS Computer Science，父母资助。",
+        )
 
-    assert payload["generation"]["source"] == "deterministic"
-    assert payload["generation"]["fallback_used"] is True
-    assert "stub provider unavailable" in payload["generation"]["fallback_reason"]
-    assert payload["documents"]
+    assert exc_info.value.status_code == 503
+    assert "AI 材料生成失败，未写入任何演示占位材料" in exc_info.value.detail
+    assert "stub provider unavailable" in exc_info.value.detail
+    assert (
+        db_session.query(DocumentRecord).filter_by(session_id=session_id).count()
+        == 0
+    )
+    assert (
+        db_session.query(DocumentChunkRecord).filter_by(session_id=session_id).count()
+        == 0
+    )
+    assert (
+        db_session.query(EvidenceItemRecord).filter_by(session_id=session_id).count()
+        == 0
+    )
