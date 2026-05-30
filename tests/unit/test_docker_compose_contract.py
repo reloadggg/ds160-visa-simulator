@@ -13,6 +13,7 @@ def test_compose_uses_postgres_readiness_and_layered_app_healthcheck() -> None:
     combined = services["ds160-agent2"]
     postgres = services["postgres"]
     nginx = services["nginx"]
+    build_args = compose["x-ds160-build"]["args"]
 
     assert api["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert worker["depends_on"]["postgres"]["condition"] == "service_healthy"
@@ -20,6 +21,10 @@ def test_compose_uses_postgres_readiness_and_layered_app_healthcheck() -> None:
     assert nginx["depends_on"]["ds160-api"]["condition"] == "service_healthy"
     assert nginx["depends_on"]["ds160-web"]["condition"] == "service_healthy"
     assert combined["profiles"] == ["combined"]
+    assert build_args["UV_HTTP_TIMEOUT"] == "${UV_HTTP_TIMEOUT:-180}"
+    dockerfile = Path("Dockerfile").read_text()
+    assert "ARG UV_HTTP_TIMEOUT=180" in dockerfile
+    assert "UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT}" in dockerfile
 
     api_environment = api["environment"]
     worker_environment = worker["environment"]

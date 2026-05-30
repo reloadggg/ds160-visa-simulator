@@ -2,8 +2,10 @@
 
 FROM python:3.12-slim AS python-deps
 WORKDIR /app
+ARG UV_HTTP_TIMEOUT=180
 ENV UV_COMPILE_BYTECODE=0 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT}
 COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project

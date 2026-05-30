@@ -6,6 +6,7 @@ x-ds160-build: &ds160-build
     NEXT_PUBLIC_BUILD_TIME: ${NEXT_PUBLIC_BUILD_TIME:-}
     APP_GIT_SHA: ${APP_GIT_SHA:-}
     APP_BUILD_TIME: ${APP_BUILD_TIME:-}
+    UV_HTTP_TIMEOUT: ${UV_HTTP_TIMEOUT:-180}
 
 x-ds160-environment: &ds160-environment
   APP_AUTH_PASSWORD: ${APP_AUTH_PASSWORD:-}

@@ -707,6 +707,8 @@ uv run python -m app.cli.main release-preflight --replay-corpus-passed --focused
 - `release-preflight --replay-corpus-passed --focused-tests-passed --live-smoke-passed --docker-smoke-passed` 当前输出 `ok=true`，并包含 `legacy_deprecation_decision` documented 门禁。
 - runtime 边界抽样回归：`graph_shadow` native public writer、shadow failure、native label、显式 legacy fail-open 4 条集成测试通过。
 - 本轮 legacy decision 文档同步后，`git diff --check` 通过。
+- 远程生产首次 cutover 已安全中断并恢复：脚本在旧 combined 容器停止、SQLite/.env 备份完成后，于镜像构建阶段因 `pymupdf==1.26.7` 下载/解压超时失败；已立刻 `docker start ds160-agent2` 恢复旧 SQLite 服务，本机与公网 `/healthz` 均恢复 200。
+- 针对该失败，Docker 构建新增 `UV_HTTP_TIMEOUT` build arg，默认 `180` 秒，并通过 Compose build args 可覆盖，避免默认 30 秒下载超时再次中断维护窗口。
 
 ## 仍未完成
 
