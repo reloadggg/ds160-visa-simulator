@@ -17,15 +17,21 @@ def test_production_cutover_script_has_explicit_safety_gates() -> None:
 def test_production_cutover_script_runs_dry_run_before_write() -> None:
     script = Path("scripts/production-split-postgres-cutover.sh").read_text()
 
+    postgres_position = script.index('start_postgres_service "$backup_dir"')
     dry_run_position = script.index('run_migration "$backup_dir" "dry-run"')
     write_position = script.index('run_migration "$backup_dir" "write"')
-    start_position = script.index('start_split_services "$backup_dir"')
+    split_call_position = script.index("start_split_services", write_position)
 
-    assert start_position < dry_run_position
+    assert postgres_position < dry_run_position
     assert dry_run_position < write_position
-    assert "docker compose up -d --build postgres ds160-api ds160-web ds160-worker" in script
-    assert "docker compose up -d postgres ds160-api ds160-web ds160-worker" in script
-    assert "docker compose exec -T ds160-api" in script
+    assert write_position < split_call_position
+    assert "docker compose up -d --build postgres" in script
+    assert "docker compose up -d --build ds160-api ds160-web ds160-worker" in script
+    assert "docker compose up -d postgres" in script
+    assert "docker compose up -d ds160-api ds160-web ds160-worker" in script
+    assert "docker compose run" in script
+    assert 'sqlite:////backup/app.sqlite3.backup' in script
+    assert "docker cp" not in script
     assert "docker compose up -d nginx" in script
 
 

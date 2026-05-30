@@ -96,7 +96,7 @@ run_migration() {
     /app/.venv/bin/python
     -m app.cli.main
     migrate-sqlite-to-postgres
-    --source-url sqlite:////tmp/app.sqlite3
+    --source-url sqlite:////backup/app.sqlite3.backup
     --target-url "$TARGET_DATABASE_URL"
   )
   if [ "$mode" = "dry-run" ]; then
@@ -105,19 +105,33 @@ run_migration() {
     args+=(--truncate-target)
   fi
 
-  run docker compose exec -T ds160-api "${args[@]}" | tee "$backup_dir/migration-${mode}.json"
+  run docker compose run \
+    --rm \
+    --no-deps \
+    -v "$PWD/$backup_dir:/backup:ro" \
+    ds160-api \
+    "${args[@]}" | tee "$backup_dir/migration-${mode}.json"
 }
 
-start_split_services() {
+start_postgres_service() {
   local backup_dir="$1"
   if [ "$SKIP_DOCKER_BUILD" = "1" ]; then
     echo "skip_docker_build=1" | tee "$backup_dir/build-mode.txt"
-    run docker compose up -d postgres ds160-api ds160-web ds160-worker
+    run docker compose up -d postgres
     return
   fi
 
   echo "skip_docker_build=0" | tee "$backup_dir/build-mode.txt"
-  run docker compose up -d --build postgres ds160-api ds160-web ds160-worker
+  run docker compose up -d --build postgres
+}
+
+start_split_services() {
+  if [ "$SKIP_DOCKER_BUILD" = "1" ]; then
+    run docker compose up -d ds160-api ds160-web ds160-worker
+    return
+  fi
+
+  run docker compose up -d --build ds160-api ds160-web ds160-worker
 }
 
 main() {
@@ -155,13 +169,12 @@ main() {
   export NEXT_PUBLIC_BUILD_TIME="${NEXT_PUBLIC_BUILD_TIME:-$APP_BUILD_TIME}"
 
   run docker compose config --quiet
-  start_split_services "$backup_dir"
-  run docker cp "$backup_dir/app.sqlite3.backup" ds160-api:/tmp/app.sqlite3
+  start_postgres_service "$backup_dir"
   run_migration "$backup_dir" "dry-run"
 
   run_migration "$backup_dir" "write"
 
-  run docker compose exec -T ds160-api rm -f /tmp/app.sqlite3
+  start_split_services
   run docker compose up -d nginx
   run docker compose ps
   run curl -k -fsS "https://127.0.0.1:18000/healthz" -H "Host: $HOST_HEADER"
