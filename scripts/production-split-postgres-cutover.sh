@@ -11,7 +11,10 @@ TRUNCATE_TARGET="${TRUNCATE_TARGET:-0}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 SKIP_DOCKER_BUILD="${SKIP_DOCKER_BUILD:-0}"
 ALLOW_DIRTY_WORKTREE="${ALLOW_DIRTY_WORKTREE:-0}"
+MIGRATION_TIMEOUT_SECONDS="${MIGRATION_TIMEOUT_SECONDS:-600}"
+ROLLBACK_ON_FAILURE="${ROLLBACK_ON_FAILURE:-1}"
 TARGET_DATABASE_URL="${COMPOSE_DATABASE_URL:-postgresql+psycopg://ds160:ds160@postgres:5432/ds160}"
+CUTOVER_BACKUP_DIR=""
 
 require_confirmed_cutover() {
   if [ "$CONFIRM_PRODUCTION_CUTOVER" != "$CONFIRM_VALUE" ]; then
@@ -27,6 +30,8 @@ Optional:
   SKIP_GIT_PULL=1            skip git fetch/pull when code is already in place
   SKIP_DOCKER_BUILD=1        start services from a preloaded image instead of building on host
   ALLOW_DIRTY_WORKTREE=1     allow local server changes during cutover
+  MIGRATION_TIMEOUT_SECONDS=600
+  ROLLBACK_ON_FAILURE=1      try to restart the previous combined container on failure
 EOF
     exit 64
   fi
@@ -47,6 +52,29 @@ run() {
   printf ' %q' "$@"
   printf '\n'
   "$@"
+}
+
+attempt_rollback_on_failure() {
+  local exit_code=$?
+  trap - ERR
+  echo "Cutover failed with exit code $exit_code." >&2
+
+  if [ -n "$CUTOVER_BACKUP_DIR" ]; then
+    docker compose ps > "$CUTOVER_BACKUP_DIR/compose-failure.txt" 2>&1 || true
+  fi
+
+  if [ "$ROLLBACK_ON_FAILURE" = "1" ]; then
+    echo "Attempting rollback to the previous combined container." >&2
+    docker compose stop ds160-worker ds160-api ds160-web postgres >/dev/null 2>&1 || true
+    docker start ds160-agent2 >/dev/null 2>&1 || true
+    if [ -n "$CUTOVER_BACKUP_DIR" ]; then
+      docker compose ps > "$CUTOVER_BACKUP_DIR/compose-after-rollback-attempt.txt" 2>&1 || true
+    fi
+  else
+    echo "ROLLBACK_ON_FAILURE=0; leaving partial cutover state for manual inspection." >&2
+  fi
+
+  exit "$exit_code"
 }
 
 backup_path() {
@@ -105,7 +133,7 @@ run_migration() {
     args+=(--truncate-target)
   fi
 
-  run docker compose run \
+  run timeout "$MIGRATION_TIMEOUT_SECONDS" docker compose run \
     --rm \
     --no-deps \
     -v "$PWD/$backup_dir:/backup:ro" \
@@ -139,6 +167,9 @@ main() {
 
   local backup_dir
   backup_dir="$BACKUP_ROOT/$(backup_path)-split-postgres-cutover"
+  CUTOVER_BACKUP_DIR="$backup_dir"
+  trap attempt_rollback_on_failure ERR
+
   run mkdir -p "$backup_dir"
   run chmod 700 "$backup_dir"
 
@@ -181,6 +212,7 @@ main() {
   run curl -k -fsS "https://127.0.0.1:18000/api/version" -H "Host: $HOST_HEADER"
   run curl --noproxy '*' -fsS "https://$HOST_HEADER/healthz"
 
+  trap - ERR
   echo "Cutover checks completed. Evidence directory: $backup_dir"
 }
 

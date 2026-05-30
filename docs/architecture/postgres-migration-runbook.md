@@ -155,6 +155,25 @@ The helper refuses to run without explicit confirmation and `RUN_WRITE_MIGRATION
 because it stops the old combined container before starting split services. Use
 the manual dry-run command below when you only want migration counts.
 
+On a resource-constrained production host, preload the app image and skip host
+builds:
+
+```bash
+CONFIRM_PRODUCTION_CUTOVER=I_UNDERSTAND_PRODUCTION_CUTOVER \
+RUN_WRITE_MIGRATION=1 \
+SKIP_GIT_PULL=1 \
+SKIP_DOCKER_BUILD=1 \
+MIGRATION_TIMEOUT_SECONDS=600 \
+ROLLBACK_ON_FAILURE=1 \
+scripts/production-split-postgres-cutover.sh
+```
+
+The guarded helper starts Postgres first, runs dry-run/write migration in a
+short-lived app container against the cold SQLite backup, and only then starts
+`ds160-api`, `ds160-web`, and `ds160-worker`. If the helper fails, it records
+failure evidence and attempts to stop split services and restart the previous
+`ds160-agent2` container.
+
 If the Compose Postgres service is not published to the host, copy the cold
 SQLite backup into the app container and run the dry-run against the internal
 Compose hostname:
@@ -239,3 +258,23 @@ For Compose, rollback means restoring the previous image and either:
 - Restoring the SQLite volume only if that deployment was still SQLite-backed.
 
 Never overwrite a newer Postgres volume with stale SQLite data during rollback.
+
+If production is stuck before the split services are proven healthy and SSH is
+available, recover the previous combined container first:
+
+```bash
+scripts/production-recover-combined.sh
+```
+
+Equivalent manual recovery:
+
+```bash
+docker compose stop ds160-worker ds160-api ds160-web postgres || true
+docker start ds160-agent2
+curl -k -fsS https://127.0.0.1:18000/healthz -H 'Host: ds160.efastt.store'
+curl --noproxy '*' -fsS https://ds160.efastt.store/healthz
+```
+
+Do not restart nginx blindly during this rollback. The running nginx process may
+still have the known-good combined routing loaded, while the checked-out config
+may already point at split services.
