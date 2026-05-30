@@ -9,6 +9,7 @@ BACKUP_ROOT="${BACKUP_ROOT:-.deploy-backups}"
 RUN_WRITE_MIGRATION="${RUN_WRITE_MIGRATION:-0}"
 TRUNCATE_TARGET="${TRUNCATE_TARGET:-0}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
+SKIP_DOCKER_BUILD="${SKIP_DOCKER_BUILD:-0}"
 ALLOW_DIRTY_WORKTREE="${ALLOW_DIRTY_WORKTREE:-0}"
 TARGET_DATABASE_URL="${COMPOSE_DATABASE_URL:-postgresql+psycopg://ds160:ds160@postgres:5432/ds160}"
 
@@ -24,6 +25,7 @@ Optional:
   RUN_WRITE_MIGRATION=1      required; run the real SQLite -> Postgres copy after dry-run
   TRUNCATE_TARGET=1          pass --truncate-target to the write migration
   SKIP_GIT_PULL=1            skip git fetch/pull when code is already in place
+  SKIP_DOCKER_BUILD=1        start services from a preloaded image instead of building on host
   ALLOW_DIRTY_WORKTREE=1     allow local server changes during cutover
 EOF
     exit 64
@@ -106,6 +108,18 @@ run_migration() {
   run docker compose exec -T ds160-api "${args[@]}" | tee "$backup_dir/migration-${mode}.json"
 }
 
+start_split_services() {
+  local backup_dir="$1"
+  if [ "$SKIP_DOCKER_BUILD" = "1" ]; then
+    echo "skip_docker_build=1" | tee "$backup_dir/build-mode.txt"
+    run docker compose up -d postgres ds160-api ds160-web ds160-worker
+    return
+  fi
+
+  echo "skip_docker_build=0" | tee "$backup_dir/build-mode.txt"
+  run docker compose up -d --build postgres ds160-api ds160-web ds160-worker
+}
+
 main() {
   require_confirmed_cutover
 
@@ -141,7 +155,7 @@ main() {
   export NEXT_PUBLIC_BUILD_TIME="${NEXT_PUBLIC_BUILD_TIME:-$APP_BUILD_TIME}"
 
   run docker compose config --quiet
-  run docker compose up -d --build postgres ds160-api ds160-web ds160-worker
+  start_split_services "$backup_dir"
   run docker cp "$backup_dir/app.sqlite3.backup" ds160-api:/tmp/app.sqlite3
   run_migration "$backup_dir" "dry-run"
 

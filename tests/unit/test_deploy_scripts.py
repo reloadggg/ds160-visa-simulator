@@ -9,6 +9,7 @@ def test_production_cutover_script_has_explicit_safety_gates() -> None:
     assert "RUN_WRITE_MIGRATION=1" in script
     assert "Refusing to run a partial production cutover." in script
     assert "TRUNCATE_TARGET=1" in script
+    assert "SKIP_DOCKER_BUILD=1" in script
     assert "ALLOW_DIRTY_WORKTREE=1" in script
     assert "set -x" not in script
 
@@ -18,9 +19,12 @@ def test_production_cutover_script_runs_dry_run_before_write() -> None:
 
     dry_run_position = script.index('run_migration "$backup_dir" "dry-run"')
     write_position = script.index('run_migration "$backup_dir" "write"')
+    start_position = script.index('start_split_services "$backup_dir"')
 
+    assert start_position < dry_run_position
     assert dry_run_position < write_position
     assert "docker compose up -d --build postgres ds160-api ds160-web ds160-worker" in script
+    assert "docker compose up -d postgres ds160-api ds160-web ds160-worker" in script
     assert "docker compose exec -T ds160-api" in script
     assert "docker compose up -d nginx" in script
 
