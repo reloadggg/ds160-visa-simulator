@@ -1,5 +1,6 @@
 from collections.abc import Generator
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
@@ -9,7 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core import settings as settings_module
 from app.db.base import Base
 from app.db.evidence_models import EvidenceItemRecord
-from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
+from app.db.models import (
+    CaseMemorySnapshotRecord,
+    DocumentRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.db.session import get_db
 from app.main import app
 from app.services.ai_material_bundle_generator_service import (
@@ -18,6 +24,9 @@ from app.services.ai_material_bundle_generator_service import (
 from app.services.capability_orchestrator import CapabilityOrchestrator
 from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 from app.services.runtime_errors import ModelRuntimeError
+
+
+FIXTURES_DIR = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 @pytest.fixture()
@@ -127,6 +136,140 @@ def test_runtime_debug_snapshot_includes_material_generation_metadata(
     assert payload["material_generation"]["scenario"] == "normal_f1_bundle"
     assert payload["material_generation"]["generation"]["source"] == "deterministic"
     assert payload["material_generation"]["generation"]["seed_source"] is None
+    assert payload["timeline"][0]["phase"] == "material_generation"
+    assert payload["timeline"][0]["step"] == "debug_material_bundle"
+    assert payload["timeline"][0]["status"] == "completed"
+    assert "scenario=normal_f1_bundle" in payload["timeline"][0]["summary"]
+
+
+def test_runtime_debug_snapshot_includes_material_understanding_failures(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        db.add(
+            DocumentRecord(
+                document_id="doc-failed-understanding",
+                session_id=session_id,
+                filename="broken.pdf",
+                status="uploaded",
+                artifact_json={
+                    "document_type": "funding_proof",
+                    "understanding_status": "failed",
+                    "understanding_error": {
+                        "code": "parse_failed",
+                        "message": "RuntimeError before material understanding.",
+                    },
+                    "case_board_delta": {
+                        "latest_material": {
+                            "document_id": "doc-failed-understanding",
+                            "filename": "broken.pdf",
+                            "understanding_status": "failed",
+                            "unknowns": [
+                                "RuntimeError before material understanding.",
+                            ],
+                        }
+                    },
+                },
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
+
+    assert response.status_code == 200
+    payload = response.json()
+    expected_contract = json.loads(
+        (
+            FIXTURES_DIR
+            / "runtime_debug"
+            / "material_understanding_failure_snapshot_contract.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert payload["material_understanding"] == expected_contract[
+        "material_understanding"
+    ]
+    assert {
+        "source": "material_understanding",
+        "document_id": "doc-failed-understanding",
+        "filename": "broken.pdf",
+        "code": "parse_failed",
+        "message": "RuntimeError before material understanding.",
+    } in payload["errors"]
+    for expected_timeline_item in expected_contract["timeline"]:
+        assert expected_timeline_item in payload["timeline"]
+
+
+def test_runtime_debug_snapshot_includes_case_memory_and_evidence_graph(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        db.add(
+            CaseMemorySnapshotRecord(
+                session_id=session_id,
+                snapshot_json={
+                    "claims": [
+                        {
+                            "claim_id": "claim-school",
+                            "field_path": "/education/school_name",
+                            "value": "Example University",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-school"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-school",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-i20",
+                            "excerpt": "School Name: Example University",
+                            "claim_refs": ["claim-school"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "proof_points": [
+                        {
+                            "proof_point_id": "proof-school",
+                            "visa_family": "f1",
+                            "question": "Which school will you attend?",
+                            "status": "supported",
+                            "why_it_matters": "School identity anchors the case.",
+                            "claim_refs": ["claim-school"],
+                            "evidence_refs": ["ev-school"],
+                        }
+                    ],
+                    "conflicts": [],
+                    "next_move": {
+                        "move_type": "ask",
+                        "question": "Which program will you study?",
+                        "reason": "Program detail is still unknown.",
+                        "claim_refs": ["claim-school"],
+                        "evidence_refs": ["ev-school"],
+                    },
+                },
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["case_board"]["claims"][0]["claim_id"] == "claim-school"
+    assert payload["evidence_graph"]["claims"][0]["field_path"] == (
+        "/education/school_name"
+    )
+    assert payload["evidence_graph"]["next_move"]["question"] == (
+        "Which program will you study?"
+    )
 
 
 def test_runtime_debug_snapshot_redacts_sensitive_metadata(
@@ -510,6 +653,17 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     metadata = record.interviewer_state_json["last_material_refresh"]
     assert metadata["agent_runtime"] == "graph"
     assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "material_change",
+        "fail_open_to_legacy": False,
+        "compatibility_runtime_label": "graph",
+    }
     assert metadata["governor_decision"] == "high_risk_review"
     assert metadata["prompt_trace"]["native_trigger"] == "material_change"
     assert metadata["prompt_trace"]["material_change_reason"] == "materials_updated"
@@ -523,6 +677,17 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     assert "school_mismatch_bundle" not in serialized_graph_metadata
     assert "学校材料冲突包" not in serialized_graph_metadata
     assert "dbg-bundle-" not in serialized_graph_metadata
+
+    snapshot_response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert snapshot["current_runtime"]["material_runtime_execution"] == metadata[
+        "runtime_execution"
+    ]
+    assert (
+        snapshot["current_runtime"]["execution_runtime"]
+        == "native_interviewer_runtime"
+    )
     serialized_review_context = str(review_context)
     assert "expected_findings" not in serialized_review_context
     assert "school_mismatch_bundle" not in serialized_review_context
@@ -664,6 +829,12 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
         "error_message": "native material refresh exploded",
         "fallback_runtime": "legacy",
     }
+    assert payload["material_refresh"]["selected_public_runtime"] == "legacy"
+    assert payload["material_refresh"]["runtime_execution"]["public_runtime"] == "legacy"
+    assert (
+        payload["material_refresh"]["runtime_execution"]["fallback_runtime"]
+        == "legacy"
+    )
 
 
 def test_debug_material_bundle_refresh_error_returns_final_payload(

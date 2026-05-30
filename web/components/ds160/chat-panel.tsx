@@ -20,10 +20,12 @@ import type {
   ChatAttachment,
   ChatMessage,
   ComposerCommand,
+  SessionActivityEvent,
 } from "@/lib/api/types"
 
 interface ChatPanelProps {
   messages: ChatMessage[]
+  activityEvents?: SessionActivityEvent[]
   onSendMessage: (message: string, files?: File[]) => void
   userName: string
   userAvatarUrl: string
@@ -37,6 +39,7 @@ interface ChatPanelProps {
 
 export function ChatPanel({
   messages,
+  activityEvents = [],
   onSendMessage,
   userName,
   userAvatarUrl,
@@ -215,7 +218,7 @@ export function ChatPanel({
   }
 
   const renderPublicReasoning = (message: ChatMessage) => {
-    if (message.role !== "officer" || !message.public_reasoning) {
+    if (message.role !== "assistant" || !message.public_reasoning) {
       return null
     }
     const knownFacts = message.public_reasoning.known_fact_summaries ?? []
@@ -241,6 +244,20 @@ export function ChatPanel({
     )
   }
 
+  const renderActivityIcon = (event: SessionActivityEvent) => {
+    if (event.status === "sending") {
+      return <Spinner className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+    }
+    if (event.status === "error" || event.kind === "error") {
+      return (
+        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+      )
+    }
+    return <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+  }
+
+  const visibleActivityEvents = activityEvents.slice(-4)
+
   return (
     <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card shadow-sm md:rounded-xl md:border md:border-border">
       {/* Loading overlay */}
@@ -261,6 +278,32 @@ export function ChatPanel({
         </div>
       )}
 
+      {visibleActivityEvents.length ? (
+        <div className="shrink-0 border-b border-border bg-muted/20 px-3 py-2 md:px-4">
+          <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
+            {visibleActivityEvents.map((event) => (
+              <div
+                key={event.id}
+                className={cn(
+                  "flex min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-xs leading-5",
+                  event.status === "error" || event.kind === "error"
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-background/60 text-muted-foreground",
+                )}
+              >
+                {renderActivityIcon(event)}
+                <span className="min-w-0 flex-1 break-words">
+                  {event.content}
+                </span>
+                <span className="hidden shrink-0 font-mono text-[10px] opacity-70 sm:inline">
+                  {event.timestamp}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {/* Chat messages */}
       <ScrollArea
         className="min-h-0 flex-1 px-3 py-4 md:p-6"
@@ -278,7 +321,7 @@ export function ChatPanel({
               {/* Avatar */}
               {message.role !== "system" && (
                 <Avatar className="h-8 w-8 shrink-0 md:h-9 md:w-9">
-                  {message.role === "officer" ? (
+                  {message.role === "assistant" ? (
                     <>
                       <AvatarImage
                         src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=36&h=36&fit=crop&crop=face"
@@ -314,7 +357,7 @@ export function ChatPanel({
                 {message.role !== "system" && (
                   <div className="mb-1 flex items-center gap-2">
                     <span className="text-xs font-medium text-foreground md:text-sm">
-                      {message.role === "officer" ? "签证官" : displayName}
+                      {message.role === "assistant" ? "签证官" : displayName}
                     </span>
                     <span className="text-[10px] text-muted-foreground md:text-xs">
                       {message.timestamp}

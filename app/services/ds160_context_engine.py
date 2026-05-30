@@ -49,6 +49,8 @@ class DS160ContextEngine:
             case_brief=memory_bundle.case_brief,
             focus_thread=memory_bundle.focus_thread,
             evidence_digest=memory_bundle.evidence_digest,
+            case_board=dict(memory_bundle.case_board),
+            evidence_graph=dict(memory_bundle.evidence_graph),
             memory_strata=memory_bundle.memory_strata,
             capability_plan=list(capability_plan or []),
             history_summary=history_summary,

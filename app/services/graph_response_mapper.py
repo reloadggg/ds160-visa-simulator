@@ -6,6 +6,10 @@ from app.domain.agent_runtime import DS160GraphState, GraphEvent, GraphRunResult
 from app.domain.contracts import GovernorDecision, InterviewStateStatus
 from app.domain.document_types import normalize_document_type
 from app.platform.turn_record import TurnRecord
+from app.services.case_board_projection import (
+    case_board_has_state,
+    missing_evidence_from_case_board,
+)
 
 
 class GraphResponseMapper:
@@ -304,7 +308,7 @@ class GraphResponseMapper:
             for fact in known_facts[:4]
         ]
         if decision == GovernorDecision.NEED_MORE_EVIDENCE.value:
-            basis = "还有关键证明没有闭合，先补当前最优先材料。"
+            basis = "还有待核实事实没有闭合，先补当前最有帮助的证据。"
         elif decision == GovernorDecision.HIGH_RISK_REVIEW.value:
             basis = "材料或回答存在需要复核的关键不一致。"
         elif decision == GovernorDecision.SIMULATED_REFUSAL.value:
@@ -354,9 +358,14 @@ class GraphResponseMapper:
         self,
         case_state: dict[str, Any],
     ) -> dict[str, Any]:
+        case_board = self._payload(case_state.get("case_board"))
         interviewer_state = self._payload(case_state.get("interviewer_state"))
         advisory = self._payload(interviewer_state.get("advisory_context"))
         if advisory:
+            if case_board_has_state(case_board):
+                advisory["missing_evidence"] = missing_evidence_from_case_board(
+                    case_board
+                )
             return advisory
 
         latest_score = self._latest_payload(case_state.get("score_history_tail"))
@@ -369,11 +378,15 @@ class GraphResponseMapper:
         return {
             "score_summary": self._score_summary_from_case_state(case_state),
             "risk_codes": risk_codes,
-            "missing_evidence": [
-                item
-                for item in latest_score.get("missing_evidence", [])
-                if isinstance(item, str) and item.strip()
-            ],
+            "missing_evidence": (
+                missing_evidence_from_case_board(case_board)
+                if case_board_has_state(case_board)
+                else [
+                    item
+                    for item in latest_score.get("missing_evidence", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+            ),
             "risk_level": self._risk_level_from_codes(risk_codes),
         }
 

@@ -104,9 +104,23 @@ def test_upload_file_creates_document_and_job(
     assert payload["case_board_delta"]["next_move"] == {
         "move_type": "ask",
         "question": "请继续回答面签问题；材料理解完成后我会结合证据调整追问。",
-        "reason": "文件已保存并进入案例理解队列，当前无需等待材料齐套。",
+        "reason": "文件已保存并进入案例理解队列，当前可以继续面签对话。",
         "claim_refs": [],
         "evidence_refs": [],
+    }
+    assert payload["case_board_refresh"] == {
+        "event_type": "material_uploaded",
+        "document_id": payload["document_id"],
+        "status": "queued",
+        "understanding_status": "queued",
+        "failure_node": None,
+        "failure_message": None,
+        "debug_timeline_scope": {
+            "session_id": session_id,
+            "document_id": payload["document_id"],
+            "scope": "material_understanding",
+        },
+        "message_policy": "case_board_timeline_only",
     }
 
     with db_session_factory() as db:

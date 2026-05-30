@@ -1,6 +1,11 @@
 from typing import Any
 
 from app.domain.contracts import GovernorDecision, InterviewStateStatus
+from app.services.case_board_projection import (
+    case_board_has_state,
+    missing_evidence_from_case_board,
+    proof_point_code,
+)
 
 
 class ReportService:
@@ -319,16 +324,15 @@ class ReportService:
         case_board: dict[str, Any],
     ) -> list[str]:
         del profile_json
-        missing_evidence: list[str] = []
-        for proof in self._list_payload(case_board.get("proof_points")):
-            if not isinstance(proof, dict):
-                continue
-            if proof.get("status") not in {"missing", "partial", "contradicted"}:
-                continue
-            proof_code = self._proof_point_code(proof)
-            if proof_code and proof_code not in missing_evidence:
-                missing_evidence.append(proof_code)
+        missing_evidence = missing_evidence_from_case_board(case_board)
 
+        if self._has_case_board_state(case_board):
+            return missing_evidence
+
+        has_explicit_document_summary = (
+            "requested_documents" in interviewer_state_json
+            or "remaining_required_documents" in interviewer_state_json
+        )
         requested_documents = interviewer_state_json.get("requested_documents", [])
         for document_type in requested_documents:
             if document_type and document_type not in missing_evidence:
@@ -340,23 +344,30 @@ class ReportService:
             if document_type and document_type not in missing_evidence:
                 missing_evidence.append(document_type)
 
-        current_key_proof = interviewer_state_json.get("current_key_proof")
-        if current_key_proof and current_key_proof not in missing_evidence:
-            missing_evidence.append(current_key_proof)
-        focus_document_type = current_focus_json.get("document_type")
-        if focus_document_type and focus_document_type not in missing_evidence:
-            missing_evidence.append(focus_document_type)
+        if not has_explicit_document_summary:
+            current_key_proof = interviewer_state_json.get("current_key_proof")
+            if current_key_proof and current_key_proof not in missing_evidence:
+                missing_evidence.append(current_key_proof)
+            focus_document_type = current_focus_json.get("document_type")
+            if focus_document_type and focus_document_type not in missing_evidence:
+                missing_evidence.append(focus_document_type)
 
         return missing_evidence
 
+    def _has_case_board_state(self, case_board: dict[str, Any]) -> bool:
+        return case_board_has_state(case_board)
+
     def _waiting_key_proof_summary(self, current_key_proof: str | None) -> str:
         if current_key_proof:
-            return f"当前最关键的待证明点是 {current_key_proof}，可以继续说明，也可以上传对应证据。"
-        return "当前案例主线可继续推进，但仍有关键事实需要被材料或回答支持。"
+            return (
+                f"当前待核实事实是 {current_key_proof}，可以先继续说明事实来源；"
+                "如有材料，可作为补强证据。"
+            )
+        return "当前案例主线可继续推进，但仍有待核实事实需要被回答或证据支持。"
 
     def _waiting_key_proof_recommendation(self, current_key_proof: str | None) -> str:
         if current_key_proof:
-            return f"围绕 {current_key_proof} 说明事实来源；如果有材料，可作为证据补充上传。"
+            return f"围绕 {current_key_proof} 说明事实来源；如果有材料，可作为补强证据上传。"
         return "继续回答关键问题，并用材料或事实细节补强证据链。"
 
     def _document_review_issue_summary(
@@ -494,17 +505,13 @@ class ReportService:
             question = str(proof.get("question") or "").strip()
             if not question:
                 continue
-            text = f"围绕待证明点补强证据链：{question}"
+            text = f"围绕待核实事实补强证据链：{question}"
             if text not in merged:
                 merged.append(text)
         return merged[:6]
 
     def _proof_point_code(self, proof: dict[str, Any]) -> str | None:
-        for key in ("proof_point_id", "question"):
-            value = proof.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return None
+        return proof_point_code(proof)
 
     def _list_payload(self, value: Any) -> list[Any]:
         return value if isinstance(value, list) else []

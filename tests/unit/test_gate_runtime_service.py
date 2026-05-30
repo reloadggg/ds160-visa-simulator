@@ -94,7 +94,7 @@ def test_refresh_session_marks_uploaded_funding_proof_waiting_for_parse(
                 JobRecord(
                     job_id="job-1",
                     session_id="sess-1",
-                    kind="gate_parse",
+                    kind="case_understanding",
                     status="queued",
                     payload_json={"document_id": "doc-1"},
                 )
@@ -164,7 +164,7 @@ def test_refresh_session_ignores_uploaded_document_marked_outside_gate_flow(
                 JobRecord(
                     job_id="job-1",
                     session_id="sess-1",
-                    kind="gate_parse",
+                    kind="case_understanding",
                     status="queued",
                     payload_json={"document_id": "doc-1"},
                 )
@@ -306,8 +306,8 @@ def test_build_gate_support_reports_primary_missing_document_without_blocking(
                 ],
                 "primary_document": "ds160",
                 "support_message": (
-                    "当前最缺的关键证明是 ds160。 "
-                    "当前仍待补的材料还有：passport_bio, funding_proof。"
+                    "当前可补强的证据是 ds160。 "
+                    "其他可补强材料还有：passport_bio, funding_proof。"
                 ),
                 "gate_progress": {
                     "overall_status": "waiting_for_parse",

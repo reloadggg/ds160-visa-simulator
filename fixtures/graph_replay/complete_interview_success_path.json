@@ -1,0 +1,464 @@
+{
+  "fixture_id": "complete-interview-success-path",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-success-path",
+    "run_id": "run-success-path",
+    "user_turn": {
+      "content": "My parents are the primary sponsors. I first said self-funded because the account is in my name, but the money was transferred from them."
+    },
+    "case_state": {
+      "assert_chat_starts_without_materials": true,
+      "assert_case_memory": true,
+      "assert_case_board_next_move": true,
+      "assert_success_path_review": true,
+      "expected_review_terms": [
+        "复盘",
+        "资金",
+        "Example University"
+      ],
+      "recent_user_turns": [
+        {
+          "content": "I want to study applied AI at Example University."
+        },
+        {
+          "content": "I chose this program because it connects my undergraduate project to my career plan."
+        },
+        {
+          "content": "My parents are the primary sponsors. I first said self-funded because the account is in my name, but the money was transferred from them."
+        }
+      ],
+      "recent_assistant_messages": [
+        {
+          "content": "为什么选择 Example University 的 applied AI 项目？"
+        },
+        {
+          "content": "你刚才说自费，但银行材料显示父母资助。请说明资金来源到底是哪一种？"
+        }
+      ],
+      "documents": [
+        {
+          "document_id": "doc-i20-success",
+          "filename": "i20.png",
+          "status": "parsed",
+          "artifact": {
+            "source_type": "image",
+            "parser_name": "multimodal_required"
+          }
+        },
+        {
+          "document_id": "doc-bank-success",
+          "filename": "parent_bank_statement.pdf",
+          "status": "parsed",
+          "artifact": {
+            "source_type": "pdf",
+            "parser_name": "pdf_text"
+          }
+        }
+      ],
+      "case_memory": {
+        "claims": [
+          {
+            "claim_id": "claim-success-school",
+            "field_path": "/education/school_name",
+            "value": "Example University",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-success-school"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.93
+          },
+          {
+            "claim_id": "claim-success-program-reason",
+            "field_path": "/education/program_reason",
+            "value": "applied AI program connects undergraduate project to career plan",
+            "status": "stated",
+            "supporting_evidence_ids": [
+              "ev-success-purpose"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.78
+          },
+          {
+            "claim_id": "claim-success-funding",
+            "field_path": "/funding/primary_source",
+            "value": "parents",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-success-bank",
+              "ev-success-funding-clarification"
+            ],
+            "conflicting_evidence_ids": [
+              "ev-success-self-funded"
+            ],
+            "confidence": 0.88
+          }
+        ],
+        "evidence_cards": [
+          {
+            "evidence_id": "ev-success-school",
+            "source_type": "uploaded_file",
+            "document_id": "doc-i20-success",
+            "excerpt": "School Name: Example University",
+            "claim_refs": [
+              "claim-success-school"
+            ],
+            "confidence": 0.93
+          },
+          {
+            "evidence_id": "ev-success-purpose",
+            "source_type": "user_turn",
+            "excerpt": "applied AI program connects my undergraduate project to my career plan",
+            "claim_refs": [
+              "claim-success-program-reason"
+            ],
+            "confidence": 0.78
+          },
+          {
+            "evidence_id": "ev-success-self-funded",
+            "source_type": "user_turn",
+            "excerpt": "I first said self-funded because the account is in my name.",
+            "claim_refs": [
+              "claim-success-funding"
+            ],
+            "confidence": 0.62
+          },
+          {
+            "evidence_id": "ev-success-bank",
+            "source_type": "uploaded_file",
+            "document_id": "doc-bank-success",
+            "excerpt": "Sponsor transfer from parents: USD 48,000",
+            "claim_refs": [
+              "claim-success-funding"
+            ],
+            "confidence": 0.9
+          },
+          {
+            "evidence_id": "ev-success-funding-clarification",
+            "source_type": "user_turn",
+            "excerpt": "My parents are the primary sponsors.",
+            "claim_refs": [
+              "claim-success-funding"
+            ],
+            "confidence": 0.86
+          }
+        ],
+        "proof_points": [
+          {
+            "proof_point_id": "proof-success-funding-chain",
+            "field_path": "/funding/primary_source",
+            "status": "supported",
+            "evidence_ids": [
+              "ev-success-bank",
+              "ev-success-funding-clarification"
+            ],
+            "summary": "Funding source is clarified as parent sponsorship."
+          }
+        ],
+        "conflicts": [
+          {
+            "conflict_id": "conflict-success-funding-source",
+            "claim_ids": [
+              "claim-success-funding"
+            ],
+            "evidence_ids": [
+              "ev-success-self-funded",
+              "ev-success-bank",
+              "ev-success-funding-clarification"
+            ],
+            "summary": "Initial self-funded statement conflicted with parent sponsorship evidence.",
+            "severity": "medium",
+            "resolution_status": "resolved",
+            "resolution": {
+              "source": "user_turn",
+              "summary": "Applicant clarified the account is in their name but parents are the actual sponsors."
+            }
+          }
+        ]
+      },
+      "case_board": {
+        "schema_version": "case_board.v1",
+        "latest_material": {
+          "document_id": "doc-bank-success",
+          "filename": "parent_bank_statement.pdf",
+          "understanding_status": "completed",
+          "document_type": "funding_proof"
+        },
+        "claims": [
+          {
+            "claim_id": "claim-success-school",
+            "field_path": "/education/school_name",
+            "value": "Example University",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-success-school"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.93
+          },
+          {
+            "claim_id": "claim-success-program-reason",
+            "field_path": "/education/program_reason",
+            "value": "applied AI program connects undergraduate project to career plan",
+            "status": "stated",
+            "supporting_evidence_ids": [
+              "ev-success-purpose"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.78
+          },
+          {
+            "claim_id": "claim-success-funding",
+            "field_path": "/funding/primary_source",
+            "value": "parents",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-success-bank",
+              "ev-success-funding-clarification"
+            ],
+            "conflicting_evidence_ids": [
+              "ev-success-self-funded"
+            ],
+            "confidence": 0.88
+          }
+        ],
+        "evidence_cards": [
+          {
+            "evidence_id": "ev-success-school",
+            "source_type": "uploaded_file",
+            "document_id": "doc-i20-success",
+            "excerpt": "School Name: Example University",
+            "claim_refs": [
+              "claim-success-school"
+            ],
+            "confidence": 0.93
+          },
+          {
+            "evidence_id": "ev-success-purpose",
+            "source_type": "user_turn",
+            "excerpt": "applied AI program connects my undergraduate project to my career plan",
+            "claim_refs": [
+              "claim-success-program-reason"
+            ],
+            "confidence": 0.78
+          },
+          {
+            "evidence_id": "ev-success-self-funded",
+            "source_type": "user_turn",
+            "excerpt": "I first said self-funded because the account is in my name.",
+            "claim_refs": [
+              "claim-success-funding"
+            ],
+            "confidence": 0.62
+          },
+          {
+            "evidence_id": "ev-success-bank",
+            "source_type": "uploaded_file",
+            "document_id": "doc-bank-success",
+            "excerpt": "Sponsor transfer from parents: USD 48,000",
+            "claim_refs": [
+              "claim-success-funding"
+            ],
+            "confidence": 0.9
+          },
+          {
+            "evidence_id": "ev-success-funding-clarification",
+            "source_type": "user_turn",
+            "excerpt": "My parents are the primary sponsors.",
+            "claim_refs": [
+              "claim-success-funding"
+            ],
+            "confidence": 0.86
+          }
+        ],
+        "proof_points": [
+          {
+            "proof_point_id": "proof-success-funding-chain",
+            "field_path": "/funding/primary_source",
+            "status": "supported",
+            "evidence_ids": [
+              "ev-success-bank",
+              "ev-success-funding-clarification"
+            ],
+            "summary": "Funding source is clarified as parent sponsorship."
+          }
+        ],
+        "conflicts": [
+          {
+            "conflict_id": "conflict-success-funding-source",
+            "claim_ids": [
+              "claim-success-funding"
+            ],
+            "evidence_ids": [
+              "ev-success-self-funded",
+              "ev-success-bank",
+              "ev-success-funding-clarification"
+            ],
+            "summary": "Initial self-funded statement conflicted with parent sponsorship evidence.",
+            "severity": "medium",
+            "resolution_status": "resolved",
+            "resolution": {
+              "source": "user_turn",
+              "summary": "Applicant clarified the account is in their name but parents are the actual sponsors."
+            }
+          }
+        ],
+        "next_move": {
+          "move_type": "review",
+          "question": "复盘学习计划、学校选择和资金解释是否自然一致。",
+          "reason": "关键目的、学校、材料和资金冲突已澄清，可以生成可解释复盘。",
+          "claim_refs": [
+            "claim-success-school",
+            "claim-success-program-reason",
+            "claim-success-funding"
+          ],
+          "evidence_refs": [
+            "ev-success-school",
+            "ev-success-purpose",
+            "ev-success-bank",
+            "ev-success-funding-clarification"
+          ]
+        }
+      },
+      "post_interview_review": {
+        "summary": "用户已完成一次自然面签训练，学校、项目原因和资金来源有证据链支撑。",
+        "next_steps": [
+          "练习用一句话解释为什么选择 Example University。",
+          "准备说明父母转账到本人账户的资金链。"
+        ]
+      }
+    },
+    "citation_bundle": {
+      "citations": [
+        {
+          "citation_id": "cite-success-i20-school",
+          "source_type": "case_evidence",
+          "source_authority": "user_provided",
+          "source_id": "source-session",
+          "document_id": "doc-i20-success",
+          "chunk_id": "chunk-success-school",
+          "span_start": 0,
+          "span_end": 40,
+          "content_hash": "sha256:successschool",
+          "quote_or_summary": "I-20 shows Example University.",
+          "retrieved_at": "2026-05-29T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-success-school"
+          ]
+        },
+        {
+          "citation_id": "cite-success-bank-sponsor",
+          "source_type": "case_evidence",
+          "source_authority": "user_provided",
+          "source_id": "source-session",
+          "document_id": "doc-bank-success",
+          "chunk_id": "chunk-success-sponsor",
+          "span_start": 0,
+          "span_end": 46,
+          "content_hash": "sha256:successbank",
+          "quote_or_summary": "Bank proof indicates parents transferred USD 48,000.",
+          "retrieved_at": "2026-05-29T00:00:00Z",
+          "staleness_policy": "stable",
+          "claim_ids": [
+            "claim-success-funding"
+          ]
+        }
+      ]
+    },
+    "final_response": {
+      "assistant_message": "这轮复盘里，I-20 显示你去 Example University，项目动机已经能和 applied AI 经历衔接；资金部分也已从“自费”澄清为父母资助。下一步练习时，请用一句自然回答把学校选择、毕业计划和父母资金链连起来。",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [
+        {
+          "claim_id": "claim-success-school-public",
+          "claim_type": "case_evidence",
+          "text": "I-20 显示申请人将就读 Example University。",
+          "citation_ids": [
+            "cite-success-i20-school"
+          ]
+        },
+        {
+          "claim_id": "claim-success-funding-public",
+          "claim_type": "case_evidence",
+          "text": "资金来源已澄清为父母资助。",
+          "citation_ids": [
+            "cite-success-bank-sponsor"
+          ]
+        }
+      ],
+      "used_citation_ids": [
+        "cite-success-i20-school",
+        "cite-success-bank-sponsor"
+      ],
+      "guard_status": "passed",
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-success-path",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn",
+        "stage": "session_replay_started"
+      }
+    },
+    {
+      "event_type": "state_built",
+      "run_id": "run-success-path",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "session_created": true,
+        "document_count": 2,
+        "user_turn_count": 3
+      }
+    },
+    {
+      "event_type": "material_review_completed",
+      "run_id": "run-success-path",
+      "sequence": 2,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "case_memory_claims": 3,
+        "resolved_conflicts": 1
+      }
+    },
+    {
+      "event_type": "adjudication_completed",
+      "run_id": "run-success-path",
+      "sequence": 3,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "decision": "continue_interview",
+        "next_move": "review"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-success-path",
+      "sequence": 4,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "这轮复盘里，I-20 显示你去 Example University，项目动机已经能和 applied AI 经历衔接；资金部分也已从“自费”澄清为父母资助。下一步练习时，请用一句自然回答把学校选择、毕业计划和父母资金链连起来。",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "success_path_review",
+      "case_memory_recorded",
+      "case_board_next_move"
+    ]
+  }
+}

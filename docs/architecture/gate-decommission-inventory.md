@@ -9,7 +9,7 @@
 | 术语 / 字段 | 当前允许的 owner | 去留判断 | 禁止事项 |
 | --- | --- | --- | --- |
 | `case_understanding` | `FileService` / `ParseWorker` | 新上传任务主 kind | 不允许回退成新建 `gate_parse` |
-| `gate_parse` | `ParseWorker` fallback | 只用于消费历史队列里的旧任务 | 不允许新上传继续 enqueue |
+| `gate_parse` | 已删除 | 2026-05-30 远程审计确认旧队列为空后删除 worker fallback | 不允许恢复为上传或 worker 任务 kind |
 | `gate_progress` | `GateRuntimeService` compatibility projection | API / 前端 fallback / 旧测试可读 | 不允许作为能否聊天的条件 |
 | `required_documents` | `GateRuntimeService` / legacy package API | 旧材料包和兼容视图 | 不允许作为 Case Board 主数据模型 |
 | `remaining_required_documents` | runtime mapper / reports / OpenAI-compatible metadata | 旧消费者兼容字段；新语义应来自 proof points 和 next move | 不允许表达“材料齐了才允许聊” |
@@ -26,8 +26,8 @@
   - 返回 `understanding_status`、`case_board_delta`、`evidence_cards`。
   - `gate_progress` 只作为 legacy projection 返回。
 - `app/workers/parse_worker.py`
-  - 先 claim `case_understanding`。
-  - 再 claim `gate_parse` 仅用于历史队列迁移。
+  - 只 claim `case_understanding`。
+  - 不再消费 `gate_parse` 历史队列。
   - 解析完成后更新 Material Understanding、Case Memory，并触发 material-change graph refresh。
 - `app/services/case_memory_service.py`
   - Case Memory 是 claims / evidence / proof points / conflicts 的产品级状态中心。
@@ -96,7 +96,7 @@
 
 后续可以在单独 PR 中删除或收缩：
 
-- `gate_parse` fallback，当线上旧队列清空后删除。
+- `gate_parse` fallback 已在 2026-05-30 删除；不要恢复。
 - `GateRuntimeService` 中 Gate-owned ready/missing/uploaded 状态，替换为 Case Board projection。
 - `required_documents` package API，改为 proof point template / evidence needs API。
 - 前端所有只服务旧缺材料 checklist 的 mapper 分支。

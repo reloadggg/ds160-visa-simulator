@@ -4,10 +4,49 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.repositories.document_repo import DocumentRepository
 from app.services.case_memory_service import CaseMemoryService
-from app.services.file_service import FileService, FileTooLargeError, SessionNotFoundError
-from app.services.file_service import UnsupportedFileTypeError
+from app.services.file_service import FileService, FileTooLargeError, FileUploadResult
+from app.services.file_service import SessionNotFoundError, UnsupportedFileTypeError
 
 router = APIRouter(prefix="/v1/sessions/{session_id}/files", tags=["files"])
+
+
+def _case_board_refresh_payload(
+    session_id: str,
+    result: FileUploadResult,
+) -> dict:
+    latest_material = (
+        result.case_board_delta.get("latest_material")
+        if isinstance(result.case_board_delta, dict)
+        else {}
+    ) or {}
+    understanding_error = latest_material.get("understanding_error")
+    if not isinstance(understanding_error, dict):
+        understanding_error = {}
+    failure_message = understanding_error.get("message")
+    failure_node = understanding_error.get("code")
+    if (
+        result.understanding_status in {"failed", "error"}
+        and not failure_message
+        and latest_material.get("unknowns")
+    ):
+        unknowns = latest_material.get("unknowns")
+        if isinstance(unknowns, list) and unknowns:
+            failure_message = unknowns[0]
+
+    return {
+        "event_type": "material_uploaded",
+        "document_id": result.document_id,
+        "status": "queued",
+        "understanding_status": result.understanding_status,
+        "failure_node": failure_node,
+        "failure_message": failure_message,
+        "debug_timeline_scope": {
+            "session_id": session_id,
+            "document_id": result.document_id,
+            "scope": "material_understanding",
+        },
+        "message_policy": "case_board_timeline_only",
+    }
 
 
 @router.post("", status_code=202)
@@ -55,6 +94,7 @@ async def upload_file(
         "relevant": result.relevant,
         "main_flow_feedback": result.main_flow_feedback,
         "case_board_delta": result.case_board_delta,
+        "case_board_refresh": _case_board_refresh_payload(session_id, result),
         "evidence_cards": list(result.evidence_cards or []),
         "requested_documents": list(result.requested_documents or []),
         "remaining_required_documents": list(

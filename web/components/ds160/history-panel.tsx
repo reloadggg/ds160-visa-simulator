@@ -227,7 +227,7 @@ export function HistoryPanel({ entries, onRestore }: HistoryPanelProps) {
                             <div key={message.id} className="min-w-0 rounded-xl border border-border bg-muted/20 p-3">
                               <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
                                 <span>
-                                  {message.role === "officer"
+                                  {message.role === "assistant"
                                     ? "签证官"
                                     : message.role === "user"
                                       ? "用户"

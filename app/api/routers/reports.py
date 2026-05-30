@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.repositories.session_repo import SessionRepository
 from app.repositories.document_repo import DocumentRepository
-from app.services.report_service import ReportService
-from app.services.interview_review_service import InterviewReviewService
+from app.repositories.session_repo import SessionRepository
 from app.services.case_memory_service import CaseMemoryService
+from app.services.interview_review_service import InterviewReviewService
+from app.services.report_service import ReportService
 from app.services.session_read_model_service import SessionReadModelService
 
 router = APIRouter(prefix="/v1/sessions/{session_id}/reports", tags=["reports"])
@@ -21,7 +21,7 @@ def get_user_report(
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     read_model = SessionReadModelService(db).build_from_record(record)
-    case_board = CaseMemoryService(db).build_board(session_id)
+    case_board = CaseMemoryService(db).public_case_board(session_id)
     return ReportService().user_report(
         session_id=session_id,
         visa_family=record.declared_family or "unknown",
@@ -45,7 +45,7 @@ def get_internal_report(
     if record is None:
         raise HTTPException(status_code=404, detail="session not found")
     read_model = SessionReadModelService(db).build_from_record(record)
-    case_board = CaseMemoryService(db).build_board(session_id)
+    case_board = CaseMemoryService(db).public_case_board(session_id)
     return ReportService().internal_report(
         session_id=session_id,
         visa_family=record.declared_family or "unknown",
@@ -62,8 +62,6 @@ def get_internal_report(
     )
 
 
-
-
 @router.post("/review")
 def generate_interview_review(
     session_id: str,
@@ -73,6 +71,7 @@ def generate_interview_review(
         return InterviewReviewService(db).generate(session_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
 
 @router.get("/export")
 def export_session_report(
@@ -84,7 +83,8 @@ def export_session_report(
         raise HTTPException(status_code=404, detail="session not found")
 
     read_model = SessionReadModelService(db).build_from_record(record)
-    case_board = CaseMemoryService(db).build_board(session_id)
+    case_memory = CaseMemoryService(db)
+    case_board = case_memory.public_case_board(session_id)
     documents = DocumentRepository(db).list_session_document_exports(session_id)
     user_report = ReportService().user_report(
         session_id=session_id,
@@ -134,7 +134,9 @@ def export_session_report(
                 "filename": document.filename,
                 "status": document.status,
                 "extracted_text": document.raw_text or "",
-                "artifact": document.artifact_json or {},
+                "artifact": case_memory.sanitize_public_payload(
+                    document.artifact_json or {}
+                ),
             }
             for document in documents
         ],

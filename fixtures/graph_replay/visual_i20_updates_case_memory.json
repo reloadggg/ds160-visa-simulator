@@ -10,6 +10,11 @@
     "case_state": {
       "assert_case_memory": true,
       "assert_case_board_next_move": true,
+      "assert_upload_followup_uses_case_board_next_move": true,
+      "expected_next_topic_terms": [
+        "Example University",
+        "项目"
+      ],
       "documents": [
         {
           "document_id": "doc-i20",
@@ -81,8 +86,54 @@
           "understanding_status": "completed",
           "document_type": "i20"
         },
-        "claims": [],
-        "evidence_cards": [],
+        "claims": [
+          {
+            "claim_id": "claim-school",
+            "field_path": "/education/school_name",
+            "value": "Example University",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-school"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.93
+          },
+          {
+            "claim_id": "claim-sevis",
+            "field_path": "/education/sevis_id",
+            "value": "N0001234567",
+            "status": "documented",
+            "supporting_evidence_ids": [
+              "ev-sevis"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.9
+          }
+        ],
+        "evidence_cards": [
+          {
+            "evidence_id": "ev-school",
+            "source_type": "uploaded_file",
+            "document_id": "doc-i20",
+            "page_number": 1,
+            "excerpt": "School Name: Example University",
+            "claim_refs": [
+              "claim-school"
+            ],
+            "confidence": 0.93
+          },
+          {
+            "evidence_id": "ev-sevis",
+            "source_type": "uploaded_file",
+            "document_id": "doc-i20",
+            "page_number": 1,
+            "excerpt": "SEVIS ID: N0001234567",
+            "claim_refs": [
+              "claim-sevis"
+            ],
+            "confidence": 0.9
+          }
+        ],
         "proof_points": [],
         "conflicts": [],
         "next_move": {

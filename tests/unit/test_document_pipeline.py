@@ -395,7 +395,7 @@ def test_process_document_preserves_gate_feedback_metadata_from_upload_stage(
                             "status": "not_helpful",
                             "supported_document_type": None,
                             "current_focus_document_type": "passport_bio",
-                            "message": "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 passport_bio。",
+                            "message": "这份材料对当前主线没有直接帮助。 当前待补强证据是 passport_bio。",
                         },
                     },
                 )
@@ -423,7 +423,7 @@ def test_process_document_preserves_gate_feedback_metadata_from_upload_stage(
             assert assessment.main_flow_feedback.status == "not_helpful"
             assert assessment.main_flow_feedback.current_focus_document_type == "passport_bio"
             assert assessment.main_flow_feedback.message == (
-                "这份材料对当前主线没有直接帮助。 当前最缺的关键证明是 passport_bio。"
+                "这份材料对当前主线没有直接帮助。 当前待补强证据是 passport_bio。"
             )
     finally:
         Base.metadata.drop_all(bind=engine)

@@ -189,6 +189,66 @@ def test_graph_response_mapper_never_rewrites_assistant_message() -> None:
     assert payload["graph_trace"]["guard_status"] == "fallback_required"
 
 
+def test_graph_response_mapper_derives_missing_evidence_from_case_board() -> None:
+    state = DS160GraphState(
+        session_id="sess-case-board-advisory",
+        run_id="run-case-board-advisory",
+        user_turn={"content": "My parents will sponsor me."},
+        case_state={
+            "case_board": {
+                "claims": [
+                    {
+                        "claim_id": "claim-funding",
+                        "field_path": "/funding/primary_source",
+                        "value": "parents",
+                        "status": "documented",
+                        "supporting_evidence_ids": ["ev-bank"],
+                        "conflicting_evidence_ids": [],
+                    }
+                ],
+                "evidence_cards": [
+                    {
+                        "evidence_id": "ev-bank",
+                        "source_type": "uploaded_file",
+                        "excerpt": "Parent sponsor account",
+                        "claim_refs": ["claim-funding"],
+                    }
+                ],
+                "proof_points": [
+                    {
+                        "proof_point_id": "proof-funding-chain",
+                        "question": "Who pays for the first year?",
+                        "status": "partial",
+                    }
+                ],
+                "conflicts": [],
+            },
+            "score_history_tail": [
+                {
+                    "risk_flags": [],
+                    "missing_evidence": ["legacy_funding_proof"],
+                }
+            ],
+        },
+        final_response=GraphRunResult(
+            assistant_message="Who pays for the first year?",
+            decision="continue_interview",
+        ),
+    )
+
+    payload = GraphResponseMapper().to_message_response(
+        state,
+        _events("run-case-board-advisory"),
+    )
+
+    assert payload["advisory_context"]["missing_evidence"] == [
+        "proof-funding-chain"
+    ]
+    assert payload["turn_record"]["advisory_summary"]["missing_evidence"] == [
+        "proof-funding-chain"
+    ]
+
+
 def test_graph_response_mapper_rejects_missing_final_response() -> None:
     state = DS160GraphState(session_id="sess-missing", run_id="run-missing")
 

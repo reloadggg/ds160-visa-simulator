@@ -17,19 +17,29 @@ RUN pnpm install --frozen-lockfile
 FROM node:22-slim AS web-builder
 WORKDIR /app/web
 RUN corepack enable && corepack prepare pnpm@10.33.1 --activate
+ARG NEXT_PUBLIC_APP_VERSION=0.1.2
+ARG NEXT_PUBLIC_GIT_SHA
+ARG NEXT_PUBLIC_BUILD_TIME
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NEXT_PUBLIC_API_BASE_URL=/api \
-    NEXT_PUBLIC_MOCK=false
+    NEXT_PUBLIC_MOCK=false \
+    NEXT_PUBLIC_APP_VERSION=${NEXT_PUBLIC_APP_VERSION} \
+    NEXT_PUBLIC_GIT_SHA=${NEXT_PUBLIC_GIT_SHA} \
+    NEXT_PUBLIC_BUILD_TIME=${NEXT_PUBLIC_BUILD_TIME}
 COPY --from=web-deps /app/web/node_modules ./node_modules
 COPY web ./
 RUN pnpm build
 
 FROM python:3.12-slim AS runtime
 WORKDIR /app
+ARG APP_GIT_SHA
+ARG APP_BUILD_TIME
 ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
+    APP_GIT_SHA=${APP_GIT_SHA} \
+    APP_BUILD_TIME=${APP_BUILD_TIME} \
     DATABASE_URL=sqlite:////data/app.sqlite3 \
     CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 

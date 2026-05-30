@@ -29,7 +29,11 @@ class DS160MemoryManager:
         boundary_decision: str,
         documents: list[Any] | None = None,
         gate_progress: dict[str, Any] | None = None,
+        case_board: dict[str, Any] | None = None,
+        evidence_graph: dict[str, Any] | None = None,
     ) -> DS160MemoryBundle:
+        case_board_payload = self._payload(case_board)
+        evidence_graph_payload = self._payload(evidence_graph)
         runtime_view_state = read_model.runtime_view_state if read_model is not None else None
         current_focus = dict(
             getattr(runtime_view_state, "current_focus", {})
@@ -103,17 +107,20 @@ class DS160MemoryManager:
             case_brief=case_brief,
             focus_thread=focus_thread,
             evidence_digest=evidence_digest,
+            case_board=case_board_payload,
+            evidence_graph=evidence_graph_payload,
             advisory_context=advisory_context,
         )
         return DS160MemoryBundle(
             case_brief=case_brief,
             focus_thread=focus_thread,
             evidence_digest=evidence_digest,
+            case_board=case_board_payload,
+            evidence_graph=evidence_graph_payload,
             memory_strata=memory_strata,
             current_focus=current_focus,
             last_turn_decision=last_turn_decision,
         )
-
 
     def _ready_gate_documents(self, gate_progress: dict[str, Any]) -> set[str]:
         ready_documents: set[str] = set()
@@ -175,6 +182,8 @@ class DS160MemoryManager:
         case_brief: DS160CaseBrief,
         focus_thread: DS160FocusThread,
         evidence_digest: DS160EvidenceDigest,
+        case_board: dict[str, Any],
+        evidence_graph: dict[str, Any],
         advisory_context: TurnAdvisoryContext,
     ) -> DS160MemoryStrata:
         risk_level = advisory_context.risk_level
@@ -201,6 +210,10 @@ class DS160MemoryManager:
                 "requested_documents": evidence_digest.requested_documents,
                 "documented_field_paths": evidence_digest.documented_field_paths,
                 "evidence_refs": evidence_digest.evidence_refs,
+                "case_board_counts": self._case_board_counts(case_board),
+                "evidence_graph_edges": len(
+                    self._list_payload(evidence_graph.get("edges"))
+                ),
             },
             derived_memory={
                 "score_summary": dict(advisory_context.score_summary),
@@ -214,6 +227,16 @@ class DS160MemoryManager:
                 "boundary_decision": case_brief.boundary_decision,
             },
         )
+
+    def _case_board_counts(self, case_board: dict[str, Any]) -> dict[str, int]:
+        return {
+            "claims": len(self._list_payload(case_board.get("claims"))),
+            "evidence_cards": len(
+                self._list_payload(case_board.get("evidence_cards"))
+            ),
+            "proof_points": len(self._list_payload(case_board.get("proof_points"))),
+            "conflicts": len(self._list_payload(case_board.get("conflicts"))),
+        }
 
     def _travel_purpose(self, profile: ApplicantProfile) -> str | None:
         return self._string_or_none(
@@ -363,6 +386,14 @@ class DS160MemoryManager:
             if value and value not in normalized:
                 normalized.append(value)
         return normalized
+
+    def _payload(self, value: Any) -> dict[str, Any]:
+        return dict(value) if isinstance(value, dict) else {}
+
+    def _list_payload(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
 
     def _string_or_none(self, value: Any) -> str | None:
         if not isinstance(value, str):

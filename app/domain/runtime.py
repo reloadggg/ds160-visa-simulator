@@ -155,6 +155,8 @@ class DS160MemoryBundle(BaseModel):
     case_brief: DS160CaseBrief = Field(default_factory=DS160CaseBrief)
     focus_thread: DS160FocusThread = Field(default_factory=DS160FocusThread)
     evidence_digest: DS160EvidenceDigest = Field(default_factory=DS160EvidenceDigest)
+    case_board: dict[str, Any] = Field(default_factory=dict)
+    evidence_graph: dict[str, Any] = Field(default_factory=dict)
     memory_strata: DS160MemoryStrata = Field(default_factory=DS160MemoryStrata)
     current_focus: dict[str, Any] = Field(default_factory=dict)
     last_turn_decision: str | None = None
@@ -175,6 +177,8 @@ class TurnContextSnapshot(BaseModel):
     case_brief: DS160CaseBrief = Field(default_factory=DS160CaseBrief)
     focus_thread: DS160FocusThread = Field(default_factory=DS160FocusThread)
     evidence_digest: DS160EvidenceDigest = Field(default_factory=DS160EvidenceDigest)
+    case_board: dict[str, Any] = Field(default_factory=dict)
+    evidence_graph: dict[str, Any] = Field(default_factory=dict)
     memory_strata: DS160MemoryStrata = Field(default_factory=DS160MemoryStrata)
     capability_plan: list[dict[str, Any]] = Field(default_factory=list)
     history_summary: TurnHistorySummary = Field(default_factory=TurnHistorySummary)

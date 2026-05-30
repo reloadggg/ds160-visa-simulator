@@ -607,6 +607,105 @@ def test_message_turn_graph_starts_without_materials_after_f1_selection(
     ]
 
 
+def test_native_interviewer_runs_when_gate_is_pending_or_waiting_for_parse(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "native_interviewer")
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="请说明你的学习计划和毕业后的安排。",
+    )
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run for native gate audit")
+        ),
+    )
+
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    assert session_resp.status_code == 201
+    pending_session_id = session_resp.json()["session_id"]
+
+    pending_response = client.post(
+        f"/v1/sessions/{pending_session_id}/messages",
+        json={"role": "user", "content": "I want to start with my study plan."},
+    )
+
+    assert pending_response.status_code == 200
+    pending_payload = pending_response.json()
+    assert pending_payload["assistant_message"] == "请说明你的学习计划和毕业后的安排。"
+    assert pending_payload["selected_public_runtime"] == "native_interviewer"
+    assert pending_payload["gate_progress"]["overall_status"] == "pending_documents"
+
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    assert session_resp.status_code == 201
+    waiting_session_id = session_resp.json()["session_id"]
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, waiting_session_id)
+        assert record is not None
+        record.gate_status_json = build_initial_gate_status(
+            declared_family="f1",
+            scenario_key="waiting_for_parse_audit",
+            required_documents=["funding_proof"],
+        )
+        db.add(
+            DocumentRecord(
+                document_id="doc-waiting-native-gate-audit",
+                session_id=waiting_session_id,
+                filename="funding-proof.pdf",
+                status="uploaded",
+                artifact_json={
+                    "status": "uploaded",
+                    "filename": "funding-proof.pdf",
+                    "document_type": "funding_proof",
+                    "metadata": {
+                        "document_type": "funding_proof",
+                        "document_assessment": {
+                            "document_type": "funding_proof",
+                            "document_type_candidates": ["funding_proof"],
+                            "counts_toward_gate": True,
+                        },
+                    },
+                },
+            )
+        )
+        db.add(record)
+        db.commit()
+
+    waiting_response = client.post(
+        f"/v1/sessions/{waiting_session_id}/messages",
+        json={"role": "user", "content": "The file is uploaded; continue."},
+    )
+
+    assert waiting_response.status_code == 200
+    waiting_payload = waiting_response.json()
+    assert waiting_payload["assistant_message"] == "请说明你的学习计划和毕业后的安排。"
+    assert waiting_payload["selected_public_runtime"] == "native_interviewer"
+    assert waiting_payload["gate_progress"]["overall_status"] == "waiting_for_parse"
+
+    with db_session_factory() as db:
+        assistant_sources = [
+            turn.source
+            for turn in db.scalars(
+                select(SessionTurnRecord)
+                .where(
+                    SessionTurnRecord.session_id.in_(
+                        [pending_session_id, waiting_session_id]
+                    ),
+                    SessionTurnRecord.role == "assistant",
+                )
+                .order_by(SessionTurnRecord.turn_index)
+            )
+        ]
+
+    assert assistant_sources == [
+        "native_interviewer_runtime",
+        "native_interviewer_runtime",
+    ]
+
+
 def test_messages_reject_user_model_config_when_disabled(
     client: TestClient,
 ) -> None:
@@ -890,55 +989,9 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
-
-    def fake_run_turn(self, record, message_text: str) -> dict:
-        del self
-        turn_record = {
-            "turn_id": "turn-stream-graph-shadow",
-            "session_id": record.session_id,
-            "user_input": message_text,
-            "decision": "continue_interview",
-            "assistant_message": "What will you study?",
-            "requested_documents": [],
-            "remaining_required_documents": [],
-            "focus": {
-                "owner": "interviewer_runtime_service",
-                "kind": "interview_question",
-                "question": "What will you study?",
-            },
-            "trace_refs": ["turn_decision"],
-            "advisory_summary": {
-                "risk_codes": [],
-                "missing_evidence": [],
-                "risk_level": "none",
-            },
-            "document_review": {},
-        }
-        record.phase_state = "interview"
-        record.current_governor_decision = "continue_interview"
-        record.current_focus_json = dict(turn_record["focus"])
-        record.interviewer_state_json = {
-            "decision": "continue_interview",
-            "current_focus": dict(turn_record["focus"]),
-            "document_review": {},
-        }
-        return {
-            "assistant_message": turn_record["assistant_message"],
-            "governor_decision": "continue_interview",
-            "score_summary": {},
-            "requested_documents": [],
-            "remaining_required_documents": [],
-            "turn_decision": {"decision": "continue_interview"},
-            "prompt_trace": {
-                "prompt_pack_id": "ds160.interviewer",
-                "prompt_version": "v2",
-            },
-            "turn_record": turn_record,
-        }
-
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？",
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -956,7 +1009,16 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
     assert "analyzing" in event_names
     assert event_names[-1] == "final"
     final_payload = events[-1][1]
-    assert final_payload["assistant_message"] == "What will you study?"
+    assert final_payload["assistant_message"] == (
+        "你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
+    )
+    assert final_payload["agent_runtime"] == "graph_shadow"
+    assert final_payload["selected_public_runtime"] == "native_interviewer"
+    assert (
+        final_payload["runtime_execution"]["execution_runtime"]
+        == "native_interviewer_runtime"
+    )
+    assert final_payload["runtime_execution"]["shadow_runtime"] == "graph_shadow"
     assert "graph_shadow" not in final_payload
 
     with db_session_factory() as db:
@@ -970,6 +1032,7 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
         )
 
     assert assistant_turn is not None
+    assert assistant_turn.source == "native_interviewer_runtime"
     assert assistant_turn.metadata_json["graph_shadow"]["status"] == "completed"
 
 
@@ -995,7 +1058,9 @@ def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
     assert response.status_code == 200
     payload = response.json()
     assert payload["governor_decision"] == "need_more_evidence"
-    assert payload["assistant_message"] == "当前处于材料门控阶段，请先选择签证家族。"
+    assert payload["assistant_message"] == (
+        "请先选择签证家族，这样我才能按对应签证场景开始面签问答。"
+    )
     assert payload["requested_documents"] == []
     assert payload["gate_progress"] == {
         "overall_status": "family_not_selected",
@@ -1020,7 +1085,7 @@ def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
         ),
         (
             "assistant",
-            "当前处于材料门控阶段，请先选择签证家族。",
+            "请先选择签证家族，这样我才能按对应签证场景开始面签问答。",
             "gate_runtime_service",
         ),
     ]
@@ -1095,27 +1160,23 @@ def test_message_turn_uses_adjudication_agent_output_for_continue_interview(
         assert record.interviewer_state_json["next_action"] == "answer_question"
 
 
-def test_message_turn_graph_shadow_keeps_legacy_response_and_single_assistant_turn(
+def test_message_turn_graph_shadow_uses_native_public_response_and_single_assistant_turn(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？",
+    )
+
+    def legacy_must_not_run(self, record, message_text: str) -> dict:
+        raise AssertionError("legacy runtime should not run in graph_shadow mode")
+
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "What is the purpose of your travel?",
-                    "requested_documents": [],
-                    "decision_hint": "continue_interview",
-                },
-            ),
-            {"model": "gpt-5.4"},
-        )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        legacy_must_not_run,
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -1127,7 +1188,24 @@ def test_message_turn_graph_shadow_keeps_legacy_response_and_single_assistant_tu
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert payload["assistant_message"] == (
+        "你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
+    )
+    assert payload["agent_runtime"] == "graph_shadow"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph_shadow",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "message_turn",
+        "fail_open_to_legacy": False,
+        "shadow_runtime": "graph_shadow",
+        "shadow_run_id": payload["runtime_execution"]["shadow_run_id"],
+        "compatibility_runtime_label": "graph_shadow",
+    }
     assert "graph_shadow" not in payload
 
     with db_session_factory() as db:
@@ -1140,19 +1218,12 @@ def test_message_turn_graph_shadow_keeps_legacy_response_and_single_assistant_tu
 
     assert [(turn.role, turn.source) for turn in turns] == [
         ("user", "user_message"),
-        ("assistant", "interviewer_runtime_service"),
+        ("assistant", "native_interviewer_runtime"),
     ]
     assert record is not None
-    assert [entry["node_name"] for entry in record.runtime_trace_json] == [
-        "receive_input",
-        "extract_claims",
-        "resolve_evidence",
-        "consistency_check",
-        "score_case",
-        "governor_decide",
-        "decide_capability",
-        "resolve_capability",
-        "turn_decision",
+    assert record.interviewer_state_json["owner"] == "native_interviewer_runtime"
+    assert record.interviewer_state_json["runtime_execution"] == payload[
+        "runtime_execution"
     ]
     graph_shadow = turns[1].metadata_json["graph_shadow"]
     assert graph_shadow["status"] == "completed"
@@ -1160,36 +1231,36 @@ def test_message_turn_graph_shadow_keeps_legacy_response_and_single_assistant_tu
     assert graph_shadow["graph_run_id"].startswith("graph-run-")
     assert graph_shadow["graph_trace"]["event_count"] > 0
     assert graph_shadow["turn_decision"]["decision"] == "continue_interview"
+    assert turns[1].metadata_json["agent_runtime"] == "graph_shadow"
+    assert turns[1].metadata_json["selected_public_runtime"] == "native_interviewer"
+    assert turns[1].metadata_json["runtime_execution"] == payload[
+        "runtime_execution"
+    ]
 
 
-def test_message_turn_graph_shadow_failure_fails_open_to_legacy(
+def test_message_turn_graph_shadow_failure_keeps_native_public_response(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
     monkeypatch.setattr(
         "app.services.graph_runtime_adapter.GraphRuntimeAdapter.run_turn",
         lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
             RuntimeError("shadow exploded")
         ),
     )
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？",
+    )
+
+    def legacy_must_not_run(self, record, message_text: str) -> dict:
+        raise AssertionError("legacy runtime should not run for graph_shadow failure")
+
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "What is the purpose of your travel?",
-                    "requested_documents": [],
-                    "decision_hint": "continue_interview",
-                },
-            ),
-            {"model": "gpt-5.4"},
-        )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        legacy_must_not_run,
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -1200,7 +1271,16 @@ def test_message_turn_graph_shadow_failure_fails_open_to_legacy(
     )
 
     assert response.status_code == 200
-    assert response.json()["assistant_message"] == "What is the purpose of your travel?"
+    payload = response.json()
+    assert payload["assistant_message"] == (
+        "你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
+    )
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert (
+        payload["runtime_execution"]["execution_runtime"]
+        == "native_interviewer_runtime"
+    )
+    assert payload["runtime_execution"]["shadow_runtime"] == "graph_shadow"
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1211,7 +1291,7 @@ def test_message_turn_graph_shadow_failure_fails_open_to_legacy(
 
     assert [(turn.role, turn.source) for turn in turns] == [
         ("user", "user_message"),
-        ("assistant", "interviewer_runtime_service"),
+        ("assistant", "native_interviewer_runtime"),
     ]
     graph_shadow = turns[1].metadata_json["graph_shadow"]
     assert graph_shadow == {
@@ -1261,6 +1341,17 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     assert payload["prompt_trace"]["native_run_id"] == payload["native_run_id"]
     assert payload["prompt_trace"]["prompt_pack_id"] == "ds160.native_interviewer"
     assert payload["runtime_view_state"]["source_turn_id"]
+    assert payload["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "message_turn",
+        "fail_open_to_legacy": False,
+        "compatibility_runtime_label": "graph",
+    }
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1278,6 +1369,7 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     metadata = assistant_turn.metadata_json
     assert metadata["agent_runtime"] == "graph"
     assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["runtime_execution"] == payload["runtime_execution"]
     assert metadata["native_run_id"] == payload["native_run_id"]
     assert metadata["runtime_view_state"]["source_turn_id"] == assistant_turn.turn_id
     assert metadata["runtime_view_state"]["prompt_trace"]["native_run_id"] == payload["native_run_id"]
@@ -1286,11 +1378,69 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     assert "graph_events" not in metadata or metadata["graph_events"] is None
     assert record is not None
     assert record.current_governor_decision == "continue_interview"
-    assert record.interviewer_state_json["owner"] == "graph_runtime"
+    assert record.interviewer_state_json["owner"] == "native_interviewer_runtime"
     assert record.interviewer_state_json["selected_public_runtime"] == "native_interviewer"
+    assert record.interviewer_state_json["runtime_execution"] == payload["runtime_execution"]
 
 
-def test_message_turn_graph_canary_hundred_percent_uses_graph(
+def test_message_turn_native_interviewer_runtime_reports_native_label(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "native_interviewer")
+    install_native_interviewer_stub(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run in native interviewer mode")
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_runtime"] == "native_interviewer"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "native_interviewer",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "message_turn",
+        "fail_open_to_legacy": False,
+    }
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+        record = db.get(SessionRecord, session_id)
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "native_interviewer_runtime"
+    assert assistant_turn.metadata_json["agent_runtime"] == "native_interviewer"
+    assert assistant_turn.metadata_json["runtime_execution"] == payload["runtime_execution"]
+    assert record is not None
+    assert record.interviewer_state_json["owner"] == "native_interviewer_runtime"
+    assert record.interviewer_state_json["selected_public_runtime"] == "native_interviewer"
+    assert record.interviewer_state_json["runtime_execution"] == payload["runtime_execution"]
+
+
+def test_message_turn_graph_canary_hundred_percent_uses_native_compat_alias(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -1313,8 +1463,12 @@ def test_message_turn_graph_canary_hundred_percent_uses_graph(
     )
 
     assert response.status_code == 200
-    assert response.json()["agent_runtime"] == "graph"
-    assert response.json()["selected_public_runtime"] == "native_interviewer"
+    payload = response.json()
+    assert payload["agent_runtime"] == "graph"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["configured_runtime"] == "graph_canary"
+    assert payload["runtime_execution"]["compatibility_runtime_label"] == "graph_canary"
+    assert payload["runtime_execution"]["execution_runtime"] == "native_interviewer_runtime"
 
     with db_session_factory() as db:
         assistant_turn = db.scalar(
@@ -1370,6 +1524,15 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
     assert response.status_code == 200
     payload = response.json()
     assert payload["assistant_message"] == "What is the purpose of your travel?"
+    assert payload["agent_runtime"] == "graph"
+    assert payload["selected_public_runtime"] == "legacy"
+    assert payload["runtime_execution"]["configured_runtime"] == "graph"
+    assert payload["runtime_execution"]["requested_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["public_runtime"] == "legacy"
+    assert payload["runtime_execution"]["execution_runtime"] == "interviewer_runtime_service"
+    assert payload["runtime_execution"]["fallback_runtime"] == "legacy"
+    assert payload["runtime_execution"]["error_type"] == "RuntimeError"
+    assert payload["runtime_execution"]["error_message"] == "native exploded"
     assert "graph_runtime_error" not in payload
 
     with db_session_factory() as db:
@@ -1391,6 +1554,8 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
         "error_message": "native exploded",
         "fallback_runtime": "legacy",
     }
+    assert turns[1].metadata_json["selected_public_runtime"] == "legacy"
+    assert turns[1].metadata_json["runtime_execution"] == payload["runtime_execution"]
 
 
 def test_message_turn_graph_native_missing_model_returns_503_without_canned_fallback(
@@ -1453,6 +1618,11 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
     final_payload = events[-1][1]
     assert final_payload["agent_runtime"] == "graph"
     assert final_payload["selected_public_runtime"] == "native_interviewer"
+    assert final_payload["runtime_execution"]["configured_runtime"] == "graph"
+    assert (
+        final_payload["runtime_execution"]["execution_runtime"]
+        == "native_interviewer_runtime"
+    )
     assert final_payload["assistant_message"] == (
         "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
     )

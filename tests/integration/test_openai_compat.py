@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from app.db.base import Base
 from app.core import settings as settings_module
-from app.db.models import SessionRecord, SessionTurnRecord
+from app.db.models import CaseMemorySnapshotRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
 from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
@@ -103,6 +103,8 @@ def test_chat_completions_maps_to_domain_flow(
         "remaining_required_documents",
         "turn_decision",
         "document_review",
+        "case_board",
+        "evidence_graph",
         "prompt_trace",
         "runtime_view_state",
     }.issubset(set(payload["metadata"]))
@@ -110,9 +112,110 @@ def test_chat_completions_maps_to_domain_flow(
     assert payload["metadata"]["phase_state"] == "interview"
     assert payload["metadata"]["context_mode"] == "new_session"
     assert isinstance(payload["metadata"]["runtime_view_state"], dict)
+    assert payload["metadata"]["case_board"]["schema_version"] == "case_board.v1"
+    assert payload["metadata"]["evidence_graph"]["schema_version"] == "evidence_graph.v1"
     assert payload["metadata"]["runtime_view_state"]["decision"]
     assert payload["metadata"]["runtime_view_state"].get("prompt_trace", {}) == payload["metadata"][
         "prompt_trace"
+    ]
+
+
+def test_chat_completions_metadata_exposes_case_memory_evidence_graph(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    session_response = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_response.json()["session_id"]
+
+    with db_session_factory() as db:
+        db.add(
+            CaseMemorySnapshotRecord(
+                session_id=session_id,
+                snapshot_json={
+                    "claims": [
+                        {
+                            "claim_id": "claim-school",
+                            "field_path": "/education/school_name",
+                            "value": "Example University",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-school"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-school",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-i20",
+                            "excerpt": "School Name: Example University",
+                            "claim_refs": ["claim-school"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "proof_points": [
+                        {
+                            "proof_point_id": "proof-school",
+                            "visa_family": "f1",
+                            "question": "Which school will you attend?",
+                            "status": "supported",
+                            "why_it_matters": "School identity anchors the case.",
+                            "claim_refs": ["claim-school"],
+                            "evidence_refs": ["ev-school"],
+                        }
+                    ],
+                    "conflicts": [],
+                    "next_move": None,
+                },
+            )
+        )
+        db.commit()
+
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        lambda self, session_id, message_text, **kwargs: {
+            "assistant_message": "Which program will you study?",
+            "governor_decision": "continue_interview",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "document_review": {},
+            "prompt_trace": {},
+            "runtime_view_state": {},
+        },
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "visa-simulator-v1",
+            "messages": [{"role": "user", "content": "Continue."}],
+            "metadata": {"session_id": session_id},
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["metadata"]
+    assert metadata["case_board"]["claims"][0]["claim_id"] == "claim-school"
+    assert metadata["evidence_graph"]["claims"][0]["field_path"] == (
+        "/education/school_name"
+    )
+    assert metadata["evidence_graph"]["edges"] == [
+        {
+            "source": "claim-school",
+            "target": "ev-school",
+            "relation": "support",
+        },
+        {
+            "source": "proof-school",
+            "target": "claim-school",
+            "relation": "requires_claim",
+        },
+        {
+            "source": "proof-school",
+            "target": "ev-school",
+            "relation": "requires_evidence",
+        },
     ]
 
 
@@ -122,13 +225,14 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    install_native_interviewer_stub(monkeypatch)
+
+    def legacy_must_not_run(self, record, message_text: str) -> dict:
+        raise AssertionError("legacy runtime should not run in graph_shadow mode")
+
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
-            assistant_message="Please explain your funding plan.",
-            requested_documents=[],
-            decision_hint="continue_interview",
-        ),
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        legacy_must_not_run,
     )
 
     response = client.post(
@@ -144,7 +248,27 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
     payload = response.json()
     metadata = payload["metadata"]
     assert "graph_shadow" not in metadata
+    assert payload["choices"][0]["message"]["content"] == (
+        "你提到父母会资助。请具体说明他们的资金来源和这笔钱如何覆盖第一年费用？"
+    )
+    assert metadata["agent_runtime"] == "graph_shadow"
+    assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph_shadow",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "message_turn",
+        "fail_open_to_legacy": False,
+        "shadow_runtime": "graph_shadow",
+        "shadow_run_id": metadata["runtime_execution"]["shadow_run_id"],
+        "compatibility_runtime_label": "graph_shadow",
+    }
+    assert metadata["native_run_id"].startswith("native-run-")
     assert metadata["turn_decision"]["decision"] == "continue_interview"
+    assert metadata["turn_decision"]["assistant_message_author"] == "native_interviewer"
     assert isinstance(metadata["prompt_trace"], dict)
     assert isinstance(metadata["runtime_view_state"], dict)
 
@@ -159,6 +283,13 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
         ).all()
 
     assert len(assistant_turns) == 1
+    assert assistant_turns[0].source == "native_interviewer_runtime"
+    assert assistant_turns[0].metadata_json["selected_public_runtime"] == (
+        "native_interviewer"
+    )
+    assert assistant_turns[0].metadata_json["runtime_execution"] == metadata[
+        "runtime_execution"
+    ]
     assert assistant_turns[0].metadata_json["graph_shadow"]["status"] == "completed"
 
 
@@ -186,6 +317,17 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
         "你提到父母会资助。请具体说明他们的资金来源和这笔钱如何覆盖第一年费用？"
     )
     assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "message_turn",
+        "fail_open_to_legacy": False,
+        "compatibility_runtime_label": "graph",
+    }
     assert metadata["native_run_id"].startswith("native-run-")
     assert metadata["turn_decision"]["decision"] == "continue_interview"
     assert metadata["turn_decision"]["assistant_message_author"] == "native_interviewer"
@@ -207,6 +349,7 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
     assert assistant_turn is not None
     assert assistant_turn.source == "native_interviewer_runtime"
     assert assistant_turn.metadata_json["selected_public_runtime"] == "native_interviewer"
+    assert assistant_turn.metadata_json["runtime_execution"] == metadata["runtime_execution"]
     assert assistant_turn.metadata_json["native_run_id"] == metadata["native_run_id"]
 
 
@@ -279,7 +422,8 @@ def test_chat_completions_reuses_existing_session_when_metadata_session_id_prese
                 "narrative_consistency": 55,
                 "confidence": 58,
             },
-            "requested_documents": [],
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
             "gate_progress": {
                 "overall_status": "ready_for_interview",
                 "ready_count": 0,

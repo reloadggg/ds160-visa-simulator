@@ -26,18 +26,27 @@ signal for interview progress.
 Fixtures live in `fixtures/graph_replay/`:
 
 - `no_material_chat_starts.json`
+- `purpose_answer_advances.json`
 - `visual_i20_updates_case_memory.json`
 - `funding_claim_conflict.json`
+- `complete_interview_success_path.json`
 - `high_risk_simulation_without_full_package.json`
 - `ocr_not_used_for_applicant_image.json`
+- `refuse_fabrication_request.json`
 
 These fixtures assert:
 
 - no-material F-1 chat can proceed without Gate blocking
+- after the user answers the purpose/program-choice question, the next turn advances
+  to a new topic instead of repeating the same generic question
 - visual I-20 understanding creates claim and evidence records
+- upload follow-up uses Case Board `next_move` instead of waiting for a material gate
 - funding self-vs-parents mismatch becomes a concrete conflict clarification
+- complete success path covers session start, natural interview answers, upload
+  understanding, conflict resolution, Case Board next move, and explainable review
 - high-risk simulation can proceed with unknown caveats before a full material package
 - applicant image replay contains no OCR parser or text markers
+- fabrication requests are refused instead of producing fake sponsor/document text
 
 ## Eval Boundary
 

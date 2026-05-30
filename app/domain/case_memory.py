@@ -163,6 +163,22 @@ class CaseConflict(BaseModel):
         return _optional_text(value)
 
 
+class CaseConflictResolution(BaseModel):
+    conflict_id: str
+    status: Literal["resolved"] = "resolved"
+    note: str | None = None
+
+    @field_validator("conflict_id")
+    @classmethod
+    def validate_conflict_id(cls, value: str) -> str:
+        return _non_empty(value, "case conflict resolution id")
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        return _optional_text(value)
+
+
 class InterviewNextMove(BaseModel):
     move_type: InterviewMoveType
     question: str
@@ -238,10 +254,12 @@ class MaterialUnderstandingJob(BaseModel):
 
 
 class CaseMemorySnapshot(BaseModel):
+    latest_material: dict[str, Any] | None = None
     claims: list[CaseClaim] = Field(default_factory=list)
     evidence_cards: list[EvidenceCard] = Field(default_factory=list)
     proof_points: list[ProofPoint] = Field(default_factory=list)
     conflicts: list[CaseConflict] = Field(default_factory=list)
+    conflict_resolutions: list[CaseConflictResolution] = Field(default_factory=list)
     next_move: InterviewNextMove | None = None
 
     @model_validator(mode="after")
@@ -254,6 +272,10 @@ class CaseMemorySnapshot(BaseModel):
             "proof point ids", [item.proof_point_id for item in self.proof_points]
         )
         _validate_unique("conflict ids", [item.conflict_id for item in self.conflicts])
+        _validate_unique(
+            "conflict resolution ids",
+            [item.conflict_id for item in self.conflict_resolutions],
+        )
         return self
 
 

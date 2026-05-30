@@ -288,3 +288,52 @@ def test_native_interviewer_prompt_treats_legacy_extracts_as_untrusted_hints(
         for turn in context["full_transcript"]
     )
     assert response["assistant_message"].startswith("你提到本科是数据科学")
+
+
+def test_native_interviewer_advisory_missing_evidence_prefers_case_board(
+    db_session,
+) -> None:
+    advisory = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+        agent_runner=QueueRunner([]),
+    )._build_advisory_context(
+        {
+            "case_board": {
+                "claims": [
+                    {
+                        "claim_id": "claim-funding",
+                        "field_path": "/funding/primary_source",
+                        "value": "parents",
+                        "status": "documented",
+                        "supporting_evidence_ids": ["ev-bank"],
+                        "conflicting_evidence_ids": [],
+                    }
+                ],
+                "evidence_cards": [
+                    {
+                        "evidence_id": "ev-bank",
+                        "source_type": "uploaded_file",
+                        "excerpt": "Parent sponsor account",
+                        "claim_refs": ["claim-funding"],
+                    }
+                ],
+                "proof_points": [
+                    {
+                        "proof_point_id": "proof-funding-chain",
+                        "question": "Who pays for the first year?",
+                        "status": "partial",
+                    }
+                ],
+                "conflicts": [],
+            },
+            "score_history_tail": [
+                {
+                    "risk_flags": [],
+                    "missing_evidence": ["legacy_funding_proof"],
+                }
+            ],
+        }
+    )
+
+    assert advisory["missing_evidence"] == ["proof-funding-chain"]

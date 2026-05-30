@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.agents.extractor_agent import ExtractorAgentRunner
@@ -26,6 +27,37 @@ FIELD_BINDINGS: dict[str, tuple[str, str]] = {
     "/education/program_name": ("education", "program_name"),
     "/education/sponsor_name": ("education", "sponsor_name"),
 }
+
+FUNDING_UNKNOWN_PATTERNS: tuple[str, ...] = (
+    r"\b(?:i\s+)?(?:have|has|had)\s+not\s+decided\b",
+    r"\b(?:i\s+)?(?:haven|hasn|hadn)'?t\s+decided\b",
+    r"\bnot\s+decided\b",
+    r"\bundecided\b",
+    r"\bnot\s+sure\b",
+    r"\bunsure\b",
+    r"\b(?:do|does|did)\s+not\s+know\b",
+    r"\b(?:don|doesn|didn)'?t\s+know\b",
+    r"\bnot\s+confirmed\b",
+    r"\btbd\b",
+    r"\bto\s+be\s+(?:decided|determined)\b",
+)
+
+FUNDING_CONTEXT_TERMS: tuple[str, ...] = (
+    "funding",
+    "fund",
+    "pay",
+    "payer",
+    "sponsor",
+    "sponsorship",
+    "tuition",
+    "living expense",
+    "living expenses",
+    "school expense",
+    "study expense",
+    "financial support",
+)
+
+FUNDING_PRIMARY_SOURCE_FIELD = "/funding/primary_source"
 
 
 class ExtractorService:
@@ -60,7 +92,13 @@ class ExtractorService:
                 )
             except Exception:
                 return self._fallback_apply_message(profile, message_text)
-            return self._apply_output(profile, output)
+            return self._apply_output(
+                profile,
+                output,
+                funding_unknown_from_message=self._message_expresses_unknown_funding_source(
+                    message_text
+                ),
+            )
         return self._fallback_apply_message(profile, message_text)
 
     def _build_agent_runtime(
@@ -90,9 +128,18 @@ class ExtractorService:
         self,
         profile: ApplicantProfile,
         output: ExtractorOutput,
+        *,
+        funding_unknown_from_message: bool = False,
     ) -> ApplicantProfile:
         for update in output.field_updates:
+            if (
+                funding_unknown_from_message
+                and update.field_path == FUNDING_PRIMARY_SOURCE_FIELD
+            ):
+                continue
             self._apply_field_update(profile, update)
+        if funding_unknown_from_message:
+            self._apply_unknown_funding_source(profile)
         return profile
 
     def _apply_field_update(
@@ -144,6 +191,10 @@ class ExtractorService:
         profile: ApplicantProfile,
         message_text: str,
     ) -> ApplicantProfile:
+        if self._message_expresses_unknown_funding_source(message_text):
+            self._apply_unknown_funding_source(profile)
+            return profile
+
         normalized = message_text.lower()
         if any(token in normalized for token in ("parent", "parents", "mother", "father", "mom", "dad")):
             self._apply_claimed_funding_source(profile, "parents")
@@ -183,7 +234,7 @@ class ExtractorService:
         raw_value: str | None,
     ) -> FieldState:
         if (
-            field_path == "/funding/primary_source"
+            field_path == FUNDING_PRIMARY_SOURCE_FIELD
             and state == FieldState.CLAIMED
             and normalized_value is None
             and isinstance(raw_value, str)
@@ -199,7 +250,7 @@ class ExtractorService:
         field_path: str,
         value: str | None,
     ) -> str | None:
-        if field_path == "/funding/primary_source":
+        if field_path == FUNDING_PRIMARY_SOURCE_FIELD:
             return self._normalize_funding_source(value)
         if value is None:
             return None
@@ -211,16 +262,36 @@ class ExtractorService:
         profile: ApplicantProfile,
         funding_source: str,
     ) -> None:
-        profile.field_states["/funding/primary_source"] = FieldStateRecord(
+        profile.field_states[FUNDING_PRIMARY_SOURCE_FIELD] = FieldStateRecord(
             state=FieldState.CLAIMED,
         )
-        profile.field_provenance["/funding/primary_source"] = FieldProvenanceRecord()
+        profile.field_provenance[FUNDING_PRIMARY_SOURCE_FIELD] = FieldProvenanceRecord()
         profile.funding["primary_source"] = funding_source
         self._remember_claimed_value(
             profile,
-            "/funding/primary_source",
+            FUNDING_PRIMARY_SOURCE_FIELD,
             funding_source,
         )
+
+    def _apply_unknown_funding_source(self, profile: ApplicantProfile) -> None:
+        profile.field_states[FUNDING_PRIMARY_SOURCE_FIELD] = FieldStateRecord(
+            state=FieldState.UNKNOWN,
+        )
+        profile.field_provenance[FUNDING_PRIMARY_SOURCE_FIELD] = FieldProvenanceRecord()
+        profile.funding.pop("primary_source", None)
+
+    def _message_expresses_unknown_funding_source(self, message_text: str) -> bool:
+        normalized = self._normalize_message_text(message_text)
+        if not normalized or not any(term in normalized for term in FUNDING_CONTEXT_TERMS):
+            return False
+        return any(
+            re.search(pattern, normalized) is not None
+            for pattern in FUNDING_UNKNOWN_PATTERNS
+        )
+
+    def _normalize_message_text(self, message_text: str) -> str:
+        normalized = message_text.lower().replace("’", "'").replace("`", "'")
+        return re.sub(r"\s+", " ", normalized).strip()
 
     def _remember_claimed_value(
         self,

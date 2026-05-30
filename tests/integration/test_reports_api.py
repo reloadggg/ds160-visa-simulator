@@ -17,6 +17,7 @@ from app.domain.case_memory import (
     ProofPoint,
 )
 from app.domain.runtime import build_initial_gate_status
+from app.services.interview_review_service import InterviewReviewService
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.main import app
 
@@ -85,6 +86,16 @@ def test_session_export_returns_json_without_document_bytes(
                 artifact_json={
                     "source_type": "image",
                     "document_type": "funding_proof",
+                    "expected_findings": [
+                        {"kind": "cross_document_conflict"}
+                    ],
+                    "synthetic_bundle_id": "dbg-bundle-export",
+                    "debug_bundle_scenario": "funding_shortfall_bundle",
+                    "scenario_label": "资金缺口调试包",
+                    "metadata": {
+                        "expected_findings": "oracle should not export",
+                        "debug_material_bundle": True,
+                    },
                     "document_assessment": {
                         "document_type": "funding_proof",
                         "supported_claims": ["parents sponsor tuition"],
@@ -110,6 +121,9 @@ def test_session_export_returns_json_without_document_bytes(
             "artifact": {
                 "source_type": "image",
                 "document_type": "funding_proof",
+                "metadata": {
+                    "debug_material_bundle": True,
+                },
                 "document_assessment": {
                     "document_type": "funding_proof",
                     "supported_claims": ["parents sponsor tuition"],
@@ -118,7 +132,100 @@ def test_session_export_returns_json_without_document_bytes(
         }
     ]
     assert "raw_bytes" not in str(payload)
+    serialized = str(payload)
+    assert "expected_findings" not in serialized
+    assert "cross_document_conflict" not in serialized
+    assert "dbg-bundle-export" not in serialized
+    assert "funding_shortfall_bundle" not in serialized
+    assert "资金缺口调试包" not in serialized
+    assert "oracle should not export" not in serialized
     assert "binary-image-content" not in str(payload)
+
+
+def test_interview_review_context_uses_public_case_board_and_redacted_artifacts(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    material_result = MaterialUnderstandingResult(
+        evidence_cards=[
+            EvidenceCard(
+                evidence_id="ev-school",
+                source_type="uploaded_file",
+                document_id="doc-review-context",
+                excerpt="School Name: Example University",
+                claim_refs=["claim-school"],
+                confidence=0.93,
+                metadata={
+                    "expected_findings": "hidden oracle",
+                    "debug_material_bundle": True,
+                },
+            )
+        ],
+        extracted_claims=[
+            CaseClaim(
+                claim_id="claim-school",
+                field_path="/education/school_name",
+                value="Example University",
+                status="documented",
+                supporting_evidence_ids=["ev-school"],
+                confidence=0.93,
+            )
+        ],
+        confidence=0.93,
+    )
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.phase_state = "interview"
+        db.add(
+            DocumentRecord(
+                document_id="doc-review-context",
+                session_id=session_id,
+                filename="i20.png",
+                status="parsed",
+                raw_text="School Name: Example University",
+                artifact_json={
+                    "document_type": "i20",
+                    "expected_findings": [{"kind": "school_mismatch"}],
+                    "synthetic_bundle_id": "dbg-review-context",
+                    "debug_bundle_scenario": "school_mismatch_bundle",
+                    "metadata": {
+                        "expected_findings": "hidden oracle",
+                        "debug_material_bundle": True,
+                    },
+                    "material_understanding_result": material_result.model_dump(
+                        mode="json"
+                    ),
+                },
+            )
+        )
+        db.add(record)
+        db.commit()
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        context = InterviewReviewService(db)._build_review_context(record)
+
+    assert context["user_report"]["case_board"]["claims"][0]["claim_id"] == (
+        "claim-school"
+    )
+    assert context["internal_report"]["case_board"]["claims"][0]["claim_id"] == (
+        "claim-school"
+    )
+    assert context["documents"][0]["artifact"]["metadata"] == {
+        "debug_material_bundle": True,
+    }
+    serialized = str(context)
+    assert "expected_findings" not in serialized
+    assert "school_mismatch" not in serialized
+    assert "dbg-review-context" not in serialized
+    assert "school_mismatch_bundle" not in serialized
+    assert "hidden oracle" not in serialized
 
 
 def test_reports_api_returns_advisory_report_and_internal_histories(
@@ -310,8 +417,10 @@ def test_reports_api_keeps_interviewer_focus_when_gate_review_state_outpaces_run
     assert payload["current_key_proof"] == "funding_proof"
     assert payload["missing_evidence"] == ["funding_proof"]
     assert payload["recommended_improvements"] == [
-        "围绕 funding_proof 说明事实来源；如果有材料，可作为证据补充上传。"
+        "围绕 funding_proof 说明事实来源；如果有材料，可作为补强证据上传。"
     ]
+    assert "待证明点" not in payload["summary"]
+    assert "上传对应证据" not in payload["summary"]
 
 
 def test_reports_api_projects_case_memory_from_material_understanding(

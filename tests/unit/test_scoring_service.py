@@ -114,6 +114,73 @@ def test_scoring_service_maps_proposal_fields_to_score_state(monkeypatch) -> Non
     assert score.missing_evidence == ["travel_history"]
 
 
+def test_scoring_service_stabilizes_agent_acknowledged_funding_gap(
+    monkeypatch,
+) -> None:
+    profile = ApplicantProfile.minimal("profile-score-2a")
+    profile.visa_intent["declared_family"] = "f1"
+    profile.funding["primary_source"] = "parents"
+
+    monkeypatch.setattr(
+        "app.services.scoring_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "category_fit": 70,
+                    "document_readiness": 65,
+                    "narrative_consistency": 75,
+                    "confidence": 45,
+                    "risk_flags": [
+                        {
+                            "code": "FUNDING_UNDOCUMENTED",
+                            "severity": "medium",
+                            "status": "supported",
+                            "summary": "funding source is claimed but not documented",
+                            "evidence_refs": [],
+                        }
+                    ],
+                    "missing_evidence": [],
+                    "requested_documents": [],
+                },
+            ),
+            {"model": "test"},
+        ),
+    )
+
+    monkeypatch.setattr(
+        ScoringService,
+        "_build_agent_deps",
+        lambda self, profile: AgentRuntimeDeps(
+            session_id=profile.profile_id,
+            retrieval=object(),
+            evidence=object(),
+        ),
+    )
+
+    score = ScoringService(db=object()).propose(
+        profile,
+        findings=[
+            {
+                "finding_type": "gap",
+                "severity": "medium",
+                "status": "supported",
+                "summary": "funding source claimed but not yet documented",
+                "evidence_refs": [],
+            }
+        ],
+        scoring_stage="interview_turn",
+    )
+
+    assert score.document_readiness == 40
+    assert score.narrative_consistency == 55
+    assert "funding_proof" in score.missing_evidence
+    assert {flag.code for flag in score.risk_flags} == {
+        "FUNDING_UNDOCUMENTED",
+        "supporting_evidence_missing",
+    }
+
+
 def test_scoring_service_keeps_requested_documents_internal_only(monkeypatch) -> None:
     profile = ApplicantProfile.minimal("profile-score-2b")
     profile.visa_intent["declared_family"] = "f1"

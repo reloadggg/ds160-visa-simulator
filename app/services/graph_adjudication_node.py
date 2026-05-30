@@ -406,7 +406,7 @@ class GraphAdjudicationNode:
         elif proof_points:
             assistant_message = (
                 self._string_or_none(proof_points[0].get("question"))
-                or "请补充说明这个关键证明点。"
+                or "请补充说明这个待核实事实。"
             )
         elif latest_material:
             status = self._string_or_none(latest_material.get("understanding_status"))

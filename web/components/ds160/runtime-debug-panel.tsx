@@ -1,6 +1,6 @@
 "use client"
 
-import { Bug, ClipboardCopy, RefreshCw } from "lucide-react"
+import { AlertCircle, Bug, ClipboardCopy, RefreshCw } from "lucide-react"
 
 import { APP_VERSION_LABEL, appVersionDetailLabel } from "@/lib/app-version"
 import { Badge } from "@/components/ui/badge"
@@ -79,14 +79,27 @@ export function RuntimeDebugPanel({
   const backend = asRecord(snapshot?.backend)
   const currentRuntime = asRecord(snapshot?.current_runtime)
   const runtimeViewState = asRecord(snapshot?.runtime_view_state)
+  const caseBoard = asRecord(snapshot?.case_board)
+  const evidenceGraph = asRecord(snapshot?.evidence_graph)
+  const caseClaims = asList(caseBoard.claims)
+  const evidenceCards = asList(caseBoard.evidence_cards)
+  const proofPoints = asList(caseBoard.proof_points)
+  const caseConflicts = asList(caseBoard.conflicts)
+  const graphEdges = asList(evidenceGraph.edges)
+  const nextMove = asRecord(caseBoard.next_move ?? evidenceGraph.next_move)
   const lastMaterialRefresh = asRecord(snapshot?.last_material_refresh)
   const snapshotMaterial = asRecord(snapshot?.material_generation)
+  const materialUnderstanding = asList(snapshot?.material_understanding)
   const snapshotGeneration = asRecord(snapshotMaterial.generation)
   const latestGeneration = latestDebugBundle?.generation ?? null
   const generation = latestGeneration ?? snapshotGeneration
   const errors = asList(snapshot?.errors)
+  const snapshotTimeline = asList(snapshot?.timeline)
   const trace = asList(snapshot?.runtime_trace)
-  const latestEvents = liveEvents.slice(-40).reverse()
+  const latestEvents: Array<Record<string, unknown>> = [
+    ...liveEvents.slice(-40).reverse().map((event) => ({ ...event })),
+    ...snapshotTimeline.slice(-40).reverse(),
+  ].slice(0, 40)
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -213,31 +226,132 @@ export function RuntimeDebugPanel({
 
           <Card className="py-4 md:col-span-2 xl:col-span-3">
             <CardHeader className="px-5 pb-3">
-              <CardTitle className="text-sm">实时事件</CardTitle>
+              <CardTitle className="text-sm">案件事实图</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 px-5 text-sm">
+              <div className="grid gap-2 md:grid-cols-5">
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-xs text-muted-foreground">claims</div>
+                  <div className="mt-1 font-mono text-base">{caseClaims.length}</div>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-xs text-muted-foreground">evidence</div>
+                  <div className="mt-1 font-mono text-base">{evidenceCards.length}</div>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-xs text-muted-foreground">proof</div>
+                  <div className="mt-1 font-mono text-base">{proofPoints.length}</div>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-xs text-muted-foreground">conflicts</div>
+                  <div className="mt-1 font-mono text-base">{caseConflicts.length}</div>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+                  <div className="text-xs text-muted-foreground">edges</div>
+                  <div className="mt-1 font-mono text-base">{graphEdges.length}</div>
+                </div>
+              </div>
+              {nextMove.question ? (
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs">
+                  <div className="font-medium text-foreground">
+                    {displayValue(nextMove.question)}
+                  </div>
+                  <div className="mt-1 text-muted-foreground">
+                    {displayValue(nextMove.reason)}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-sm text-muted-foreground">
+                  暂无 Case Memory 事实图。
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="py-4 md:col-span-2 xl:col-span-3">
+            <CardHeader className="px-5 pb-3">
+              <CardTitle className="text-sm">材料理解</CardTitle>
+            </CardHeader>
+            <CardContent className="px-5">
+              {materialUnderstanding.length ? (
+                <div className="space-y-2">
+                  {materialUnderstanding.map((item, index) => {
+                    const understandingError = asRecord(item.understanding_error)
+                    return (
+                      <div
+                        key={`${displayValue(item.document_id, "doc")}-${index}`}
+                        className="grid gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs md:grid-cols-[minmax(0,1fr)_120px_minmax(0,1.5fr)]"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-foreground">
+                            {displayValue(item.filename)}
+                          </div>
+                          <div className="mt-0.5 truncate font-mono text-muted-foreground">
+                            {displayValue(item.document_id)}
+                          </div>
+                        </div>
+                        <Badge
+                          variant={statusTone(item.understanding_status)}
+                          className="w-fit"
+                        >
+                          {displayValue(item.understanding_status)}
+                        </Badge>
+                        <div className="min-w-0">
+                          {understandingError.code || understandingError.message ? (
+                            <div className="flex min-w-0 items-start gap-2 text-destructive">
+                              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 break-words">
+                                {displayValue(understandingError.code, "error")}
+                                {understandingError.message
+                                  ? `：${displayValue(understandingError.message)}`
+                                  : ""}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">
+                              {displayValue(item.document_type, "无错误")}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+                  上传或解析材料后，这里会显示案例理解状态。
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="py-4 md:col-span-2 xl:col-span-3">
+            <CardHeader className="px-5 pb-3">
+              <CardTitle className="text-sm">时间线</CardTitle>
             </CardHeader>
             <CardContent className="px-5">
               {latestEvents.length ? (
                 <div className="space-y-2">
                   {latestEvents.map((event, index) => (
                     <div
-                      key={`${event.received_at ?? "event"}-${index}`}
+                      key={`${displayValue(event.received_at, "event")}-${index}`}
                       className="grid gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs md:grid-cols-[160px_120px_1fr]"
                     >
                       <div className="truncate font-mono text-muted-foreground">
-                        {event.phase}.{event.step}
+                        {displayValue(event.phase)}.{displayValue(event.step)}
                       </div>
                       <Badge variant={statusTone(event.status)} className="w-fit">
-                        {event.status}
+                        {displayValue(event.status)}
                       </Badge>
                       <div className="min-w-0 truncate text-foreground">
-                        {event.summary ?? "无摘要"}
+                        {displayValue(event.summary, "无摘要")}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
-                  发送消息或生成材料包后，这里会显示后端步骤。
+                  发送消息、上传材料或生成材料包后，这里会显示后端步骤。
                 </div>
               )}
             </CardContent>

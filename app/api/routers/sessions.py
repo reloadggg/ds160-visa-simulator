@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.core import settings as settings_module
 from app.core.visa_families import validate_declared_family
-from app.db.session import get_db
+from app.db.session import get_db, session_factory_from_session
 from app.core.dependencies import get_session_repo
 from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
@@ -18,7 +18,7 @@ from app.services.gate_service import GateService
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotService
 from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.db.models import SessionTurnRecord
 
@@ -143,11 +143,7 @@ def debug_create_material_bundle_stream(
 ) -> StreamingResponse:
     if not settings_module.settings.allow_debug_fill:
         raise HTTPException(status_code=403, detail="debug fill is disabled")
-    stream_session_factory = sessionmaker(
-        bind=db.get_bind(),
-        autocommit=False,
-        autoflush=False,
-    )
+    stream_session_factory = session_factory_from_session(db)
 
     def event_stream() -> Iterator[str]:
         yield _sse_event("accepted", {"session_id": session_id})
@@ -255,6 +251,7 @@ def get_runtime_trace(
             "turn_index": turn.turn_index,
             "agent_runtime": metadata.get("agent_runtime"),
             "selected_public_runtime": metadata.get("selected_public_runtime"),
+            "runtime_execution": metadata.get("runtime_execution"),
             "native_run_id": metadata.get("native_run_id"),
             "graph_run_id": metadata.get("graph_run_id"),
             "graph_trace": graph_trace,

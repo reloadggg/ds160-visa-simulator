@@ -476,3 +476,80 @@ def test_extractor_service_normalizes_undecided_funding_claim_to_unknown(
     assert "primary_source" not in updated.funding
     assert updated.field_states["/funding/primary_source"].state.value == "unknown"
     assert updated.field_provenance["/funding/primary_source"].evidence_refs == []
+
+
+def test_extractor_service_message_unknown_overrides_agent_funding_guess(
+    monkeypatch,
+) -> None:
+    profile = ApplicantProfile.minimal("profile-extractor-7")
+
+    monkeypatch.setattr(
+        "app.services.extractor_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (
+            TestModel(
+                call_tools=[],
+                custom_output_args={
+                    "field_updates": [
+                        {
+                            "field_path": "/funding/primary_source",
+                            "value": "parents",
+                            "state": "claimed",
+                            "evidence_refs": [],
+                        },
+                        {
+                            "field_path": "/education/school_name",
+                            "value": "Stanford University",
+                            "state": "claimed",
+                            "evidence_refs": [],
+                        },
+                    ],
+                    "required_evidence_queries": [],
+                    "notes": [],
+                },
+            ),
+            {"model": "gpt-5.4"},
+        ),
+    )
+    monkeypatch.setattr(
+        ExtractorService,
+        "_build_agent_deps",
+        lambda self, profile: AgentRuntimeDeps(
+            session_id=profile.profile_id,
+            retrieval=object(),
+            evidence=object(),
+        ),
+    )
+
+    updated = ExtractorService(db=object()).apply_message(
+        profile,
+        "I have not decided who will pay yet. I will attend Stanford University.",
+    )
+
+    assert "primary_source" not in updated.funding
+    assert updated.field_states["/funding/primary_source"].state.value == "unknown"
+    assert updated.field_provenance["/funding/primary_source"].evidence_refs == []
+    assert updated.education["school_name"] == "Stanford University"
+    assert "/funding/primary_source" not in updated.ds160_view.get(
+        "field_claim_history",
+        {},
+    )
+
+
+def test_extractor_service_fallback_keeps_unknown_funding_when_parent_terms_present(
+    monkeypatch,
+) -> None:
+    profile = ApplicantProfile.minimal("profile-extractor-8")
+
+    monkeypatch.setattr(
+        "app.services.extractor_service.AgentModelFactory.build",
+        lambda self, module_key, stage_key: (None, {"model": "gpt-5.4"}),
+    )
+
+    updated = ExtractorService().apply_message(
+        profile,
+        "My parents and I have not decided who will pay for school yet.",
+    )
+
+    assert "primary_source" not in updated.funding
+    assert updated.field_states["/funding/primary_source"].state.value == "unknown"
+    assert updated.field_provenance["/funding/primary_source"].evidence_refs == []

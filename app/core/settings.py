@@ -11,6 +11,8 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 class Settings(BaseSettings):
     app_name: str = "DS-160 Visa Simulator"
+    log_level: str = "INFO"
+    log_format: Literal["text", "json"] = "json"
     database_url: str = "sqlite:///./app.sqlite3"
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     llm_provider: str = "openai"
@@ -35,10 +37,16 @@ class Settings(BaseSettings):
     allow_runtime_debug: bool = False
     allow_user_model_config: bool = False
     allow_user_model_streaming: bool = True
-    agent_runtime: Literal["legacy", "graph_shadow", "graph_canary", "graph"] = "graph"
+    agent_runtime: Literal[
+        "legacy",
+        "graph_shadow",
+        "graph_canary",
+        "graph",
+        "native_interviewer",
+    ] = "native_interviewer"
     agent_runtime_canary_percent: int = 0
     agent_runtime_trace_enabled: bool = True
-    agent_runtime_fail_open_to_legacy: bool = True
+    agent_runtime_fail_open_to_legacy: bool = False
     agent_runtime_typed_adjudication_enabled: bool = True
     rag_enabled: bool = False
     rag_vector_store: str = "chroma"
@@ -64,9 +72,7 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = 150
     rag_upload_max_size_mb: int = 32
     rag_allow_third_party_reference: bool = False
-    rag_source_manifest: str = (
-        "docs/superpowers/research/2026-05-21-us-visa-rag-source-manifest-100plus.md"
-    )
+    rag_source_manifest: str = "docs/rag/us-visa-source-manifest-100plus.md"
     rag_raw_doc_dir: str = "data/rag/us_visa/raw"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

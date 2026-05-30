@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import SessionTurnRecord
+from app.db.models import CaseMemorySnapshotRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
 
@@ -74,6 +74,105 @@ def test_responses_create_maps_to_domain_flow(
     assert payload["metadata"]["session_id"].startswith("sess-")
     assert payload["metadata"]["context_mode"] == "new_session"
     assert isinstance(payload["metadata"]["runtime_view_state"], dict)
+
+
+def test_responses_metadata_exposes_case_memory_evidence_graph(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_response = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_response.json()["session_id"]
+
+    with db_session_factory() as db:
+        db.add(
+            CaseMemorySnapshotRecord(
+                session_id=session_id,
+                snapshot_json={
+                    "claims": [
+                        {
+                            "claim_id": "claim-school",
+                            "field_path": "/education/school_name",
+                            "value": "Example University",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-school"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-school",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-i20",
+                            "excerpt": "School Name: Example University",
+                            "claim_refs": ["claim-school"],
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "proof_points": [
+                        {
+                            "proof_point_id": "proof-school",
+                            "visa_family": "f1",
+                            "question": "Which school will you attend?",
+                            "status": "supported",
+                            "why_it_matters": "School identity anchors the case.",
+                            "claim_refs": ["claim-school"],
+                            "evidence_refs": ["ev-school"],
+                        }
+                    ],
+                    "conflicts": [],
+                    "next_move": None,
+                },
+            )
+        )
+        db.commit()
+
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        lambda self, session_id, message_text, **kwargs: {
+            "assistant_message": "Which program will you study?",
+            "governor_decision": "continue_interview",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "document_review": {},
+            "prompt_trace": {},
+            "runtime_view_state": {},
+        },
+    )
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "model": "visa-simulator-v1",
+            "input": "Continue.",
+            "metadata": {"session_id": session_id},
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["metadata"]
+    assert metadata["case_board"]["claims"][0]["claim_id"] == "claim-school"
+    assert metadata["evidence_graph"]["claims"][0]["field_path"] == (
+        "/education/school_name"
+    )
+    assert metadata["evidence_graph"]["edges"] == [
+        {
+            "source": "claim-school",
+            "target": "ev-school",
+            "relation": "support",
+        },
+        {
+            "source": "proof-school",
+            "target": "claim-school",
+            "relation": "requires_claim",
+        },
+        {
+            "source": "proof-school",
+            "target": "ev-school",
+            "relation": "requires_evidence",
+        },
+    ]
 
 
 def test_responses_previous_response_id_reuses_local_session_transcript(
@@ -153,6 +252,83 @@ def test_responses_previous_response_id_reuses_local_session_transcript(
         "user",
         "assistant",
     ]
+
+
+def test_responses_metadata_uses_anchored_empty_requested_documents(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "sess-responses-anchor"
+    assistant_turn_id = "turn-responses-anchor"
+    with db_session_factory() as db:
+        db.add(
+            SessionRecord(
+                session_id=session_id,
+                phase_state="interview",
+                declared_family="f1",
+                current_governor_decision="continue_interview",
+            )
+        )
+        db.add(
+            SessionTurnRecord(
+                turn_id=assistant_turn_id,
+                turn_index=1,
+                session_id=session_id,
+                role="assistant",
+                content="Previous anchored answer.",
+                source="openai_responses",
+                metadata_json={
+                    "runtime_view_state": {
+                        "source_turn_id": assistant_turn_id,
+                        "decision": "continue_interview",
+                        "governor_decision": "continue_interview",
+                        "requested_documents": [],
+                        "remaining_required_documents": [],
+                        "turn_decision": {"decision": "continue_interview"},
+                        "prompt_trace": {},
+                    }
+                },
+            )
+        )
+        db.commit()
+
+    def fake_handle_user_turn(self, session_id: str, message_text: str, **kwargs):
+        return {
+            "assistant_message": f"handled: {message_text}",
+            "governor_decision": "continue_interview",
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+            "turn_decision": {
+                "decision": "continue_interview",
+                "requested_documents": ["funding_proof"],
+                "remaining_required_documents": ["funding_proof"],
+            },
+            "prompt_trace": {},
+        }
+
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.handle_user_turn",
+        fake_handle_user_turn,
+    )
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "model": "visa-simulator-v1",
+            "previous_response_id": f"resp-{session_id}-1",
+            "input": "Continue the interview.",
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["metadata"]
+    assert metadata["context_mode"] == "previous_response"
+    assert metadata["runtime_view_state"]["source_turn_id"] == assistant_turn_id
+    assert metadata["requested_documents"] == []
+    assert metadata["remaining_required_documents"] == []
+    assert metadata["turn_decision"]["requested_documents"] == []
+    assert metadata["turn_decision"]["remaining_required_documents"] == []
 
 
 def test_responses_derives_idempotency_key_without_explicit_metadata_key(

@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from typing import Any
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
@@ -13,7 +16,9 @@ from app.api.routers.openai_responses import router as openai_responses_router
 from app.api.routers.rag import router as rag_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
-from app.core.app_version import APP_VERSION
+from app.core.app_version import APP_VERSION, backend_version_payload
+from app.core.health import build_health_payload
+from app.core.logging_config import configure_logging
 from app.core.settings import settings
 from app.core.simple_auth import simple_auth_middleware
 from app.db.base import Base
@@ -42,6 +47,9 @@ SESSION_TURN_COLUMN_DEFS = {
 }
 SESSION_TURN_ORDER_INDEX_NAME = "ux_session_turns_session_id_turn_index"
 SESSION_TURN_CLIENT_MESSAGE_INDEX_NAME = "ux_session_turns_session_id_client_message_id"
+
+
+configure_logging(level=settings.log_level, log_format=settings.log_format)
 
 
 def bootstrap_sqlite_runtime(db_engine: Engine) -> None:
@@ -293,6 +301,20 @@ app.include_router(openai_compat_router)
 app.include_router(openai_responses_router)
 
 
-@app.get("/healthz")
-def healthz() -> dict[str, str]:
+@app.get("/livez")
+def livez() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/healthz")
+def healthz(request: Request) -> JSONResponse:
+    payload = build_health_payload(app=request.app, engine=engine, app_settings=settings)
+    return JSONResponse(
+        content=payload,
+        status_code=200 if payload["status"] == "ok" else 503,
+    )
+
+
+@app.get("/version")
+def version() -> dict[str, str | None]:
+    return backend_version_payload()

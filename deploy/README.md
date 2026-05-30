@@ -3,7 +3,11 @@
 ## 端口规划
 
 - 对公网只暴露 `18000/tcp`，由 Docker Nginx 监听。
-- 应用容器内部使用 `3000/tcp` 运行 Next.js，`8000/tcp` 运行 FastAPI。
+- Compose 默认拆成 `ds160-api`、`ds160-web`、`ds160-worker`、`postgres` 和
+  `nginx`。
+- `ds160-web` 容器内部使用 `3000/tcp` 运行 Next.js。
+- `ds160-api` 容器内部使用 `8000/tcp` 运行 FastAPI。
+- `ds160-worker` 独立运行材料理解/解析 worker。
 - 不使用 sing-box 已占用端口，也不使用 `37666-38666`。
 
 ## 服务器启动
@@ -16,7 +20,16 @@ openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
   -out deploy/certs/origin.crt \
   -subj "/CN=ds160.efastt.store"
 chmod 600 deploy/certs/origin.key
-docker compose up -d --build
+
+BUILD_SHA="$(git rev-parse --short HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+APP_GIT_SHA="$BUILD_SHA" \
+NEXT_PUBLIC_GIT_SHA="$BUILD_SHA" \
+APP_BUILD_TIME="$BUILD_TIME" \
+NEXT_PUBLIC_BUILD_TIME="$BUILD_TIME" \
+docker compose up -d --build postgres ds160-api ds160-web ds160-worker
+
+docker compose up -d nginx
 ```
 
 ## 服务器更新
@@ -25,8 +38,16 @@ docker compose up -d --build
 
 ```bash
 cd /opt/ds160-agent2
-git pull --ff-only origin main
-docker compose up -d --build
+git fetch origin refactor/agent-runtime-graph
+git pull --ff-only origin refactor/agent-runtime-graph
+
+BUILD_SHA="$(git rev-parse --short HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+APP_GIT_SHA="$BUILD_SHA" \
+NEXT_PUBLIC_GIT_SHA="$BUILD_SHA" \
+APP_BUILD_TIME="$BUILD_TIME" \
+NEXT_PUBLIC_BUILD_TIME="$BUILD_TIME" \
+docker compose up -d --build postgres ds160-api ds160-web ds160-worker nginx
 ```
 
 更新后确认容器和健康检查：
@@ -34,46 +55,60 @@ docker compose up -d --build
 ```bash
 docker compose ps
 curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
+curl -k https://127.0.0.1:18000/api/version -H "Host: ds160.efastt.store"
+curl --noproxy '*' -fsS https://ds160.efastt.store/healthz
+```
+
+## SQLite 到 Postgres cutover 脚本
+
+正式迁移可以使用仓库脚本，但它会停止旧 combined 容器并启动 split services，
+只应在维护窗口内运行。脚本会先备份 `.env` 和 SQLite，再执行 migration dry-run；
+只有 dry-run 之后才执行真实写入。
+
+```bash
+CONFIRM_PRODUCTION_CUTOVER=I_UNDERSTAND_PRODUCTION_CUTOVER \
+RUN_WRITE_MIGRATION=1 \
+scripts/production-split-postgres-cutover.sh
+```
+
+如果目标 Postgres 非空，只有在已备份并确认维护窗口后才允许加：
+
+```bash
+TRUNCATE_TARGET=1
 ```
 
 ## Agent Runtime
 
-当前默认由 graph 接管主流程，legacy 保留为回滚路径：
+当前公开主流程默认由 native interviewer 接管；`graph` / `graph_canary` 是兼容标签，
+`graph_shadow` 只做 shadow/eval trace。legacy 只作为显式回滚路径：
 
 ```env
-AGENT_RUNTIME=graph
-AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true
+AGENT_RUNTIME=native_interviewer
+AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false
 AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true
 ```
 
-如需重新做小流量观察，可以按以下顺序：
+如需观察 graph shadow，只运行 shadow，不把用户可见回复交给 graph：
 
 ```bash
-# 1. 旁路观察，用户可见回复仍由 legacy 写入。
-AGENT_RUNTIME=graph_shadow docker compose up -d --build
-
-# 2. 小流量切 graph，未命中 session 仍走 legacy。
-AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=10 docker compose up -d --build
-AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=25 docker compose up -d --build
-AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=50 docker compose up -d --build
-AGENT_RUNTIME=graph_canary AGENT_RUNTIME_CANARY_PERCENT=100 docker compose up -d --build
+AGENT_RUNTIME=graph_shadow docker compose up -d ds160-api ds160-worker
 ```
 
-每一档切换前后先跑：
+切换前后先跑：
 
 ```bash
-./scripts/agent-runtime-canary-smoke.sh
 docker compose ps
 curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
+curl -k https://127.0.0.1:18000/api/version -H "Host: ds160.efastt.store"
 ```
 
 回滚命令：
 
 ```bash
-AGENT_RUNTIME=legacy AGENT_RUNTIME_CANARY_PERCENT=0 docker compose up -d --build
+AGENT_RUNTIME=legacy AGENT_RUNTIME_CANARY_PERCENT=0 docker compose up -d ds160-api ds160-worker
 ```
 
-任一档出现新增 500、重复模板、无法解释冲突、citation 缺失率异常、fallback 率异常，直接回滚到上一档或 `legacy`。
+出现新增 500、重复模板、无法解释冲突、citation 缺失率异常、fallback 率异常时，直接回滚到 `native_interviewer` 或显式 `legacy`。
 
 ## 本机验证
 
@@ -81,7 +116,7 @@ AGENT_RUNTIME=legacy AGENT_RUNTIME_CANARY_PERCENT=0 docker compose up -d --build
 docker compose ps
 curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
 docker compose logs --tail=100 nginx
-docker compose logs --tail=100 ds160-agent2
+docker compose logs --tail=100 ds160-api ds160-worker ds160-web
 ```
 
 ## 流式接口

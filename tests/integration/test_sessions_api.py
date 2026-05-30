@@ -433,7 +433,7 @@ def test_debug_fill_current_gap_supports_normal_school_data(
     payload = response.json()
     assert payload["fill_scenario"] == "normal"
     assert payload["filled_document_type"] == "i20"
-    assert "正常材料" in payload["fill_scenario_label"]
+    assert payload["fill_scenario_label"] == "生成当前缺口参考材料"
     assert refresh_calls == ["debug_fill:i20"]
     assert payload["assistant_message"] == "Please continue with your study plan."
     assert payload["requested_documents"] == []
@@ -662,6 +662,17 @@ def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_
     material_refresh = record.interviewer_state_json["last_material_refresh"]
     assert material_refresh["agent_runtime"] == "graph"
     assert material_refresh["selected_public_runtime"] == "native_interviewer"
+    assert material_refresh["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "material_change",
+        "fail_open_to_legacy": False,
+        "compatibility_runtime_label": "graph",
+    }
     assert material_refresh["prompt_trace"]["native_trigger"] == "material_change"
     assert (
         material_refresh["prompt_trace"]["material_change_reason"]
@@ -704,6 +715,12 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
         "error_message": "native material refresh exploded",
         "fallback_runtime": "legacy",
     }
+    assert response.json()["material_refresh"]["selected_public_runtime"] == "legacy"
+    assert response.json()["material_refresh"]["runtime_execution"]["public_runtime"] == "legacy"
+    assert (
+        response.json()["material_refresh"]["runtime_execution"]["fallback_runtime"]
+        == "legacy"
+    )
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -721,15 +738,26 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
         "error_message": "native material refresh exploded",
         "fallback_runtime": "legacy",
     }
+    assert (
+        record.interviewer_state_json["last_material_refresh"]["runtime_execution"]
+        == response.json()["material_refresh"]["runtime_execution"]
+    )
 
 
-def test_debug_fill_current_gap_graph_shadow_keeps_legacy_response(
+def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
-    refresh_calls = install_material_refresh_stub(monkeypatch)
+
+    def legacy_refresh_must_not_run(self, record, *, reason: str) -> dict:
+        raise AssertionError("legacy material refresh should not run in graph_shadow mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        legacy_refresh_must_not_run,
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -740,9 +768,35 @@ def test_debug_fill_current_gap_graph_shadow_keeps_legacy_response(
 
     assert response.status_code == 200
     payload = response.json()
-    assert refresh_calls == ["debug_fill:ds160"]
-    assert payload["assistant_message"] == "Please continue with your study plan."
+    assert payload["assistant_message"] == ""
+    assert payload["turn_decision"]["decision"] == "continue_interview"
+    assert payload["turn_decision"]["assistant_message_author"] == "native_interviewer"
     assert payload["material_refresh"]["assistant_turn_created"] is False
+    assert payload["material_refresh"]["agent_runtime"] == "graph_shadow"
+    assert payload["material_refresh"]["selected_public_runtime"] == "native_interviewer"
+    assert payload["material_refresh"]["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph_shadow",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "material_change",
+        "fail_open_to_legacy": False,
+        "shadow_runtime": "graph_shadow",
+        "shadow_run_id": payload["material_refresh"]["runtime_execution"][
+            "shadow_run_id"
+        ],
+        "compatibility_runtime_label": "graph_shadow",
+    }
+    assert (
+        payload["material_refresh"]["prompt_trace"]["native_trigger"]
+        == "material_change"
+    )
+    assert (
+        payload["material_refresh"]["prompt_trace"]["material_change_reason"]
+        == "material_added:ds160"
+    )
     assert payload["material_refresh"]["graph_shadow"]["status"] == "completed"
     assert payload["material_refresh"]["graph_shadow"]["agent_runtime"] == "graph_shadow"
     assert (
@@ -764,7 +818,18 @@ def test_debug_fill_current_gap_graph_shadow_keeps_legacy_response(
 
     assert turns == []
     assert record is not None
-    graph_shadow = record.interviewer_state_json["last_material_refresh"]["graph_shadow"]
+    material_refresh = record.interviewer_state_json["last_material_refresh"]
+    assert material_refresh["agent_runtime"] == "graph_shadow"
+    assert material_refresh["selected_public_runtime"] == "native_interviewer"
+    assert material_refresh["runtime_execution"] == payload["material_refresh"][
+        "runtime_execution"
+    ]
+    assert material_refresh["prompt_trace"]["native_trigger"] == "material_change"
+    assert (
+        material_refresh["prompt_trace"]["material_change_reason"]
+        == "material_added:ds160"
+    )
+    graph_shadow = material_refresh["graph_shadow"]
     assert graph_shadow["status"] == "completed"
     assert graph_shadow["agent_runtime"] == "graph_shadow"
     assert graph_shadow["prompt_trace"]["graph_trigger"] == "material_change"
@@ -822,6 +887,7 @@ def test_runtime_trace_endpoint_returns_graph_events(
     assert payload["run_id"] == run_id
     assert payload["agent_runtime"] == "graph"
     assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["execution_runtime"] == "native_interviewer_runtime"
     assert payload["native_run_id"] == run_id
     assert payload["graph_trace"] == {}
     assert payload["graph_events"] == []

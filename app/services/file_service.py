@@ -372,7 +372,7 @@ class FileService:
 
         if assessment.relevance == "low":
             return (
-                "这份材料与当前主线关联较弱，系统会保留结果，但建议你继续上传更直接的关键证明。",
+                "这份材料与当前主线关联较弱，系统会保留结果；如有更直接的补强证据，可以继续上传。",
                 False,
             )
         if document_type is not None and candidate_types and document_type not in candidate_types:
@@ -646,7 +646,7 @@ class FileService:
             "next_move": {
                 "move_type": "ask",
                 "question": "请继续回答面签问题；材料理解完成后我会结合证据调整追问。",
-                "reason": "文件已保存并进入案例理解队列，当前无需等待材料齐套。",
+                "reason": "文件已保存并进入案例理解队列，当前可以继续面签对话。",
                 "claim_refs": list(assessment.supported_claims),
                 "evidence_refs": [
                     card["evidence_id"] for card in evidence_cards

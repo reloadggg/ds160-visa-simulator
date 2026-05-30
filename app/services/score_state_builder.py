@@ -80,23 +80,10 @@ class ScoreStateBuilder:
         for finding in typed_findings:
             if finding.finding_type == "gap":
                 if not include_gap:
+                    if self.score_acknowledges_funding_gap(score, finding):
+                        self.apply_funding_gap_guard(score)
                     continue
-                score.document_readiness = min(score.document_readiness, 40)
-                score.narrative_consistency = min(score.narrative_consistency, 55)
-                if not any(
-                    flag.code == "supporting_evidence_missing"
-                    for flag in score.risk_flags
-                ):
-                    score.risk_flags.append(
-                        RiskFlag(
-                            code="supporting_evidence_missing",
-                            severity="medium",
-                            status="supported",
-                            evidence_refs=[],
-                        )
-                    )
-                if "funding_proof" not in score.missing_evidence:
-                    score.missing_evidence.append("funding_proof")
+                self.apply_funding_gap_guard(score)
                 continue
 
             score.document_readiness = min(score.document_readiness, 30)
@@ -112,6 +99,44 @@ class ScoreStateBuilder:
                     )
                 )
         return score
+
+    def apply_funding_gap_guard(self, score: ScoreState) -> None:
+        score.document_readiness = min(score.document_readiness, 40)
+        score.narrative_consistency = min(score.narrative_consistency, 55)
+        if not any(
+            flag.code == "supporting_evidence_missing"
+            for flag in score.risk_flags
+        ):
+            score.risk_flags.append(
+                RiskFlag(
+                    code="supporting_evidence_missing",
+                    severity="medium",
+                    status="supported",
+                    evidence_refs=[],
+                )
+            )
+        if "funding_proof" not in score.missing_evidence:
+            score.missing_evidence.append("funding_proof")
+
+    def score_acknowledges_funding_gap(
+        self,
+        score: ScoreState,
+        finding: ConsistencyFinding,
+    ) -> bool:
+        summary = finding.summary.lower()
+        if "funding" not in summary or not any(
+            marker in summary for marker in ("document", "proof", "evidence")
+        ):
+            return False
+        for flag in score.risk_flags:
+            code = flag.code.lower()
+            if "funding" in code and any(
+                marker in code for marker in ("undocumented", "missing", "unproven")
+            ):
+                return True
+            if code == "supporting_evidence_missing":
+                return True
+        return False
 
     def default_scores(self, profile: ApplicantProfile) -> dict[str, int]:
         return {

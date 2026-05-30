@@ -31,6 +31,15 @@ import {
 import { getApiBaseUrl } from "@/lib/api/config"
 import { APP_VERSION } from "@/lib/app-version"
 import { getDebugMaterialBundleOption } from "@/lib/debug-material-bundles"
+import { buildAssistantMessageFromBackendResponse } from "@/lib/message-source-policy"
+import {
+  buildMaterialUnderstandingPatchFromRuntimeEntry,
+  buildMaterialUnderstandingActivity,
+  buildUploadOnlyMaterialActivitySummary,
+  isTerminalMaterialUnderstandingStatus,
+  materialUnderstandingStatus,
+  type RuntimeMaterialUnderstandingPatch,
+} from "@/lib/upload-feedback-policy"
 import {
   getMockRequiredPackage,
   isMockMode,
@@ -65,6 +74,7 @@ import type {
   RuntimeDebugEvent,
   RuntimeDebugSnapshot,
   Session,
+  SessionActivityEvent,
   SessionHistoryEntry,
   UploadedMaterial,
   UserModelConfig,
@@ -77,6 +87,7 @@ const HISTORY_STORAGE_KEY = "ds160-web-history-v1"
 const MODEL_CONFIG_STORAGE_KEY = "ds160-user-model-config-v1"
 const MAX_PERSISTED_PREVIEW_BYTES = 2 * 1024 * 1024
 const MAX_RUNTIME_DEBUG_EVENTS = 160
+const MATERIAL_UNDERSTANDING_REFRESH_DELAYS_MS = [750, 1500, 3000, 6000]
 
 const DEFAULT_USER_MODEL_CONFIG: UserModelConfig = {
   enabled: false,
@@ -172,73 +183,25 @@ function buildRequiredPackageMessage(
   requiredPackage: RequiredPackage,
 ): string {
   const materialHint = requiredPackage.required_initial_package_labels.length
-    ? `如果你手边有 ${formatRequestedDocuments(
-        requiredPackage.required_initial_package_labels,
-      )}，可以在对话过程中随时上传。`
-    : "如果你手边有 I-20、DS-160 确认页、护照首页或资金证明，可以在对话过程中随时上传。"
+    ? "如果你手边有系统建议的基础材料，可以在对话过程中随时上传；我会用它们核对已经陈述的事实。"
+    : "如果你手边有能支持学习计划、身份或资金安排的材料，可以在对话过程中随时上传。"
 
   return `你好，我们开始今天的 ${visaFamily} 签证模拟。我会像真实窗口面谈一样，先了解你的学习计划，再结合材料核对关键细节。\n\n你先简单介绍一下：这次去美国读什么项目？为什么选择这所学校？\n\n${materialHint}`
 }
 
-function buildRequestedDocumentsMessage(
+function buildEvidenceSuggestionMessage(
   requestedDocumentLabels: string[],
   governorDecision?: string | null,
 ): string | null {
-  if (!requestedDocumentLabels.length) {
+  if (
+    !requestedDocumentLabels.length ||
+    governorDecision !== "need_more_evidence"
+  ) {
     return null
   }
 
   const documentList = formatRequestedDocuments(requestedDocumentLabels)
-  if (governorDecision === "need_more_evidence") {
-    return `还需要核验证据：${documentList}。`
-  }
-
-  return `还需要核对：${documentList}。`
-}
-
-function buildUploadOnlySystemSummary(
-  responses: FileUploadResponse[],
-): string {
-  const evidenceCount = responses.reduce(
-    (total, response) => total + response.evidence_cards.length,
-    0,
-  )
-  const claimCount = responses.reduce(
-    (total, response) =>
-      total + (response.case_board_delta?.claims.length ?? 0),
-    0,
-  )
-  const conflictCount = responses.reduce(
-    (total, response) =>
-      total + (response.case_board_delta?.conflicts.length ?? 0),
-    0,
-  )
-  const materialLabels = Array.from(
-    new Set(
-      responses
-        .map(
-          (response) =>
-            response.document_type_label ??
-            response.document_assessment?.document_type_label,
-        )
-        .filter((label): label is string => Boolean(label)),
-    ),
-  )
-
-  const materialPart = materialLabels.length
-    ? `：${formatRequestedDocuments(materialLabels)}`
-    : ""
-  const evidencePart = evidenceCount
-    ? `，已形成 ${evidenceCount} 条证据片段`
-    : ""
-  const claimPart = claimCount ? `、${claimCount} 个候选事实` : ""
-  const conflictPart = conflictCount ? `，其中 ${conflictCount} 个冲突待核验` : ""
-
-  if (evidenceCount || claimCount || conflictCount) {
-    return `材料已加入案例证据${materialPart}${evidencePart}${claimPart}${conflictPart}。`
-  }
-
-  return `材料已收到${materialPart}，案例理解正在更新。`
+  return `可补充证据：${documentList}。`
 }
 
 function buildGateProgressMessage(overallStatus?: string): string | null {
@@ -270,7 +233,7 @@ function describeDebugBundleEvent(
     case "profile_recomputed":
       return "已根据材料刷新申请人档案。"
     case "gate_refreshed":
-      return "已更新材料清单状态。"
+      return "已更新案例证据状态。"
     case "document_review_started":
       return "开始核对材料之间的关键细节。"
     case "governor_decided":
@@ -391,9 +354,22 @@ function sanitizeHistoryAttachment(attachment: ChatAttachment): ChatAttachment {
   }
 }
 
-function sanitizeHistoryMessage(message: ChatMessage): ChatMessage {
+function normalizeChatMessageRole(role: unknown): ChatMessage["role"] {
+  if (role === "assistant" || role === "officer") {
+    return "assistant"
+  }
+  if (role === "user") {
+    return "user"
+  }
+  return "system"
+}
+
+function sanitizeHistoryMessage(
+  message: ChatMessage | (Omit<ChatMessage, "role"> & { role?: unknown }),
+): ChatMessage {
   return {
     ...message,
+    role: normalizeChatMessageRole(message.role),
     attachments: message.attachments?.map(sanitizeHistoryAttachment),
   }
 }
@@ -660,6 +636,131 @@ function humanizeUploadStatus(
   }
 }
 
+function humanizeUnderstandingStatus(status?: string | null): string {
+  switch (status) {
+    case "queued":
+      return "案例理解更新中"
+    case "processing":
+      return "案例理解中"
+    case "failed":
+      return "理解失败"
+    case "completed":
+      return "已理解"
+    default:
+      return humanizeUploadStatus(status, "已上传")
+  }
+}
+
+function materialUnderstandingPatchesFromSnapshot(
+  snapshot: RuntimeDebugSnapshot | null,
+): RuntimeMaterialUnderstandingPatch[] {
+  return (snapshot?.material_understanding ?? [])
+    .map(buildMaterialUnderstandingPatchFromRuntimeEntry)
+    .filter(
+      (patch): patch is RuntimeMaterialUnderstandingPatch => patch !== null,
+    )
+}
+
+function materialMatchesUnderstandingPatch(
+  material: UploadedMaterial,
+  patch: RuntimeMaterialUnderstandingPatch,
+): boolean {
+  return (
+    Boolean(patch.document_id && material.document_id === patch.document_id) ||
+    Boolean(patch.filename && material.name === patch.filename)
+  )
+}
+
+function applyMaterialUnderstandingPatches(
+  materials: UploadedMaterial[],
+  patches: RuntimeMaterialUnderstandingPatch[],
+): UploadedMaterial[] {
+  if (!patches.length) {
+    return materials
+  }
+
+  let changed = false
+  const nextMaterials = materials.map((material) => {
+    const patch = patches.find((item) =>
+      materialMatchesUnderstandingPatch(material, item),
+    )
+    if (!patch) {
+      return material
+    }
+
+    const nextStatus =
+      patch.understanding_status ?? material.understanding_status ?? null
+    const nextError =
+      patch.understanding_error ?? material.understanding_error ?? null
+    if (
+      nextStatus === material.understanding_status &&
+      nextError?.code === material.understanding_error?.code &&
+      nextError?.message === material.understanding_error?.message
+    ) {
+      return material
+    }
+
+    changed = true
+    const nextLatestMaterial = material.case_board_delta?.latest_material
+      ? {
+          ...material.case_board_delta.latest_material,
+          understanding_status:
+            nextStatus ??
+            material.case_board_delta.latest_material.understanding_status ??
+            null,
+          understanding_error:
+            nextError ??
+            material.case_board_delta.latest_material.understanding_error ??
+            null,
+          unknowns: nextError?.message
+            ? [nextError.message]
+            : material.case_board_delta.latest_material.unknowns,
+        }
+      : null
+    return {
+      ...material,
+      understanding_status: nextStatus,
+      understanding_error: nextError,
+      status_label: humanizeUnderstandingStatus(
+        nextStatus ?? material.document_status ?? null,
+      ),
+      feedback_message:
+        nextError?.message ?? patch.understanding_error?.message ??
+        material.feedback_message,
+      case_board_delta: material.case_board_delta
+        ? {
+            ...material.case_board_delta,
+            latest_material: nextLatestMaterial,
+          }
+        : material.case_board_delta,
+    }
+  })
+
+  return changed ? nextMaterials : materials
+}
+
+function responseNeedsMaterialUnderstandingRefresh(
+  response: FileUploadResponse,
+): boolean {
+  const status =
+    materialUnderstandingStatus(response) ??
+    response.understanding_status ??
+    response.job_status ??
+    null
+  return (
+    status === "queued" ||
+    status === "processing" ||
+    status === "waiting_for_parse" ||
+    status === "parsing"
+  )
+}
+
+function waitForMilliseconds(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs)
+  })
+}
+
 function firstNonEmptyText(
   ...values: Array<string | null | undefined>
 ): string | null {
@@ -683,7 +784,7 @@ function escapeHtml(value: string): string {
 
 function formatMessageRole(role: ChatMessage["role"]): string {
   switch (role) {
-    case "officer":
+    case "assistant":
       return "签证官"
     case "user":
       return "申请人"
@@ -694,8 +795,8 @@ function formatMessageRole(role: ChatMessage["role"]): string {
 
 function roleClassName(role: ChatMessage["role"]): string {
   switch (role) {
-    case "officer":
-      return "officer"
+    case "assistant":
+      return "assistant"
     case "user":
       return "user"
     case "system":
@@ -739,7 +840,7 @@ function renderExportMessage(message: ChatMessage): string {
     message.attachments?.map(renderExportAttachment).join("") ?? ""
   return `
     <section class="message-row ${roleClass}">
-      <div class="avatar">${roleClass === "officer" ? "VO" : roleClass === "user" ? "我" : "记"}</div>
+      <div class="avatar">${roleClass === "assistant" ? "VO" : roleClass === "user" ? "我" : "记"}</div>
       <div class="message-stack">
         <div class="message-meta">
           <span>${role}</span>
@@ -904,7 +1005,7 @@ function buildConversationExportStyles(): string {
       border: 1px solid #e2e8f0;
       box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
     }
-    .officer .bubble {
+    .assistant .bubble {
       border-top-left-radius: 12px;
       background: #ffffff;
     }
@@ -1284,10 +1385,13 @@ export function useSessionWorkbench() {
   const [initError, setInitError] = useState<string | null>(null)
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [activityEvents, setActivityEvents] = useState<SessionActivityEvent[]>(
+    [],
+  )
   const [isSending, setIsSending] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const sendingRef = useRef(false)
-  const streamProgressMessageIdRef = useRef<string | null>(null)
+  const streamProgressEventIdRef = useRef<string | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
 
   const [userReport, setUserReport] = useState<UserReport | null>(null)
@@ -1405,6 +1509,42 @@ export function useSessionWorkbench() {
     [],
   )
 
+  const appendActivityEvent = useCallback(
+    (event: Omit<SessionActivityEvent, "id" | "timestamp">) => {
+      const id = createClientId(`activity-${event.kind}`)
+      setActivityEvents((prev) =>
+        [
+          ...prev,
+          {
+            id,
+            timestamp: getTimestamp(),
+            ...event,
+          },
+        ].slice(-80),
+      )
+      return id
+    },
+    [],
+  )
+
+  const updateActivityEventStatus = useCallback(
+    (id: string, status: SessionActivityEvent["status"]) => {
+      setActivityEvents((prev) =>
+        prev.map((event) => (event.id === id ? { ...event, status } : event)),
+      )
+    },
+    [],
+  )
+
+  const updateActivityEventContent = useCallback(
+    (id: string, content: string) => {
+      setActivityEvents((prev) =>
+        prev.map((event) => (event.id === id ? { ...event, content } : event)),
+      )
+    },
+    [],
+  )
+
   const updateMessageStatus = useCallback(
     (id: string, status: ChatMessage["status"]) => {
       setMessages((prev) =>
@@ -1413,12 +1553,6 @@ export function useSessionWorkbench() {
     },
     [],
   )
-
-  const updateMessageContent = useCallback((id: string, content: string) => {
-    setMessages((prev) =>
-      prev.map((msg) => (msg.id === id ? { ...msg, content } : msg)),
-    )
-  }, [])
 
   const updateMessageAttachment = useCallback(
     (
@@ -1552,6 +1686,19 @@ export function useSessionWorkbench() {
     )
   }, [])
 
+  const syncUploadedMaterialsFromRuntimeDebugSnapshot = useCallback(
+    (snapshot: RuntimeDebugSnapshot | null) => {
+      const patches = materialUnderstandingPatchesFromSnapshot(snapshot)
+      if (!patches.length) {
+        return
+      }
+      setUploadedMaterials((prev) =>
+        applyMaterialUnderstandingPatches(prev, patches),
+      )
+    },
+    [],
+  )
+
   const refreshRuntimeDebugSnapshot = useCallback(
     async (targetSessionId?: string | null): Promise<RuntimeDebugSnapshot | null> => {
       const nextSessionId = targetSessionId ?? sessionId
@@ -1587,6 +1734,7 @@ export function useSessionWorkbench() {
       try {
         const snapshot = await getRuntimeDebugSnapshot(nextSessionId)
         setRuntimeDebugSnapshot(snapshot)
+        syncUploadedMaterialsFromRuntimeDebugSnapshot(snapshot)
         return snapshot
       } catch (error) {
         setRuntimeDebugError(
@@ -1597,7 +1745,53 @@ export function useSessionWorkbench() {
         setIsLoadingRuntimeDebug(false)
       }
     },
-    [getErrorMessage, mockMode, session?.phase_state, sessionId, visaType],
+    [
+      getErrorMessage,
+      mockMode,
+      session?.phase_state,
+      sessionId,
+      syncUploadedMaterialsFromRuntimeDebugSnapshot,
+      visaType,
+    ],
+  )
+
+  const queueMaterialUnderstandingRefresh = useCallback(
+    (targetSessionId: string, responses: FileUploadResponse[]) => {
+      const trackedDocumentIds = new Set(
+        responses
+          .map((response) => response.document_id)
+          .filter((documentId): documentId is string => Boolean(documentId)),
+      )
+      if (
+        !trackedDocumentIds.size ||
+        !responses.some(responseNeedsMaterialUnderstandingRefresh)
+      ) {
+        return
+      }
+
+      void (async () => {
+        for (const delayMs of MATERIAL_UNDERSTANDING_REFRESH_DELAYS_MS) {
+          await waitForMilliseconds(delayMs)
+          const snapshot = await refreshRuntimeDebugSnapshot(targetSessionId)
+          const patches = materialUnderstandingPatchesFromSnapshot(
+            snapshot,
+          ).filter(
+            (patch) =>
+              patch.document_id && trackedDocumentIds.has(patch.document_id),
+          )
+          if (
+            patches.some((patch) =>
+              isTerminalMaterialUnderstandingStatus(
+                patch.understanding_status,
+              ),
+            )
+          ) {
+            return
+          }
+        }
+      })()
+    },
+    [refreshRuntimeDebugSnapshot],
   )
 
   const handleCopyRuntimeDebugPackage = useCallback(async () => {
@@ -1614,6 +1808,7 @@ export function useSessionWorkbench() {
       session_id: sessionId,
       runtime_snapshot: snapshot,
       live_events: runtimeDebugEvents,
+      activity_events: activityEvents.slice(-40),
       latest_debug_material_bundle: latestDebugMaterialBundle,
       client_state: {
         visa_type: visaType,
@@ -1633,6 +1828,7 @@ export function useSessionWorkbench() {
     }
   }, [
     latestDebugMaterialBundle,
+    activityEvents,
     messages,
     refreshRuntimeDebugSnapshot,
     runtimeDebugEvents,
@@ -1694,9 +1890,11 @@ export function useSessionWorkbench() {
       uploaded_at: getIsoTimestamp(),
       status_label: isError
         ? "上传失败"
-        : humanizeUploadStatus(
-            response?.job_status ?? response?.document_status ?? null,
-            "已上传",
+        : humanizeUnderstandingStatus(
+            materialUnderstandingStatus(response ?? {}) ??
+              response?.job_status ??
+              response?.document_status ??
+              null,
           ),
       document_id: response?.document_id,
       content_url:
@@ -1704,7 +1902,20 @@ export function useSessionWorkbench() {
           ? getFileContentUrl(sessionId, response.document_id)
           : null,
       document_status: response?.document_status,
-      understanding_status: response?.understanding_status ?? null,
+      understanding_status:
+        materialUnderstandingStatus(response ?? {}) ??
+        response?.understanding_status ??
+        null,
+      understanding_error:
+        response?.understanding_error ??
+        response?.case_board_delta?.latest_material?.understanding_error ??
+        (response?.caseBoardRefresh?.failureMessage
+          ? {
+              code: response.caseBoardRefresh.failureNode ?? null,
+              message: response.caseBoardRefresh.failureMessage,
+            }
+          : null) ??
+        null,
       document_type:
         response?.document_type ??
         response?.document_assessment?.document_type ??
@@ -1725,6 +1936,7 @@ export function useSessionWorkbench() {
       conflicts: response?.case_board_delta?.conflicts ?? [],
       next_move: response?.case_board_delta?.next_move ?? null,
       case_board_delta: response?.case_board_delta ?? null,
+      caseBoardRefresh: response?.caseBoardRefresh ?? null,
       requested_document_labels: response?.requested_document_labels ?? [],
       current_focus_document_label:
         response?.main_flow_feedback?.current_focus_document_label ??
@@ -1842,6 +2054,7 @@ export function useSessionWorkbench() {
     setVisaType(null)
     setRequiredPackage(null)
     setMessages([])
+    setActivityEvents([])
     setUserReport(null)
     setInternalReport(null)
     setInterviewReview(null)
@@ -1870,6 +2083,8 @@ export function useSessionWorkbench() {
       setChatError(null)
       setReportError(null)
       setModalError(null)
+      setMessages([])
+      setActivityEvents([])
       setUploadedMaterials([])
       setDebugBundleProgress([])
       setRuntimeDebugSnapshot(null)
@@ -1889,18 +2104,18 @@ export function useSessionWorkbench() {
           })
           setVisaType(visaFamily)
           setRequiredPackage(mockRequiredPackage)
-          setMessages([
+          setActivityEvents([
             {
-              id: "system-1",
-              role: "system",
+              id: createClientId("activity-session"),
+              kind: "session",
               content: buildRequiredPackageMessage(
                 visaFamily,
                 mockRequiredPackage,
               ),
               timestamp: getTimestamp(),
             },
-            ...MOCK_MESSAGES.slice(1),
           ])
+          setMessages(MOCK_MESSAGES.filter((message) => message.role !== "system"))
           setUserReport(MOCK_USER_REPORT)
           setInternalReport(MOCK_INTERNAL_REPORT)
           setSessionTime(1458)
@@ -1915,10 +2130,10 @@ export function useSessionWorkbench() {
         setSession(createdSession)
         setVisaType(visaFamily)
         setRequiredPackage(nextRequiredPackage)
-        setMessages([
+        setActivityEvents([
           {
-            id: "system-1",
-            role: "system",
+            id: createClientId("activity-session"),
+            kind: "session",
             content: buildRequiredPackageMessage(
               visaFamily,
               nextRequiredPackage,
@@ -1926,6 +2141,7 @@ export function useSessionWorkbench() {
             timestamp: getTimestamp(),
           },
         ])
+        setMessages([])
         setSessionTime(0)
 
         await fetchUserReport(createdSession.session_id)
@@ -1957,18 +2173,18 @@ export function useSessionWorkbench() {
       sendingRef.current = true
       let userMsgId: string | null = null
       let streamAccepted = false
-      streamProgressMessageIdRef.current = null
+      streamProgressEventIdRef.current = null
       const upsertStreamProgress = (
         content: string,
-        status: ChatMessage["status"] = "sending",
+        status: SessionActivityEvent["status"] = "sending",
       ) => {
-        if (streamProgressMessageIdRef.current) {
-          updateMessageContent(streamProgressMessageIdRef.current, content)
-          updateMessageStatus(streamProgressMessageIdRef.current, status)
+        if (streamProgressEventIdRef.current) {
+          updateActivityEventContent(streamProgressEventIdRef.current, content)
+          updateActivityEventStatus(streamProgressEventIdRef.current, status)
           return
         }
-        streamProgressMessageIdRef.current = appendMessage({
-          role: "system",
+        streamProgressEventIdRef.current = appendActivityEvent({
+          kind: "message",
           content,
           status,
         })
@@ -2004,8 +2220,8 @@ export function useSessionWorkbench() {
                 buildUploadedMaterial(file, attachment, mockFeedback),
                 ...prev.filter((item) => item.id !== attachment.id),
               ])
-              appendMessage({
-                role: "system",
+              appendActivityEvent({
+                kind: "upload",
                 content: mockFeedback,
               })
               successfulUploads += 1
@@ -2046,35 +2262,32 @@ export function useSessionWorkbench() {
                   null,
               })
 
-              appendMessage({
-                role: "system",
-                content: uploadFeedback || `已上传文件：${file.name}。`,
+              const uploadActivity = buildMaterialUnderstandingActivity(
+                file.name,
+                response,
+                uploadFeedback,
+              )
+              appendActivityEvent({
+                kind: uploadActivity.status === "error" ? "error" : "upload",
+                content: uploadActivity.content,
+                status: uploadActivity.status,
               })
 
               const gateProgressMessage = buildGateProgressMessage(
                 response.gate_progress?.overall_status,
               )
-              if (gateProgressMessage) {
-                appendMessage({
-                  role: "system",
+              if (
+                gateProgressMessage &&
+                uploadActivity.status !== "sending" &&
+                uploadActivity.status !== "error"
+              ) {
+                appendActivityEvent({
+                  kind: "upload",
                   content: gateProgressMessage,
                 })
               }
 
-              const requestedDocumentsMessage = buildRequestedDocumentsMessage(
-                response.requested_document_labels,
-                null,
-              )
-              if (
-                hasContent &&
-                requestedDocumentsMessage &&
-                !uploadFeedback?.includes(requestedDocumentsMessage)
-              ) {
-                appendMessage({
-                  role: "system",
-                  content: requestedDocumentsMessage,
-                })
-              }
+              queueMaterialUnderstandingRefresh(sessionId, [response])
               successfulUploads += 1
             } catch (error) {
               const fileError = getErrorMessage(
@@ -2094,9 +2307,10 @@ export function useSessionWorkbench() {
               updateMessageAttachment(userMsgId, attachment.id, {
                 upload_status: "error",
               })
-              appendMessage({
-                role: "system",
+              appendActivityEvent({
+                kind: "error",
                 content: `错误：${fileError}`,
+                status: "error",
               })
             }
           }
@@ -2109,9 +2323,9 @@ export function useSessionWorkbench() {
             )
             if (successfulUploads > 0) {
               await refreshReports(sessionId)
-              appendMessage({
-                role: "system",
-                content: buildUploadOnlySystemSummary(uploadResponses),
+              appendActivityEvent({
+                kind: "upload",
+                content: buildUploadOnlyMaterialActivitySummary(uploadResponses),
               })
             } else {
               await refreshReports(sessionId)
@@ -2123,19 +2337,10 @@ export function useSessionWorkbench() {
           setIsSending(true)
 
           if (mockMode) {
-            const mockResponses = [
-              "第一年的费用由谁支付？",
-              "你在美国有亲属吗？",
-              "以前去过美国吗？",
-              "你的父母是做什么工作的？他们对你出国留学有什么看法？",
-            ]
-            const randomResponse =
-              mockResponses[Math.floor(Math.random() * mockResponses.length)]
-
             updateMessageStatus(userMsgId, "sent")
-            appendMessage({
-              role: "officer",
-              content: randomResponse,
+            appendActivityEvent({
+              kind: "message",
+              content: "Mock 模式已记录用户消息，未生成签证官回复。",
             })
           } else {
             const runtimeModelConfig = toRuntimeModelConfig(userModelConfig)
@@ -2198,19 +2403,19 @@ export function useSessionWorkbench() {
                   clientMessageId,
                 )
             updateMessageStatus(userMsgId, "sent")
-            appendMessage({
-              role: "officer",
-              content: response.assistant_message,
-              public_reasoning: response.public_reasoning,
-            })
+            const assistantMessage =
+              buildAssistantMessageFromBackendResponse(response)
+            if (assistantMessage) {
+              appendMessage(assistantMessage)
+            }
 
-            const requestedDocumentsMessage = buildRequestedDocumentsMessage(
+            const requestedDocumentsMessage = buildEvidenceSuggestionMessage(
               response.requested_document_labels,
               response.governor_decision,
             )
             if (requestedDocumentsMessage) {
-              appendMessage({
-                role: "system",
+              appendActivityEvent({
+                kind: "message",
                 content: requestedDocumentsMessage,
               })
             }
@@ -2219,8 +2424,8 @@ export function useSessionWorkbench() {
               response.gate_progress?.overall_status,
             )
             if (gateProgressMessage) {
-              appendMessage({
-                role: "system",
+              appendActivityEvent({
+                kind: "message",
                 content: gateProgressMessage,
               })
             }
@@ -2247,6 +2452,7 @@ export function useSessionWorkbench() {
       }
     },
     [
+      appendActivityEvent,
       appendMessage,
       buildUploadedMaterial,
       createMessageAttachments,
@@ -2254,12 +2460,14 @@ export function useSessionWorkbench() {
       isSending,
       isUploading,
       mockMode,
+      queueMaterialUnderstandingRefresh,
       refreshReports,
       refreshRuntimeDebugSnapshot,
       recordRuntimeDebugEvent,
       sessionId,
+      updateActivityEventContent,
+      updateActivityEventStatus,
       updateMessageAttachment,
-      updateMessageContent,
       updateMessageStatus,
       userModelConfig,
     ],
@@ -2267,15 +2475,15 @@ export function useSessionWorkbench() {
 
   const handleContinueAnswer = useCallback(() => {
     const currentKeyQuestion = userReport?.current_key_question
-    appendMessage({
-      role: "system",
+    appendActivityEvent({
+      kind: "message",
       content:
         currentKeyQuestion && currentKeyQuestion !== "暂无"
           ? `请继续围绕“${currentKeyQuestion}”补充回答，优先说明具体事实。`
           : "请继续补充你的回答，可以提供更多细节或背景信息。",
     })
     queueComposerCommand("focus")
-  }, [appendMessage, queueComposerCommand, userReport])
+  }, [appendActivityEvent, queueComposerCommand, userReport])
 
   const handleViewDetails = useCallback(async () => {
     setIsReportModalOpen(true)
@@ -2367,13 +2575,13 @@ export function useSessionWorkbench() {
     }
 
     if (latestUserReport?.summary) {
-      appendMessage({
-        role: "system",
+      appendActivityEvent({
+        kind: "report",
         content: `本轮总结：${latestUserReport.summary}`,
       })
     }
   }, [
-    appendMessage,
+    appendActivityEvent,
     getErrorMessage,
     mockMode,
     persistHistoryEntry,
@@ -2638,8 +2846,8 @@ export function useSessionWorkbench() {
         return
       }
       if (mockMode) {
-        appendMessage({
-          role: "system",
+        appendActivityEvent({
+          kind: "debug",
           content: "[Mock] 已生成一组材料包，并写入材料库。",
         })
         setSettingsFeedback("Mock 材料包已生成。")
@@ -2648,8 +2856,8 @@ export function useSessionWorkbench() {
 
       const progressLines: string[] = []
       const normalizedSeedText = seedText?.trim() || debugMaterialSeedText
-      const progressMessageId = appendMessage({
-        role: "system",
+      const progressMessageId = appendActivityEvent({
+        kind: "debug",
         content: normalizedSeedText
           ? `正在根据会话信息生成${getDebugMaterialBundleOption(scenario).label}...`
           : `正在生成${getDebugMaterialBundleOption(scenario).label}...`,
@@ -2658,7 +2866,7 @@ export function useSessionWorkbench() {
       const updateProgress = (line: string) => {
         progressLines.push(line)
         setDebugBundleProgress([...progressLines])
-        updateMessageContent(
+        updateActivityEventContent(
           progressMessageId,
           buildDebugBundleProgressMessage(progressLines),
         )
@@ -2680,7 +2888,7 @@ export function useSessionWorkbench() {
           "ai_if_available",
         )
         setLatestDebugMaterialBundle(result)
-        updateMessageStatus(progressMessageId, "sent")
+        updateActivityEventStatus(progressMessageId, "sent")
         setSession((prev) =>
           prev
             ? {
@@ -2705,13 +2913,13 @@ export function useSessionWorkbench() {
             ...prev.filter((material) => !generatedIds.has(material.id)),
           ]
         })
-        appendMessage({
-          role: "system",
+        appendActivityEvent({
+          kind: "debug",
           content: buildDebugBundleFinalMessage(result),
         })
         if (result.assistant_message) {
           appendMessage({
-            role: "officer",
+            role: "assistant",
             content: humanizeBackendText(result.assistant_message),
             public_reasoning: isPublicReasoning(
               result.runtime_view_state?.public_reasoning,
@@ -2741,7 +2949,7 @@ export function useSessionWorkbench() {
           setSettingsFeedback("材料包已生成，前端已接收完整流式进度。")
         }
       } catch (error) {
-        updateMessageStatus(progressMessageId, "error")
+        updateActivityEventStatus(progressMessageId, "error")
         const message = getErrorMessage(
           error,
           "调试材料包生成失败，请稍后重试。",
@@ -2753,6 +2961,7 @@ export function useSessionWorkbench() {
       }
     },
     [
+      appendActivityEvent,
       appendMessage,
       debugMaterialSeedText,
       getErrorMessage,
@@ -2762,8 +2971,8 @@ export function useSessionWorkbench() {
       refreshRuntimeDebugSnapshot,
       recordRuntimeDebugEvent,
       sessionId,
-      updateMessageContent,
-      updateMessageStatus,
+      updateActivityEventContent,
+      updateActivityEventStatus,
     ],
   )
 
@@ -2794,6 +3003,7 @@ export function useSessionWorkbench() {
     setRequiredPackage(entry.required_package)
     const restoredMaterials = entry.materials.map(sanitizeHistoryMaterial)
     setMessages(hydrateHistoryMessages(entry.messages, restoredMaterials))
+    setActivityEvents([])
     setUserReport(entry.report)
     setInternalReport(null)
     setInterviewReview(null)
@@ -2841,6 +3051,7 @@ export function useSessionWorkbench() {
     isInitializing,
     initError,
     messages,
+    activityEvents,
     isSending,
     isUploading,
     chatError,

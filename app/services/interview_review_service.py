@@ -9,6 +9,7 @@ from app.agents.review_agent import InterviewReviewAgentRunner
 from app.agents.schemas import AgentRuntimeDeps, InterviewReviewReport
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
+from app.services.case_memory_service import CaseMemoryService
 from app.services.evidence_service import EvidenceService
 from app.services.report_service import ReportService
 from app.services.retrieval_service import RetrievalService
@@ -22,6 +23,7 @@ class InterviewReviewService:
         self.session_repo = SessionRepository(db)
         self.document_repo = DocumentRepository(db)
         self.read_model_service = SessionReadModelService(db)
+        self.case_memory = CaseMemoryService(db)
         self.model_factory = AgentModelFactory()
 
     def generate(self, session_id: str) -> dict[str, Any]:
@@ -77,6 +79,7 @@ class InterviewReviewService:
     def _build_review_context(self, record: Any) -> dict[str, Any]:
         read_model = self.read_model_service.build_from_record(record)
         report_service = ReportService()
+        case_board = self.case_memory.public_case_board(record.session_id)
         user_report = report_service.user_report(
             session_id=record.session_id,
             visa_family=record.declared_family or "unknown",
@@ -87,6 +90,7 @@ class InterviewReviewService:
             runtime_view_state=read_model.runtime_view_state.model_dump(mode="json"),
             interviewer_state_json=record.interviewer_state_json,
             current_focus_json=record.current_focus_json,
+            case_board=case_board,
         )
         internal_report = report_service.internal_report(
             session_id=record.session_id,
@@ -100,6 +104,7 @@ class InterviewReviewService:
             governor_history=record.governor_history_json,
             interviewer_state_json=record.interviewer_state_json,
             current_focus_json=record.current_focus_json,
+            case_board=case_board,
         )
         documents = self.document_repo.list_session_document_exports(record.session_id)
         return {
@@ -120,7 +125,9 @@ class InterviewReviewService:
                     "filename": document.filename,
                     "status": document.status,
                     "extracted_text": document.raw_text or "",
-                    "artifact": document.artifact_json or {},
+                    "artifact": self.case_memory.sanitize_public_payload(
+                        document.artifact_json or {}
+                    ),
                 }
                 for document in documents
             ],
@@ -182,7 +189,7 @@ class InterviewReviewService:
             ],
             document_findings=document_findings,
             improvement_plan=recommended_improvements[:6]
-            or ["按当前薄弱证明点补强事实和证据后，再进行一轮完整模拟。"],
+            or ["围绕当前待核实事实补强回答和证据后，再进行一轮完整模拟。"],
             next_practice_focus=[
                 "用 1-2 句话回答签证官问题，不展开成材料清单。",
                 "确保每个关键说法都能被材料内容或案例证据支持。",

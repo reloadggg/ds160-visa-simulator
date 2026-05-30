@@ -42,7 +42,7 @@ pgvector        vector search，不绕过权限和生命周期
 - `MaterialReviewAgent` 写用户可见主回复。
 - `GroundingGuard` 改写用户可见主回复。
 - `ResponseProjector` 改写用户可见主回复。
-- 前端生成 officer 主线话术。
+- 前端生成 assistant 主线话术。
 - 多 agent handoff 链接管 live turn。
 
 ## Simplification Boundary

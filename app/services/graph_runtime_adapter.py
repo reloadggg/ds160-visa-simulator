@@ -20,6 +20,7 @@ from app.services.agent_runtime_graph import (
     fake_adjudication_node,
     fake_guard_node,
 )
+from app.services.case_memory_service import CaseMemoryService
 from app.services.graph_adjudication_node import GraphAdjudicationNode
 from app.services.graph_case_state_builder import GraphCaseStateBuilder
 from app.services.graph_knowledge_plane_service import GraphKnowledgePlaneService
@@ -42,6 +43,7 @@ class GraphRuntimeAdapter:
         self.session_turn_repo = SessionTurnRepository(db)
         self.document_repo = DocumentRepository(db)
         self.evidence_repo = EvidenceRepository(db)
+        self.case_memory = CaseMemoryService(db)
         self.case_state_builder = case_state_builder or GraphCaseStateBuilder()
         self.response_mapper = response_mapper or GraphResponseMapper()
         self.adjudication_node = adjudication_node or GraphAdjudicationNode()
@@ -183,7 +185,9 @@ class GraphRuntimeAdapter:
                 case_memory.get("conflicts") or case_board.get("conflicts")
             )
             proof_points = self._list_payload(
-                case_memory.get("proof_points") or case_board.get("proof_points")
+                case_memory.get("proof_points")
+                or case_board.get("proof_points")
+                or case_board.get("open_proof_points")
             )
             latest_material = self._payload(case_board.get("latest_material"))
 
@@ -226,7 +230,7 @@ class GraphRuntimeAdapter:
                 response = fake_adjudication_node(
                     assistant_message=(
                         self._string_or_none(proof_point.get("question"))
-                        or "请补充说明这个关键证明点。"
+                        or "请补充说明这个待核实事实。"
                     ),
                     decision="continue_interview",
                     next_safe_action="continue_interview",
@@ -389,6 +393,10 @@ class GraphRuntimeAdapter:
                     record.session_id
                 ),
                 document_chunks=self._list_session_document_chunks(record.session_id),
+                case_memory_snapshot=self.case_memory.get_or_build_snapshot(
+                    record.session_id
+                ).model_dump(mode="json"),
+                evidence_graph=self.case_memory.query_evidence_graph(record.session_id),
             )
             return state.model_copy(update={"case_state": case_state})
 

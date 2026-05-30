@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import settings as settings_module
 from app.core.simple_auth import (
@@ -16,6 +16,7 @@ from app.core.simple_auth import (
 )
 from app.db.base import Base
 from app.db.models import AuthSessionRecord
+from app.db.session import get_db
 from app.main import app
 
 
@@ -23,9 +24,35 @@ ORIGIN = "http://testserver"
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def db_session_factory(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'simple-auth.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+    try:
+        yield testing_session_local
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.fixture
+def client(db_session_factory) -> Generator[TestClient, None, None]:
+    def override_get_db() -> Generator[Session, None, None]:
+        db = db_session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.state.auth_session_factory = db_session_factory
     with TestClient(app) as test_client:
         yield test_client
+    app.dependency_overrides.clear()
+    app.state.auth_session_factory = None
 
 
 @pytest.fixture
@@ -131,6 +158,55 @@ def test_logout_revokes_cookie_session(
         json={"declared_family": "f1"},
         headers={"Origin": ORIGIN},
     )
+    assert response.status_code == 401
+
+
+def test_expired_cookie_session_cannot_access_business_api(
+    client: TestClient,
+    db_session_factory,
+    enabled_auth: None,
+) -> None:
+    login(client)
+    session_id = client.cookies.get(settings_module.settings.app_auth_cookie_name)
+    assert session_id
+    with db_session_factory() as db:
+        record = db.get(AuthSessionRecord, _hash_secret(session_id))
+        assert record is not None
+        record.expires_at = datetime(2000, 1, 1, 0, 0, 0)
+        db.add(record)
+        db.commit()
+
+    response = client.post(
+        "/v1/sessions",
+        json={"declared_family": "f1"},
+        headers={"Origin": ORIGIN},
+    )
+
+    assert response.status_code == 401
+
+
+def test_idle_cookie_session_cannot_access_business_api(
+    client: TestClient,
+    db_session_factory,
+    enabled_auth: None,
+) -> None:
+    login(client)
+    session_id = client.cookies.get(settings_module.settings.app_auth_cookie_name)
+    assert session_id
+    with db_session_factory() as db:
+        record = db.get(AuthSessionRecord, _hash_secret(session_id))
+        assert record is not None
+        record.last_seen_at = datetime(2000, 1, 1, 0, 0, 0)
+        record.expires_at = datetime(2999, 1, 1, 0, 0, 0)
+        db.add(record)
+        db.commit()
+
+    response = client.post(
+        "/v1/sessions",
+        json={"declared_family": "f1"},
+        headers={"Origin": ORIGIN},
+    )
+
     assert response.status_code == 401
 
 

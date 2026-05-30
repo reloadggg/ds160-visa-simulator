@@ -92,6 +92,90 @@ def test_user_report_prefers_interviewer_state_when_gate_still_needs_documents()
     assert payload["recommended_improvements"] == ["继续回答后续问题，并保持叙事一致。"]
 
 
+def test_user_report_prefers_case_board_over_legacy_requested_documents() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-case-board-over-gate",
+        visa_family="f1",
+        governor_decision="need_more_evidence",
+        profile_json={},
+        phase_state="interview",
+        interviewer_state_json={
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+            "current_key_proof": "funding_proof",
+        },
+        current_focus_json={
+            "kind": "required_document",
+            "document_type": "funding_proof",
+        },
+        case_board={
+            "schema_version": "case_board.v1",
+            "claims": [
+                {
+                    "claim_id": "claim-funding-source",
+                    "field_path": "/funding/primary_source",
+                    "value": "parents",
+                    "status": "documented",
+                    "supporting_evidence_ids": ["ev-bank"],
+                    "conflicting_evidence_ids": [],
+                }
+            ],
+            "evidence_cards": [
+                {
+                    "evidence_id": "ev-bank",
+                    "source_type": "uploaded_file",
+                    "document_id": "doc-bank",
+                    "excerpt": "Parent sponsor bank statement",
+                    "claim_refs": ["claim-funding-source"],
+                }
+            ],
+            "proof_points": [],
+            "conflicts": [],
+        },
+    )
+
+    assert payload["missing_evidence"] == []
+    assert payload["interview_status"] == "verify_key_issue"
+
+
+def test_user_report_treats_case_board_latest_material_as_state() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-case-board-latest-material",
+        visa_family="f1",
+        governor_decision="need_more_evidence",
+        profile_json={},
+        phase_state="interview",
+        interviewer_state_json={
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+        },
+        current_focus_json={
+            "kind": "required_document",
+            "document_type": "funding_proof",
+        },
+        case_board={
+            "schema_version": "case_board.v1",
+            "latest_material": {
+                "document_id": "doc-funding",
+                "filename": "funding.pdf",
+                "understanding_status": "queued",
+                "unknowns": ["案例理解仍在更新。"],
+            },
+            "claims": [],
+            "evidence_cards": [],
+            "proof_points": [],
+            "conflicts": [],
+        },
+    )
+
+    assert payload["missing_evidence"] == []
+    assert payload["interview_status"] == "verify_key_issue"
+
+
 def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -> None:
     service = ReportService()
 
@@ -180,8 +264,45 @@ def test_user_report_keeps_runtime_focus_during_gate_review() -> None:
     assert payload["current_key_proof"] == "funding_proof"
     assert payload["missing_evidence"] == ["funding_proof"]
     assert payload["recommended_improvements"] == [
-        "围绕 funding_proof 说明事实来源；如果有材料，可作为证据补充上传。"
+        "围绕 funding_proof 说明事实来源；如果有材料，可作为补强证据上传。"
     ]
+    assert "待证明点" not in payload["summary"]
+    assert "上传对应证据" not in payload["summary"]
+
+
+def test_user_report_respects_empty_runtime_document_lists_for_missing_evidence() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-runtime-empty-documents",
+        visa_family="f1",
+        governor_decision="need_more_evidence",
+        profile_json={},
+        phase_state="interview",
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-empty-docs",
+            "decision": "need_more_evidence",
+            "governor_decision": "need_more_evidence",
+            "public_status": "waiting_key_proof",
+            "current_focus": {
+                "kind": "required_document",
+                "document_type": "funding_proof",
+            },
+            "current_key_proof": "funding_proof",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "allowed_next_actions": ["upload_key_proof"],
+        },
+        interviewer_state_json={
+            "current_key_proof": "funding_proof",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+        },
+    )
+
+    assert payload["interview_status"] == "waiting_key_proof"
+    assert payload["missing_evidence"] == []
+    assert payload["remaining_required_documents"] == []
 
 
 def test_user_report_projects_case_board_facts_conflicts_and_proof_points() -> None:

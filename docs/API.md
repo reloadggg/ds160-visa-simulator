@@ -9,7 +9,7 @@
 - 上传材料会创建 `case_understanding` 任务，材料理解结果写入 Case Memory。
 - 用户对话中的明确事实陈述也可以作为 `source_type=user_turn` 写入 Case Memory。
 - `case_board` / `case_board_delta` 用于展示事实、证据、证明点、冲突和下一问原因。
-- `gate_progress`、`requested_documents`、`remaining_required_documents` 仍保留给旧前端/API 消费者，但只能视为兼容投影。
+- `gate_progress`、`requested_documents`、`remaining_required_documents` 仍保留给旧前端/API 消费者，但只能视为兼容投影；当 requested/remaining 字段显式返回空数组时，表示本次响应没有材料缺口，不应由客户端再用旧 Gate 或历史状态补回。
 - 除 `family_not_selected` 外，材料缺失、案例理解处理中或 Gate 未 ready 不阻断聊天。
 
 核心 Case Board shape：
@@ -57,6 +57,7 @@
     }
   ],
   "conflicts": [],
+  "conflict_resolutions": [],
   "next_move": {
     "move_type": "ask",
     "question": "为什么选择这所学校？",
@@ -389,6 +390,7 @@ Response includes stable runtime fields consumed by the frontend:
   "turn_decision": {},
   "document_review": {},
   "prompt_trace": {},
+  "runtime_execution": {},
   "runtime_view_state": {},
   "phase_state": "interview"
 }
@@ -396,9 +398,11 @@ Response includes stable runtime fields consumed by the frontend:
 
 Runtime notes:
 
-- 用户可见的 `assistant_message` 只能来自 graph adjudication agent 或 deterministic safe fallback。
+- 用户可见的 `assistant_message` 只能来自当前选中的公开 interviewer runtime。
 - 材料理解、Case Memory 更新、Governor 和 guard 不会额外写第二条用户可见主回复。
-- 当 `AGENT_RUNTIME=graph` 时，主流程经 `GraphRuntimeAdapter` / LangGraph 运行。
+- 当前默认 `AGENT_RUNTIME=native_interviewer`，主流程经 `NativeInterviewerRuntimeService` 运行。
+- `AGENT_RUNTIME=graph` 只保留为当前 native interviewer 公开主链路的兼容别名；`graph_shadow` 才会旁路运行 `GraphRuntimeAdapter` / LangGraph trace。
+- `runtime_execution` 是判断真实执行路径的稳定字段；它区分配置值、请求的公开 runtime、实际公开 writer、执行引擎和 fallback。默认 `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false`，不会静默回 legacy。
 - typed adjudication 模型不可用时，fallback 会读取 `case_board.next_move` 和 `case_memory.conflicts`，不会退回“先补齐材料”的固定话术。
 
 ### `POST /v1/sessions/{session_id}/messages/stream`
@@ -434,7 +438,7 @@ Fields:
 上传语义：
 
 - 新上传只 enqueue `kind="case_understanding"`。
-- 历史 `gate_parse` job 只作为 worker 兼容 fallback 继续消费。
+- `gate_parse` 历史兼容 worker fallback 已删除；线上审计确认旧队列为空。
 - 图片上传不调用 OCR；图片 parser 只标记 `source_type=image` 和 `parser_name=multimodal_required`。
 - PDF/图片的视觉理解由 `MaterialUnderstandingService` 经多模态模型完成。
 - 上传完成后聊天可继续，不需要等待“材料齐”或“解析完成”。
@@ -488,10 +492,24 @@ Response:
     "next_move": {
       "move_type": "ask",
       "question": "请继续回答面签问题；材料理解完成后我会结合证据调整追问。",
-      "reason": "文件已保存并进入案例理解队列，当前无需等待材料齐套。",
+      "reason": "文件已保存并进入案例理解队列，当前可以继续面签对话。",
       "claim_refs": [],
       "evidence_refs": []
     }
+  },
+  "case_board_refresh": {
+    "event_type": "material_uploaded",
+    "document_id": "doc-abc123",
+    "status": "queued",
+    "understanding_status": "queued",
+    "failure_node": null,
+    "failure_message": null,
+    "debug_timeline_scope": {
+      "session_id": "sess-abc123",
+      "document_id": "doc-abc123",
+      "scope": "material_understanding"
+    },
+    "message_policy": "case_board_timeline_only"
   },
   "evidence_cards": [],
   "requested_documents": [],
@@ -499,6 +517,9 @@ Response:
   "gate_progress": {}
 }
 ```
+
+`case_board_refresh.message_policy` 固定表达上传结果只刷新 Case Board /
+Timeline，不应被前端拼成 assistant 或 system 对话气泡。
 
 ### `GET /v1/sessions/{session_id}/files/{document_id}/content`
 
@@ -523,10 +544,12 @@ Response:
   "document_status": "tombstoned",
   "case_board": {
     "schema_version": "case_board.v1",
+    "latest_material": null,
     "claims": [],
     "evidence_cards": [],
     "proof_points": [],
     "conflicts": [],
+    "conflict_resolutions": [],
     "next_move": null
   }
 }
@@ -538,7 +561,7 @@ Response:
 
 返回面向用户的准备建议报告。
 报告会携带 `case_board`，并从 Case Memory 中的 documented / stated /
-contradicted facts、proof points 和 conflicts 生成优势、薄弱证明点和风险提示。
+contradicted facts、proof points 和 conflicts 生成优势、待核实事实和风险提示。
 
 Response excerpt:
 
@@ -549,10 +572,12 @@ Response excerpt:
   "risk_level": "medium",
   "case_board": {
     "schema_version": "case_board.v1",
+    "latest_material": null,
     "claims": [],
     "evidence_cards": [],
     "proof_points": [],
-    "conflicts": []
+    "conflicts": [],
+    "conflict_resolutions": []
   },
   "strengths": [],
   "weaknesses": [],
@@ -724,6 +749,8 @@ Response:
     "remaining_required_documents": [],
     "turn_decision": {},
     "document_review": {},
+    "case_board": {"schema_version": "case_board.v1"},
+    "evidence_graph": {"schema_version": "evidence_graph.v1"},
     "prompt_trace": {},
     "runtime_view_state": {}
   }

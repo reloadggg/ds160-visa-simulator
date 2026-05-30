@@ -512,15 +512,13 @@ class RuntimeLedgerService:
         turn_record: dict[str, Any],
         focus: dict[str, Any],
     ) -> list[str]:
-        requested_documents = turn_record.get("requested_documents", [])
+        requested_documents = turn_record.get("requested_documents")
         if isinstance(requested_documents, list):
-            normalized = [
+            return [
                 document_type.strip()
                 for document_type in requested_documents
                 if isinstance(document_type, str) and document_type.strip()
             ]
-            if normalized:
-                return normalized
         focus_document_type = self._string_or_none(focus.get("document_type"))
         if focus_document_type:
             return [focus_document_type]
@@ -533,13 +531,11 @@ class RuntimeLedgerService:
     ) -> list[str]:
         remaining_required_documents = turn_record.get("remaining_required_documents")
         if isinstance(remaining_required_documents, list):
-            normalized = [
+            return [
                 item.strip()
                 for item in remaining_required_documents
                 if isinstance(item, str) and item.strip()
             ]
-            if normalized:
-                return normalized
         return list(requested_documents)
 
     def _document_review_from_turn_record(

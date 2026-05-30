@@ -9,7 +9,7 @@ from app.domain.evidence import DocumentAssessment
 from app.domain.runtime import GateOverallStatus
 from app.repositories.session_repo import SessionRepository
 
-UNDERSTANDING_JOB_KINDS = {"case_understanding", "gate_parse"}
+UNDERSTANDING_JOB_KINDS = {"case_understanding"}
 
 
 class GateRuntimeService:
@@ -104,7 +104,7 @@ class GateRuntimeService:
         gate_progress = self._build_gate_progress(gate_status)
 
         return {
-            "assistant_message": "当前处于材料门控阶段，请先选择签证家族。",
+            "assistant_message": "请先选择签证家族，这样我才能按对应签证场景开始面签问答。",
             "governor_decision": "need_more_evidence",
             "score_summary": {
                 "category_fit": 0,
@@ -272,13 +272,13 @@ class GateRuntimeService:
         ]
         trailing_text = ""
         if trailing_documents:
-            trailing_text = f" 当前仍待补的材料还有：{', '.join(trailing_documents)}。"
+            trailing_text = f" 其他可补强材料还有：{', '.join(trailing_documents)}。"
         if primary_document_item.get("status") == "uploaded":
             return (
-                f"当前最关键的证明是 {document_type}，系统正在等待解析结果。"
+                f"补强证据 {document_type} 已收到，案例理解正在更新，可以继续对话。"
                 f"{trailing_text}"
             )
-        return f"当前最缺的关键证明是 {document_type}。{trailing_text}".strip()
+        return f"当前可补强的证据是 {document_type}。{trailing_text}".strip()
 
     def _primary_requested_documents(self, required_documents: list[dict]) -> list[str]:
         primary_document_item = self._pick_primary_document(required_documents)

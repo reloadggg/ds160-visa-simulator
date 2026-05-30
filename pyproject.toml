@@ -10,6 +10,7 @@ dependencies = [
   "pydantic>=2.12.0,<2.13.0",
   "pydantic-settings>=2.10.0,<2.11.0",
   "sqlalchemy>=2.0.41,<2.1.0",
+  "psycopg[binary]>=3.2.13,<3.3.0",
   "python-multipart>=0.0.20,<0.0.21",
   "pyyaml>=6.0.2,<6.1.0",
   "pymupdf>=1.26.0,<1.27.0",

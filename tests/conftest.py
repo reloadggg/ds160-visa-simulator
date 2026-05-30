@@ -25,7 +25,7 @@ def disable_multimodal_extraction_by_default(
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "legacy")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_canary_percent", 0)
     monkeypatch.setattr(settings_module.settings, "agent_runtime_trace_enabled", True)
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
     monkeypatch.setattr(settings_module.settings, "agent_runtime_typed_adjudication_enabled", False)
     monkeypatch.setattr(settings_module.settings, "rag_enabled", False)
     monkeypatch.setattr(settings_module.settings, "siliconflow_api_key", None)

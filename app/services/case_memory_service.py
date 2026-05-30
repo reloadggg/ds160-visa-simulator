@@ -4,10 +4,16 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.models import DocumentRecord, SessionTurnRecord
+from app.db.models import (
+    CaseMemorySnapshotRecord,
+    DocumentRecord,
+    SessionTurnRecord,
+    utc_now_naive,
+)
 from app.domain.case_memory import (
     CaseClaim,
     CaseConflict,
+    CaseConflictResolution,
     CaseMemorySnapshot,
     EvidenceCard,
     InterviewNextMove,
@@ -26,6 +32,15 @@ CASE_MEMORY_USER_CLAIMS_KEY = "case_memory_claims"
 CASE_MEMORY_USER_EVIDENCE_KEY = "case_memory_evidence_cards"
 CASE_MEMORY_RESOLVED_CONFLICTS_KEY = "case_memory_resolved_conflicts"
 CASE_MEMORY_TOMBSTONE_KEY = "case_memory_tombstone"
+INTERNAL_DEBUG_METADATA_KEYS = {
+    "expected_findings",
+    "synthetic_bundle_id",
+    "debug_bundle_scenario",
+    "debug_bundle_scenario_label",
+    "scenario_label",
+    "debug_fill_scenario",
+    "debug_fill_scenario_label",
+}
 
 
 class CaseMemoryService:
@@ -73,7 +88,9 @@ class CaseMemoryService:
         document.artifact_json = artifact
         self.documents.save_document(document)
         self.db.flush()
-        return self.build_snapshot(document.session_id)
+        snapshot = self.build_snapshot(document.session_id)
+        self._persist_snapshot(document.session_id, snapshot)
+        return snapshot
 
     def add_user_turn_claims(
         self,
@@ -134,7 +151,9 @@ class CaseMemoryService:
         turn.metadata_json = metadata
         self.db.add(turn)
         self.db.flush()
-        return self.build_snapshot(session_id)
+        snapshot = self.build_snapshot(session_id)
+        self._persist_snapshot(session_id, snapshot)
+        return snapshot
 
     def extract_explicit_user_turn_claims(
         self,
@@ -182,7 +201,9 @@ class CaseMemoryService:
         interviewer_state[CASE_MEMORY_RESOLVED_CONFLICTS_KEY] = resolved
         record.interviewer_state_json = interviewer_state
         self.sessions.save(record)
-        return self.build_snapshot(session_id)
+        snapshot = self.build_snapshot(session_id)
+        self._persist_snapshot(session_id, snapshot)
+        return snapshot
 
     def tombstone_document(
         self,
@@ -202,7 +223,9 @@ class CaseMemoryService:
         document.status = "tombstoned"
         self.documents.save_document(document)
         self.db.flush()
-        return self.build_snapshot(document.session_id)
+        snapshot = self.build_snapshot(document.session_id)
+        self._persist_snapshot(document.session_id, snapshot)
+        return snapshot
 
     def build_snapshot(self, session_id: str) -> CaseMemorySnapshot:
         documents = self.documents.list_session_documents(session_id)
@@ -211,7 +234,13 @@ class CaseMemoryService:
         proof_by_id: dict[str, ProofPoint] = {}
         conflicts_by_id: dict[str, CaseConflict] = {}
         next_move: InterviewNextMove | None = None
-        resolved_conflict_ids = self._resolved_conflict_ids(session_id)
+        latest_material = self._latest_material_from_documents(documents)
+        conflict_resolutions = self._conflict_resolutions(session_id)
+        resolved_conflict_ids = {
+            resolution.conflict_id
+            for resolution in conflict_resolutions
+            if resolution.status == "resolved"
+        }
 
         for document in documents:
             if self._document_tombstoned(document):
@@ -259,6 +288,7 @@ class CaseMemoryService:
             )
 
         return CaseMemorySnapshot(
+            latest_material=latest_material,
             claims=sorted(claims_by_id.values(), key=lambda item: item.claim_id),
             evidence_cards=sorted(
                 evidence_by_id.values(),
@@ -272,13 +302,18 @@ class CaseMemoryService:
                 conflicts_by_id.values(),
                 key=lambda item: item.conflict_id,
             ),
+            conflict_resolutions=sorted(
+                conflict_resolutions,
+                key=lambda item: item.conflict_id,
+            ),
             next_move=next_move,
         )
 
     def build_board(self, session_id: str) -> dict[str, Any]:
-        snapshot = self.build_snapshot(session_id)
+        snapshot = self.get_or_build_snapshot(session_id)
         return {
             "schema_version": "case_board.v1",
+            "latest_material": snapshot.latest_material,
             "claims": [item.model_dump(mode="json") for item in snapshot.claims],
             "evidence_cards": [
                 item.model_dump(mode="json") for item in snapshot.evidence_cards
@@ -289,12 +324,214 @@ class CaseMemoryService:
             "conflicts": [
                 item.model_dump(mode="json") for item in snapshot.conflicts
             ],
+            "conflict_resolutions": [
+                item.model_dump(mode="json")
+                for item in snapshot.conflict_resolutions
+            ],
             "next_move": (
                 None
                 if snapshot.next_move is None
                 else snapshot.next_move.model_dump(mode="json")
             ),
         }
+
+    def get_snapshot(self, session_id: str) -> CaseMemorySnapshot | None:
+        record = self.db.get(CaseMemorySnapshotRecord, session_id)
+        if record is None:
+            return None
+        payload = dict(record.snapshot_json or {})
+        return CaseMemorySnapshot.model_validate(payload)
+
+    def get_or_build_snapshot(self, session_id: str) -> CaseMemorySnapshot:
+        snapshot = self.get_snapshot(session_id)
+        if snapshot is not None:
+            return snapshot
+        snapshot = self.build_snapshot(session_id)
+        if self.sessions.get(session_id) is not None:
+            self._persist_snapshot(session_id, snapshot)
+        return snapshot
+
+    def query_evidence_graph(
+        self,
+        session_id: str,
+        *,
+        field_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        snapshot = self.get_or_build_snapshot(session_id)
+        selected_field_paths = set(_dedupe(field_paths or []))
+        claims = [
+            claim
+            for claim in snapshot.claims
+            if not selected_field_paths or claim.field_path in selected_field_paths
+        ]
+        claim_ids = {claim.claim_id for claim in claims}
+        proof_points = [
+            proof
+            for proof in snapshot.proof_points
+            if not selected_field_paths or set(proof.claim_refs).intersection(claim_ids)
+        ]
+        conflicts = [
+            conflict
+            for conflict in snapshot.conflicts
+            if not selected_field_paths
+            or set(conflict.claim_ids).intersection(claim_ids)
+        ]
+        evidence_cards = self._evidence_cards_for_query(
+            snapshot=snapshot,
+            claim_ids=claim_ids,
+            proof_points=proof_points,
+            conflicts=conflicts,
+            filtered=bool(selected_field_paths),
+        )
+        return {
+            "schema_version": "evidence_graph.v1",
+            "session_id": session_id,
+            "field_paths": sorted(selected_field_paths),
+            "claims": [item.model_dump(mode="json") for item in claims],
+            "evidence_cards": [
+                item.model_dump(mode="json") for item in evidence_cards
+            ],
+            "proof_points": [
+                item.model_dump(mode="json") for item in proof_points
+            ],
+            "conflicts": [item.model_dump(mode="json") for item in conflicts],
+            "conflict_resolutions": [
+                item.model_dump(mode="json")
+                for item in snapshot.conflict_resolutions
+            ],
+            "edges": self._evidence_graph_edges(
+                claims=claims,
+                evidence_cards=evidence_cards,
+                proof_points=proof_points,
+                conflicts=conflicts,
+            ),
+            "next_move": (
+                None
+                if snapshot.next_move is None
+                else snapshot.next_move.model_dump(mode="json")
+            ),
+        }
+
+    def public_case_board(self, session_id: str) -> dict[str, Any]:
+        return self.sanitize_public_payload(self.build_board(session_id))
+
+    def public_evidence_graph(
+        self,
+        session_id: str,
+        *,
+        field_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self.sanitize_public_payload(
+            self.query_evidence_graph(session_id, field_paths=field_paths)
+        )
+
+    def sanitize_public_payload(self, value: Any) -> Any:
+        return self._sanitize_public_payload(value)
+
+    def _persist_snapshot(
+        self,
+        session_id: str,
+        snapshot: CaseMemorySnapshot,
+    ) -> None:
+        payload = {
+            "schema_version": "case_memory_snapshot.v1",
+            **snapshot.model_dump(mode="json"),
+        }
+        record = self.db.get(CaseMemorySnapshotRecord, session_id)
+        if record is None:
+            record = CaseMemorySnapshotRecord(
+                session_id=session_id,
+                snapshot_json=payload,
+                updated_at=utc_now_naive(),
+            )
+        else:
+            record.snapshot_json = payload
+            record.updated_at = utc_now_naive()
+        self.db.add(record)
+        self.db.flush()
+
+    def _evidence_cards_for_query(
+        self,
+        *,
+        snapshot: CaseMemorySnapshot,
+        claim_ids: set[str],
+        proof_points: list[ProofPoint],
+        conflicts: list[CaseConflict],
+        filtered: bool,
+    ) -> list[EvidenceCard]:
+        if not filtered:
+            return list(snapshot.evidence_cards)
+
+        evidence_ids: set[str] = set()
+        for claim in snapshot.claims:
+            if claim.claim_id in claim_ids:
+                evidence_ids.update(claim.supporting_evidence_ids)
+                evidence_ids.update(claim.conflicting_evidence_ids)
+        for proof in proof_points:
+            evidence_ids.update(proof.evidence_refs)
+        for conflict in conflicts:
+            evidence_ids.update(conflict.evidence_ids)
+
+        return [
+            evidence
+            for evidence in snapshot.evidence_cards
+            if evidence.evidence_id in evidence_ids
+            or set(evidence.claim_refs).intersection(claim_ids)
+        ]
+
+    def _evidence_graph_edges(
+        self,
+        *,
+        claims: list[CaseClaim],
+        evidence_cards: list[EvidenceCard],
+        proof_points: list[ProofPoint],
+        conflicts: list[CaseConflict],
+    ) -> list[dict[str, Any]]:
+        evidence_ids = {evidence.evidence_id for evidence in evidence_cards}
+        claim_ids = {claim.claim_id for claim in claims}
+        edges_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+        def add_edge(source: str, target: str, relation: str) -> None:
+            key = (source, target, relation)
+            edges_by_key.setdefault(
+                key,
+                {
+                    "source": source,
+                    "target": target,
+                    "relation": relation,
+                },
+            )
+
+        for claim in claims:
+            for evidence_id in claim.supporting_evidence_ids:
+                if evidence_id in evidence_ids:
+                    add_edge(claim.claim_id, evidence_id, "support")
+            for evidence_id in claim.conflicting_evidence_ids:
+                if evidence_id in evidence_ids:
+                    add_edge(claim.claim_id, evidence_id, "conflict")
+        for evidence in evidence_cards:
+            for claim_id in evidence.claim_refs:
+                if claim_id in claim_ids:
+                    add_edge(claim_id, evidence.evidence_id, "support")
+        for proof in proof_points:
+            for claim_id in proof.claim_refs:
+                if claim_id in claim_ids:
+                    add_edge(proof.proof_point_id, claim_id, "requires_claim")
+            for evidence_id in proof.evidence_refs:
+                if evidence_id in evidence_ids:
+                    add_edge(proof.proof_point_id, evidence_id, "requires_evidence")
+        for conflict in conflicts:
+            for claim_id in conflict.claim_ids:
+                if claim_id in claim_ids:
+                    add_edge(conflict.conflict_id, claim_id, "conflict")
+            for evidence_id in conflict.evidence_ids:
+                if evidence_id in evidence_ids:
+                    add_edge(conflict.conflict_id, evidence_id, "conflict")
+
+        return [
+            edges_by_key[key]
+            for key in sorted(edges_by_key, key=lambda item: (item[0], item[1], item[2]))
+        ]
 
     def _document_tombstoned(self, document: DocumentRecord) -> bool:
         artifact = dict(document.artifact_json or {})
@@ -313,6 +550,22 @@ class CaseMemoryService:
             return None
         return MaterialUnderstandingResult.model_validate(payload)
 
+    def _latest_material_from_documents(
+        self,
+        documents: list[DocumentRecord],
+    ) -> dict[str, Any] | None:
+        for document in reversed(documents):
+            if self._document_tombstoned(document):
+                continue
+            artifact = dict(document.artifact_json or {})
+            delta = artifact.get("case_board_delta")
+            if not isinstance(delta, dict):
+                continue
+            latest_material = delta.get("latest_material")
+            if isinstance(latest_material, dict) and latest_material:
+                return self.sanitize_public_payload(latest_material)
+        return None
+
     def _user_claims_from_turn(self, turn: SessionTurnRecord) -> list[CaseClaim]:
         metadata = dict(turn.metadata_json or {})
         return [
@@ -327,21 +580,31 @@ class CaseMemoryService:
             for item in _list_payload(metadata.get(CASE_MEMORY_USER_EVIDENCE_KEY))
         ]
 
-    def _resolved_conflict_ids(self, session_id: str) -> set[str]:
+    def _conflict_resolutions(
+        self,
+        session_id: str,
+    ) -> list[CaseConflictResolution]:
         record = self.sessions.get(session_id)
         if record is None:
-            return set()
+            return []
         interviewer_state = dict(record.interviewer_state_json or {})
         resolved = interviewer_state.get(CASE_MEMORY_RESOLVED_CONFLICTS_KEY)
         if not isinstance(resolved, dict):
-            return set()
-        return {
-            conflict_id
-            for conflict_id, payload in resolved.items()
-            if isinstance(conflict_id, str)
-            and isinstance(payload, dict)
-            and payload.get("status") == "resolved"
-        }
+            return []
+        resolutions: list[CaseConflictResolution] = []
+        for conflict_id, payload in resolved.items():
+            if not isinstance(conflict_id, str) or not isinstance(payload, dict):
+                continue
+            if payload.get("status") != "resolved":
+                continue
+            note = payload.get("note")
+            resolutions.append(
+                CaseConflictResolution(
+                    conflict_id=conflict_id,
+                    note=note if isinstance(note, str) else None,
+                )
+            )
+        return resolutions
 
     def _merge_claim(
         self,
@@ -589,6 +852,20 @@ class CaseMemoryService:
             claim_refs=list(conflict.claim_ids),
             evidence_refs=list(conflict.evidence_ids),
         )
+
+    def _sanitize_public_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._sanitize_public_payload(item)
+                for key, item in value.items()
+                if key not in INTERNAL_DEBUG_METADATA_KEYS
+            }
+        if isinstance(value, list):
+            return [
+                self._sanitize_public_payload(item)
+                for item in value
+            ]
+        return value
 
 
 def _dedupe(values: list[str]) -> list[str]:

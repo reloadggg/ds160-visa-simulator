@@ -3,6 +3,7 @@ import type {
   AllowedActionCode,
   BackendDocumentAssessment,
   BackendCaseBoardDelta,
+  BackendCaseBoardRefresh,
   BackendCaseClaim,
   BackendCaseConflict,
   BackendCaseDocumentTypeCandidate,
@@ -20,6 +21,7 @@ import type {
   BackendUserReport,
   DocumentAssessment,
   CaseBoardDelta,
+  CaseBoardRefresh,
   CaseClaim,
   CaseConflict,
   CaseDocumentTypeCandidate,
@@ -79,7 +81,7 @@ const INTERVIEW_STATUS_LABELS: Record<string, string> = {
   need_more_evidence: "建议补强证据链",
   route_correction: "签证类型/目的需纠正",
   verify_key_issue: "关键事实待核实",
-  waiting_key_proof: "待核验关键证据",
+  waiting_key_proof: "待核实关键事实",
   high_risk_review: "高风险复核建议",
   simulated_refusal: "模拟结果：建议拒签",
   status_pending: "状态待确认",
@@ -90,7 +92,7 @@ const BACKEND_TEXT_LABELS: Record<string, string> = {
   need_more_evidence: "建议补强证据链",
   route_correction: "签证类型/目的需纠正",
   verify_key_issue: "关键事实待核实",
-  waiting_key_proof: "待核验关键证据",
+  waiting_key_proof: "待核实关键事实",
   high_risk_review: "高风险复核建议",
   simulated_refusal: "模拟结果：建议拒签",
   high_risk: "高风险",
@@ -145,10 +147,10 @@ const ACTION_LABELS: Record<
     intent: "continue",
   },
   upload_key_proof: {
-    title: "上传关键证明",
+    title: "上传补强证据",
     description:
-      "当前主线仍缺少关键证明材料，上传相关文件后可帮助系统继续判断。",
-    cta_text: "上传材料",
+      "当前主线仍有待核实事实，上传相关文件可帮助系统理解证据来源。",
+    cta_text: "上传证据",
     intent: "upload",
   },
   explain_missing_proof: {
@@ -554,6 +556,18 @@ function mapInterviewNextMove(
   }
 }
 
+function mapMaterialUnderstandingError(
+  error?: { code?: string | null; message?: string | null } | null,
+) {
+  if (!error?.code && !error?.message) {
+    return null
+  }
+  return {
+    code: error.code ?? null,
+    message: humanizeBackendText(error.message) || null,
+  }
+}
+
 function compactMapped<TInput, TOutput>(
   values: TInput[] | undefined,
   mapper: (value: TInput) => TOutput | null,
@@ -578,6 +592,9 @@ function mapCaseBoardDelta(
           document_id: latest.document_id ?? null,
           filename: latest.filename ?? null,
           understanding_status: latest.understanding_status ?? null,
+          understanding_error: mapMaterialUnderstandingError(
+            latest.understanding_error,
+          ),
           document_type: latest.document_type ?? null,
           document_type_label: nullableDocumentLabel(latest.document_type),
           document_type_candidates: candidates,
@@ -596,6 +613,31 @@ function mapCaseBoardDelta(
     ),
     conflicts: compactMapped(delta.conflicts, mapCaseConflict),
     next_move: mapInterviewNextMove(delta.next_move),
+  }
+}
+
+function mapCaseBoardRefresh(
+  refresh?: BackendCaseBoardRefresh | null,
+): CaseBoardRefresh | null {
+  if (!refresh) {
+    return null
+  }
+  return {
+    eventType: refresh.event_type ?? refresh.eventType ?? "material_uploaded",
+    documentId: refresh.document_id ?? refresh.documentId ?? null,
+    status: refresh.status ?? null,
+    understandingStatus:
+      refresh.understanding_status ?? refresh.understandingStatus ?? null,
+    failureNode: refresh.failure_node ?? refresh.failureNode ?? null,
+    failureMessage:
+      humanizeBackendText(refresh.failure_message ?? refresh.failureMessage) ||
+      null,
+    debugTimelineScope:
+      refresh.debug_timeline_scope ?? refresh.debugTimelineScope ?? null,
+    messagePolicy:
+      refresh.message_policy ??
+      refresh.messagePolicy ??
+      "case_board_timeline_only",
   }
 }
 
@@ -744,6 +786,9 @@ export function mapFileUploadResponse(
   const mainFlowFeedback = mapFileFeedback(payload.main_flow_feedback)
   const documentAssessment = mapDocumentAssessment(payload.document_assessment)
   const caseBoardDelta = mapCaseBoardDelta(payload.case_board_delta)
+  const caseBoardRefresh = mapCaseBoardRefresh(
+    payload.case_board_refresh ?? payload.caseBoardRefresh,
+  )
   const evidenceCards = compactMapped(payload.evidence_cards, mapCaseEvidenceCard)
   const documentTypeCandidates = normalizeStringList(
     payload.document_type_candidates,
@@ -763,6 +808,7 @@ export function mapFileUploadResponse(
     job_id: payload.job_id,
     job_status: payload.job_status,
     understanding_status: payload.understanding_status ?? null,
+    understanding_error: mapMaterialUnderstandingError(payload.understanding_error),
     document_type: payload.document_type,
     document_type_label: nullableDocumentLabel(payload.document_type),
     document_assessment: documentAssessment,
@@ -776,6 +822,7 @@ export function mapFileUploadResponse(
     main_flow_feedback: mainFlowFeedback,
     evidence_cards: evidenceCards,
     case_board_delta: caseBoardDelta,
+    caseBoardRefresh,
     requested_documents: requestedDocuments,
     requested_document_labels: requestedDocuments.map(toDocumentLabel),
     remaining_required_documents: remainingRequiredDocuments,

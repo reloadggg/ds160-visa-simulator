@@ -5,6 +5,12 @@ import { Spinner } from "@/components/ui/spinner"
 import { User, FileText, Zap, ArrowRight, AlertCircle, BrainCircuit } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { UserReport, AllowedAction, UploadedMaterial } from "@/lib/api/types"
+import {
+  isMaterialUnderstandingFailed,
+  materialUnderstandingErrorMessage,
+  materialUnderstandingStatus,
+} from "@/lib/upload-feedback-policy"
+import { selectCaseUnderstandingPresentation } from "@/lib/case-board-presentation-policy"
 
 interface AnalysisPanelProps {
   report: UserReport | null
@@ -39,14 +45,16 @@ export function AnalysisPanel({
   const riskConfig = report ? riskLevelConfig[report.risk_level] : null
   const containerWidth = mode === "coach" ? "w-80 2xl:w-96" : "w-72 2xl:w-80"
   const primaryAction = report?.allowed_next_actions[0] ?? null
-  const understoodClaims = materials.flatMap((material) => material.claims ?? [])
-  const evidenceCards = materials.flatMap((material) => material.evidence_cards ?? [])
-  const conflicts = materials.flatMap((material) => material.conflicts ?? [])
-  const latestMaterial = [...materials].reverse().find(
-    (material) => material.understanding_status || material.claims?.length || material.evidence_cards?.length,
+  const caseUnderstanding = selectCaseUnderstandingPresentation(
+    report?.case_board,
+    materials,
   )
-  const latestNextMove =
-    latestMaterial?.next_move ?? latestMaterial?.case_board_delta?.next_move ?? null
+  const understoodClaims = caseUnderstanding.claims
+  const evidenceCards = caseUnderstanding.evidenceCards
+  const conflicts = caseUnderstanding.conflicts
+  const latestMaterial = caseUnderstanding.latestMaterialStatusSource
+  const failedMaterials = materials.filter(isMaterialUnderstandingFailed)
+  const latestNextMove = caseUnderstanding.latestNextMove
   const visibleClaims = understoodClaims.slice(0, mode === "coach" ? 5 : 3)
 
   if (isLoading) {
@@ -115,7 +123,7 @@ export function AnalysisPanel({
           </div>
           {report.current_key_proof_label && (
             <div className="flex min-w-0 items-center justify-between gap-3">
-              <span className="text-sm text-muted-foreground">关键证明：</span>
+              <span className="text-sm text-muted-foreground">待核实点：</span>
               <span className="min-w-0 max-w-[150px] truncate text-right text-sm font-medium text-foreground">
                 {report.current_key_proof_label}
               </span>
@@ -158,16 +166,35 @@ export function AnalysisPanel({
           </div>
 
           {latestMaterial ? (
-            <div className="rounded-xl border border-border bg-muted/20 px-3 py-2">
+            <div
+              className={cn(
+                "rounded-xl border px-3 py-2",
+                isMaterialUnderstandingFailed(latestMaterial)
+                  ? "border-destructive/25 bg-destructive/10"
+                  : "border-border bg-muted/20",
+              )}
+            >
               <div className="text-xs text-muted-foreground">最近材料</div>
               <div className="mt-1 min-w-0 truncate text-sm font-medium text-foreground">
-                {latestMaterial.document_type_label ?? latestMaterial.name}
+                {caseUnderstanding.latestMaterialName ?? "材料"}
               </div>
               {latestMaterial.understanding_status ? (
                 <div className="mt-1 text-xs text-muted-foreground">
-                  理解状态：{latestMaterial.understanding_status}
+                  理解状态：{materialUnderstandingStatus(latestMaterial)}
                 </div>
               ) : null}
+              {isMaterialUnderstandingFailed(latestMaterial) ? (
+                <div className="mt-1 line-clamp-2 break-words text-xs leading-5 text-destructive">
+                  {materialUnderstandingErrorMessage(latestMaterial) ??
+                    "材料理解失败，请重新上传或稍后重试。"}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {failedMaterials.length ? (
+            <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+              {failedMaterials.length} 份材料理解失败，打开材料库查看原因。
             </div>
           ) : null}
 

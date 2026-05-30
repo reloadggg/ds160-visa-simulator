@@ -175,14 +175,14 @@ export function ReportModal({
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm text-muted-foreground">关键问题</span>
+                        <span className="text-sm text-muted-foreground">当前问题</span>
                         <span className="text-sm font-medium text-right max-w-[200px]">
                           {userReport.current_key_question}
                         </span>
                       </div>
                       {userReport.current_key_proof_label && (
                         <div className="flex items-center justify-between">
-                          <span className="text-sm text-muted-foreground">关键证明</span>
+                          <span className="text-sm text-muted-foreground">待核实点</span>
                           <span className="text-sm font-medium text-right max-w-[200px]">
                             {userReport.current_key_proof_label}
                           </span>
@@ -202,7 +202,7 @@ export function ReportModal({
                         <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
                           <FileText className="w-4 h-4 text-primary" />
                         </div>
-                        薄弱证明点
+                        待核实事实
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -225,7 +225,7 @@ export function ReportModal({
                           ))}
                         </ul>
                       ) : (
-                        <p className="text-sm text-muted-foreground">暂无明确薄弱证明点</p>
+                        <p className="text-sm text-muted-foreground">暂无明确待核实事实</p>
                       )}
                     </CardContent>
                   </Card>

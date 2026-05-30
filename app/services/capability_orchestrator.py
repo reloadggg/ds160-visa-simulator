@@ -96,9 +96,9 @@ class CapabilityOrchestrator:
                 governor_decision=governor_decision,
                 completed=document_review is not None,
                 reason=(
-                    "基于当前材料、门控进度和既有风险生成材料核验结论"
+                    "基于当前证据、案例理解进度和既有风险生成证据核验结论"
                     if document_review is not None
-                    else "当前回合没有足够的材料核验上下文"
+                    else "当前回合没有足够的证据核验上下文"
                 ),
                 summary=(
                     f"status={document_review['review_status']}"
@@ -620,6 +620,7 @@ class CapabilityOrchestrator:
             for document in review_context.get("documents", [])
             if isinstance(document, dict)
         ]
+        case_board = self._payload(review_context.get("case_board"))
         return {
             "document_count": len(documents),
             "document_ids": [
@@ -627,7 +628,53 @@ class CapabilityOrchestrator:
                 for document in documents[:8]
                 if document.get("document_id")
             ],
+            "case_memory": {
+                "claims": len(self._list_payload(case_board.get("claims"))),
+                "evidence_cards": len(
+                    self._list_payload(case_board.get("evidence_cards"))
+                ),
+                "proof_points": len(
+                    self._list_payload(case_board.get("proof_points"))
+                ),
+                "conflicts": len(self._list_payload(case_board.get("conflicts"))),
+            },
         }
+
+    def _has_case_memory_state(self, case_board: dict[str, Any]) -> bool:
+        return any(
+            self._list_payload(case_board.get(key))
+            for key in ("claims", "evidence_cards", "proof_points", "conflicts")
+        )
+
+    def _case_board_conflict_field_paths(
+        self,
+        case_board: dict[str, Any],
+        conflict: dict[str, Any],
+    ) -> list[str]:
+        conflict_claim_ids = set(self._string_list(conflict.get("claim_ids")))
+        field_paths: list[str] = []
+        for claim in self._list_payload(case_board.get("claims")):
+            if claim.get("claim_id") not in conflict_claim_ids:
+                continue
+            field_path = self._string_or_none(claim.get("field_path"))
+            if field_path and field_path not in field_paths:
+                field_paths.append(field_path)
+        return field_paths
+
+    def _case_board_conflict_document_ids(
+        self,
+        case_board: dict[str, Any],
+        conflict: dict[str, Any],
+    ) -> list[str]:
+        conflict_evidence_ids = set(self._string_list(conflict.get("evidence_ids")))
+        document_ids: list[str] = []
+        for evidence in self._list_payload(case_board.get("evidence_cards")):
+            if evidence.get("evidence_id") not in conflict_evidence_ids:
+                continue
+            document_id = self._string_or_none(evidence.get("document_id"))
+            if document_id and document_id not in document_ids:
+                document_ids.append(document_id)
+        return document_ids
 
     def _payload(self, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
@@ -745,8 +792,11 @@ class CapabilityOrchestrator:
 
         profile_snapshot = self._payload(dynamic_turn_context.get("profile_snapshot"))
         current_focus = self._payload(dynamic_turn_context.get("current_focus"))
+        case_board = self._payload(dynamic_turn_context.get("case_board"))
+        evidence_graph = self._payload(dynamic_turn_context.get("evidence_graph"))
         if (
             not documents
+            and not self._has_case_memory_state(case_board)
             and not gate_progress.get("required_documents")
             and not evidence_digest.get("missing_evidence")
             and not advisory_context.get("risk_codes")
@@ -759,6 +809,8 @@ class CapabilityOrchestrator:
             "evidence_digest": evidence_digest,
             "advisory_context": advisory_context,
             "profile_claims": self._profile_claims(profile_snapshot),
+            "case_board": case_board,
+            "evidence_graph": evidence_graph,
             "documents": documents,
         }
 
@@ -834,7 +886,7 @@ class CapabilityOrchestrator:
                 {
                     "conflict_type": "claim_vs_document",
                     "severity": "medium",
-                    "summary": "当前口头说明仍未正面回应材料核验点。",
+                    "summary": "当前口头说明仍未正面回应证据核验点。",
                     "field_paths": [],
                     "document_ids": [],
                     "evidence_refs": [],
@@ -860,15 +912,15 @@ class CapabilityOrchestrator:
             recommended_next_step = "clarify_conflict"
 
         if review_status == "high_risk":
-            reviewer_summary = "材料核验已识别高风险冲突，当前应先围绕冲突点复核，不宜继续普通追问。"
+            reviewer_summary = "证据核验已识别高风险冲突，当前应先围绕冲突点复核，不宜继续普通追问。"
         elif review_status == "awaiting_parse":
-            reviewer_summary = "已有材料进入解析队列，但关键核验仍未完成，不能把上传评估直接当作已验证事实。"
+            reviewer_summary = "已有材料进入解析队列，但证据核验仍未完成，不能把上传评估直接当作已验证事实。"
         elif review_status == "awaiting_documents":
-            reviewer_summary = "当前仍有关键材料缺失，应一次性告知完整待补清单，并标出当前最优先材料。"
+            reviewer_summary = "当前仍有待核实事实缺少证据支撑，应标出当前最优先的补强证据。"
         elif review_status == "needs_clarification":
-            reviewer_summary = "材料与口头说明之间仍有未解开的核验点，需要先做定向澄清。"
+            reviewer_summary = "证据与口头说明之间仍有未解开的核验点，需要先做定向澄清。"
         else:
-            reviewer_summary = "当前关键材料已形成基础核验结论，可继续围绕主线问答。"
+            reviewer_summary = "当前关键证据已形成基础核验结论，可继续围绕主线问答。"
 
         return DocumentReviewResult(
             review_status=review_status,
@@ -890,6 +942,12 @@ class CapabilityOrchestrator:
     ) -> dict[str, Any] | None:
         if not review_context:
             return None
+
+        case_memory_review = self._fallback_document_review_from_case_board(
+            self._payload(review_context.get("case_board"))
+        )
+        if case_memory_review is not None:
+            return case_memory_review
 
         documents = [
             document
@@ -1045,8 +1103,86 @@ class CapabilityOrchestrator:
             unresolved_verification_points=unresolved_points,
             suspicious_documents=[],
             reviewer_summary=(
-                "材料核验根据已提交材料字段识别到冲突或待核验缺口，"
+                "证据核验根据已提交材料字段识别到冲突或待核验缺口，"
                 "需要先围绕这些点复核。"
+            ),
+            recommended_next_step=recommended_next_step,
+        ).model_dump(mode="json")
+
+    def _fallback_document_review_from_case_board(
+        self,
+        case_board: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._has_case_memory_state(case_board):
+            return None
+
+        conflicts = [
+            item
+            for item in self._list_payload(case_board.get("conflicts"))
+            if item.get("summary")
+        ]
+        proof_points = [
+            item
+            for item in self._list_payload(case_board.get("proof_points"))
+            if item.get("status") in {"missing", "partial", "contradicted"}
+        ]
+        if not conflicts and not proof_points:
+            return None
+
+        high_conflicts = [
+            item for item in conflicts if item.get("severity") == "high"
+        ]
+        active_conflicts = high_conflicts or conflicts
+        claim_conflicts = [
+            {
+                "conflict_type": "claim_vs_document",
+                "severity": self._string_or_none(conflict.get("severity")) or "medium",
+                "summary": conflict["summary"],
+                "field_paths": self._case_board_conflict_field_paths(
+                    case_board,
+                    conflict,
+                ),
+                "document_ids": self._case_board_conflict_document_ids(
+                    case_board,
+                    conflict,
+                ),
+                "evidence_refs": self._string_list(conflict.get("evidence_ids")),
+            }
+            for conflict in active_conflicts[:3]
+        ]
+        unresolved_points = [
+            self._string_or_none(proof.get("proof_point_id"))
+            or self._string_or_none(proof.get("question"))
+            for proof in proof_points
+        ]
+        unresolved_points = [
+            item for item in unresolved_points if item is not None
+        ]
+        review_status = "reviewed"
+        recommended_next_step = "continue_interview"
+        if high_conflicts:
+            review_status = "high_risk"
+            recommended_next_step = "high_risk_review"
+        elif claim_conflicts:
+            review_status = "needs_clarification"
+            recommended_next_step = "clarify_conflict"
+        elif unresolved_points:
+            review_status = "awaiting_documents"
+            recommended_next_step = "request_documents"
+
+        return DocumentReviewResult(
+            review_status=review_status,
+            primary_document=None,
+            remaining_required_documents=unresolved_points,
+            verified_documents=[],
+            cross_document_conflicts=[],
+            claim_conflicts=claim_conflicts,
+            unresolved_verification_points=unresolved_points,
+            suspicious_documents=[],
+            reviewer_summary=(
+                active_conflicts[0]["summary"]
+                if active_conflicts
+                else "Case Memory 显示仍有 proof point 未完成。"
             ),
             recommended_next_step=recommended_next_step,
         ).model_dump(mode="json")
@@ -1389,6 +1525,8 @@ class CapabilityOrchestrator:
         digest_remaining = self._string_list(
             evidence_digest.get("remaining_required_documents")
         )
+        if "remaining_required_documents" in evidence_digest:
+            return digest_remaining
         current_focus_document_type = self._string_or_none(
             evidence_digest.get("current_focus_document_type")
         )

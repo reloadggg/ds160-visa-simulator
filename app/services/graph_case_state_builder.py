@@ -69,6 +69,8 @@ class GraphCaseStateBuilder:
         documents: list[Any] | None = None,
         evidence_items: list[Any] | None = None,
         document_chunks: list[Any] | None = None,
+        case_memory_snapshot: dict[str, Any] | None = None,
+        evidence_graph: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_turns = self._normalize_turns(turns)
         recent_turns = normalized_turns[-self.max_recent_turns :] if self.max_recent_turns else []
@@ -77,6 +79,19 @@ class GraphCaseStateBuilder:
         normalized_evidence = self._normalize_evidence_items(evidence_items or [])
         normalized_chunks = self._normalize_document_chunks(document_chunks or [])
         gate_status = self._payload(getattr(record, "gate_status_json", None))
+        case_memory = (
+            self._sanitize_public_payload(self._payload(case_memory_snapshot))
+            if case_memory_snapshot
+            else self._build_case_memory_snapshot(
+                normalized_documents,
+                normalized_turns,
+            )
+        )
+        case_board = self._build_case_board(
+            normalized_documents,
+            normalized_turns,
+            case_memory=case_memory,
+        )
 
         return {
             "schema_version": "graph_case_state.v1",
@@ -112,13 +127,10 @@ class GraphCaseStateBuilder:
             "documents": normalized_documents,
             "document_chunks": normalized_chunks,
             "evidence_items": normalized_evidence,
-            "case_memory": self._build_case_memory_snapshot(
-                normalized_documents,
-                normalized_turns,
-            ),
-            "case_board": self._build_case_board(
-                normalized_documents,
-                normalized_turns,
+            "case_memory": case_memory,
+            "case_board": case_board,
+            "evidence_graph": self._sanitize_public_payload(
+                self._payload(evidence_graph)
             ),
             "evidence_digest": self._build_evidence_digest(
                 documents=normalized_documents,
@@ -337,8 +349,13 @@ class GraphCaseStateBuilder:
         self,
         documents: list[dict[str, Any]],
         turns: list[dict[str, Any]] | None = None,
+        *,
+        case_memory: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        case_memory = self._build_case_memory_snapshot(documents, turns)
+        case_memory = self._payload(case_memory) or self._build_case_memory_snapshot(
+            documents,
+            turns,
+        )
         latest_material: dict[str, Any] = {}
         for document in reversed(documents):
             if document.get("status") in {"deleted", "tombstoned"}:

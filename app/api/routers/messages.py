@@ -7,11 +7,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, model_validator
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.agents.user_model_config import user_model_runtime
 from app.core.settings import settings
-from app.db.session import get_db
+from app.db.session import get_db, session_factory_from_session
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.message_service import (
     DuplicateTurnInProgressError,
@@ -89,11 +89,7 @@ def stream_message(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if runtime_config is not None and not settings.allow_user_model_streaming:
         raise HTTPException(status_code=403, detail="当前部署未启用用户模型流式输出。")
-    stream_session_factory = sessionmaker(
-        bind=db.get_bind(),
-        autocommit=False,
-        autoflush=False,
-    )
+    stream_session_factory = session_factory_from_session(db)
 
     def event_stream() -> Iterator[str]:
         yield _sse_event("accepted", {"session_id": session_id})

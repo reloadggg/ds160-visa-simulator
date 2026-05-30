@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord
+from app.domain.agent_runtime import DS160GraphState
 from app.domain.case_memory import (
     CaseClaim,
     EvidenceCard,
@@ -337,6 +338,54 @@ def test_graph_runtime_adapter_fallback_uses_case_board_next_move(tmp_path) -> N
         )
         assert adjudication_event["payload"]["case_memory_fallback"] is True
         assert adjudication_event["payload"]["fallback_reason"] == "case_board_next_move"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_graph_runtime_adapter_fallback_reads_open_proof_points_from_case_board(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'graph-runtime-open-proof.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            node = GraphRuntimeAdapter(db)._case_memory_fallback_adjudication_node()
+            state = DS160GraphState(
+                session_id="sess-graph-open-proof",
+                run_id="run-open-proof",
+                case_state={
+                    "case_board": {
+                        "schema_version": "case_board.v1",
+                        "claims": [],
+                        "evidence_cards": [],
+                        "open_proof_points": [
+                            {
+                                "proof_point_id": "proof-funding-source",
+                                "question": "Who will pay for your first year?",
+                                "status": "partial",
+                            }
+                        ],
+                        "conflicts": [],
+                    },
+                    "case_memory": {},
+                },
+            )
+
+            updated = node(state)
+
+        assert updated.adjudication_result is not None
+        assert updated.adjudication_result["assistant_message"] == (
+            "Who will pay for your first year?"
+        )
+        assert updated.adjudication_result["metadata"]["fallback_reason"] == (
+            "case_memory_proof_point"
+        )
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

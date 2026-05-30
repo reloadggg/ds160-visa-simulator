@@ -124,10 +124,14 @@ export interface RuntimeDebugSnapshot {
   governor_history?: Array<Record<string, unknown>>
   runtime_ledger?: Record<string, unknown>
   runtime_view_state?: Record<string, unknown>
+  case_board?: Record<string, unknown>
+  evidence_graph?: Record<string, unknown>
   interviewer_state?: Record<string, unknown>
   last_material_refresh?: Record<string, unknown>
   document_review?: Record<string, unknown>
   material_generation?: Record<string, unknown>
+  material_understanding?: Array<Record<string, unknown>>
+  timeline?: RuntimeDebugEvent[]
   errors?: Array<Record<string, unknown>>
   [key: string]: unknown
 }
@@ -264,12 +268,20 @@ export interface ChatAttachment {
 
 export interface ChatMessage {
   id: string
-  role: "officer" | "user" | "system"
+  role: "assistant" | "user" | "system"
   content: string
   timestamp: string
   status?: "sending" | "sent" | "error"
   attachments?: ChatAttachment[]
   public_reasoning?: PublicReasoning | null
+}
+
+export interface SessionActivityEvent {
+  id: string
+  kind: "session" | "message" | "upload" | "debug" | "report" | "error"
+  content: string
+  timestamp: string
+  status?: "sending" | "sent" | "error"
 }
 
 export interface PublicReasoning {
@@ -447,6 +459,7 @@ export interface CaseBoardLatestMaterial {
   document_id?: string | null
   filename?: string | null
   understanding_status?: string | null
+  understanding_error?: MaterialUnderstandingError | null
   document_type?: string | null
   document_type_label?: string | null
   document_type_candidates?: CaseDocumentTypeCandidate[]
@@ -457,6 +470,11 @@ export interface CaseBoardLatestMaterial {
   unknowns?: string[]
 }
 
+export interface MaterialUnderstandingError {
+  code?: string | null
+  message?: string | null
+}
+
 export interface CaseBoardDelta {
   latest_material?: CaseBoardLatestMaterial | null
   evidence_cards: CaseEvidenceCard[]
@@ -464,6 +482,17 @@ export interface CaseBoardDelta {
   open_proof_points: CaseProofPoint[]
   conflicts: CaseConflict[]
   next_move?: InterviewNextMove | null
+}
+
+export interface CaseBoardRefresh {
+  eventType: string
+  documentId?: string | null
+  status?: string | null
+  understandingStatus?: string | null
+  failureNode?: string | null
+  failureMessage?: string | null
+  debugTimelineScope?: Record<string, unknown> | null
+  messagePolicy: "case_board_timeline_only" | string
 }
 
 export interface DocumentAssessment {
@@ -489,6 +518,7 @@ export interface FileUploadResponse {
   job_id?: string
   job_status?: string
   understanding_status?: string | null
+  understanding_error?: MaterialUnderstandingError | null
   document_type?: string | null
   document_type_label?: string | null
   document_assessment?: DocumentAssessment | null
@@ -502,6 +532,7 @@ export interface FileUploadResponse {
   main_flow_feedback?: FileFeedback | null
   evidence_cards: CaseEvidenceCard[]
   case_board_delta?: CaseBoardDelta | null
+  caseBoardRefresh?: CaseBoardRefresh | null
   requested_documents: string[]
   requested_document_labels: string[]
   remaining_required_documents: string[]
@@ -598,6 +629,7 @@ export interface UploadedMaterial {
   document_id?: string
   document_status?: string
   understanding_status?: string | null
+  understanding_error?: MaterialUnderstandingError | null
   document_type?: string | null
   document_type_label?: string | null
   relevance?: DocumentRelevance | null
@@ -608,6 +640,7 @@ export interface UploadedMaterial {
   conflicts?: CaseConflict[]
   next_move?: InterviewNextMove | null
   case_board_delta?: CaseBoardDelta | null
+  caseBoardRefresh?: CaseBoardRefresh | null
   requested_document_labels?: string[]
   current_focus_document_label?: string | null
   counts_toward_gate?: boolean | null
@@ -682,6 +715,9 @@ export interface BackendRequiredPackage {
 
 export interface BackendMessageResponse {
   assistant_message: string
+  agent_runtime?: string | null
+  selected_public_runtime?: string | null
+  runtime_execution?: Record<string, unknown>
   governor_decision?: string | null
   requested_documents?: string[]
   remaining_required_documents?: string[]
@@ -793,6 +829,7 @@ export interface BackendCaseBoardLatestMaterial {
   document_id?: string | null
   filename?: string | null
   understanding_status?: string | null
+  understanding_error?: BackendMaterialUnderstandingError | null
   document_type?: string | null
   document_type_candidates?: BackendCaseDocumentTypeCandidate[]
   relevance?: DocumentRelevance | null
@@ -800,6 +837,11 @@ export interface BackendCaseBoardLatestMaterial {
   confidence?: number | null
   feedback_message?: string | null
   unknowns?: string[]
+}
+
+export interface BackendMaterialUnderstandingError {
+  code?: string | null
+  message?: string | null
 }
 
 export interface BackendCaseBoardDelta {
@@ -810,6 +852,24 @@ export interface BackendCaseBoardDelta {
   proof_points?: BackendCaseProofPoint[]
   conflicts?: BackendCaseConflict[]
   next_move?: BackendInterviewNextMove | null
+}
+
+export interface BackendCaseBoardRefresh {
+  event_type?: string
+  eventType?: string
+  document_id?: string | null
+  documentId?: string | null
+  status?: string | null
+  understanding_status?: string | null
+  understandingStatus?: string | null
+  failure_node?: string | null
+  failureNode?: string | null
+  failure_message?: string | null
+  failureMessage?: string | null
+  debug_timeline_scope?: Record<string, unknown> | null
+  debugTimelineScope?: Record<string, unknown> | null
+  message_policy?: string | null
+  messagePolicy?: string | null
 }
 
 export interface BackendDocumentAssessment {
@@ -832,6 +892,7 @@ export interface BackendFileUploadResponse {
   job_id?: string
   job_status?: string
   understanding_status?: string | null
+  understanding_error?: BackendMaterialUnderstandingError | null
   document_type?: string | null
   document_assessment?: BackendDocumentAssessment | null
   document_type_candidates?: string[]
@@ -843,6 +904,8 @@ export interface BackendFileUploadResponse {
   main_flow_feedback?: BackendFileFeedback | null
   evidence_cards?: BackendCaseEvidenceCard[]
   case_board_delta?: BackendCaseBoardDelta | null
+  case_board_refresh?: BackendCaseBoardRefresh | null
+  caseBoardRefresh?: BackendCaseBoardRefresh | null
   requested_documents?: string[]
   remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null

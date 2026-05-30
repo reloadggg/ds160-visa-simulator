@@ -45,7 +45,7 @@ DebugFillScenario = Literal[
 ]
 
 DEBUG_FILL_SCENARIOS: dict[str, str] = {
-    "normal": "补齐一套自洽的正常材料",
+    "normal": "生成当前缺口参考材料",
     "school_mismatch": "生成学校信息冲突材料",
     "sponsor_equity_gap": "生成父母股权/资金来源缺陷材料",
 }
@@ -59,6 +59,12 @@ SYNTHETIC_CONFLICT_SCHOOL_NAME = "Alternate Example University"
 SYNTHETIC_PROGRAM_NAME = "Example Degree Program"
 SYNTHETIC_PARENT_NAMES = ("PARENT SPONSOR A", "PARENT SPONSOR B")
 SYNTHETIC_COMPANY_NAME = "Example Family Business LLC"
+
+
+def _explicit_list_field(payload: dict, key: str) -> list[str] | None:
+    if key not in payload:
+        return None
+    return list(payload.get(key) or [])
 
 
 class DebugFillService:
@@ -161,7 +167,16 @@ class DebugFillService:
             return self._normalize_fill_document_type(focus_document)
 
         interviewer_state = record.interviewer_state_json or {}
-        requested_documents = interviewer_state.get("remaining_required_documents") or interviewer_state.get("requested_documents") or []
+        requested_documents = _explicit_list_field(
+            interviewer_state,
+            "remaining_required_documents",
+        )
+        if requested_documents is None:
+            requested_documents = _explicit_list_field(
+                interviewer_state,
+                "requested_documents",
+            )
+        requested_documents = requested_documents or []
         if isinstance(requested_documents, list):
             for item in requested_documents:
                 if isinstance(item, str) and item.strip():

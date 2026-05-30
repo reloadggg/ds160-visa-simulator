@@ -23,6 +23,11 @@ from app.platform.turn_record import TurnRecord
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.case_board_projection import (
+    case_board_has_state,
+    missing_evidence_from_case_board,
+)
+from app.services.case_memory_service import CaseMemoryService
 from app.services.graph_case_state_builder import GraphCaseStateBuilder
 from app.services.runtime_errors import (
     ModelRuntimeError,
@@ -361,6 +366,7 @@ class NativeInterviewerRuntimeService:
         self.session_turn_repo = SessionTurnRepository(db)
         self.document_repo = DocumentRepository(db)
         self.evidence_repo = EvidenceRepository(db)
+        self.case_memory = CaseMemoryService(db)
 
     def run_turn(
         self,
@@ -431,7 +437,7 @@ class NativeInterviewerRuntimeService:
                 document_review=document_review,
                 prompt_trace=prompt_trace,
             ),
-            "agent_runtime": "graph",
+            "agent_runtime": "native_interviewer",
             "selected_public_runtime": "native_interviewer",
         }
 
@@ -620,6 +626,10 @@ class NativeInterviewerRuntimeService:
             documents=self.document_repo.list_session_documents(record.session_id),
             evidence_items=self.evidence_repo.list_session_evidence(record.session_id),
             document_chunks=self._list_session_document_chunks(record.session_id),
+            case_memory_snapshot=self.case_memory.get_or_build_snapshot(
+                record.session_id
+            ).model_dump(mode="json"),
+            evidence_graph=self.case_memory.query_evidence_graph(record.session_id),
         )
 
     def _list_session_document_chunks(self, session_id: str) -> list[DocumentChunkRecord]:
@@ -724,7 +734,7 @@ class NativeInterviewerRuntimeService:
             "prompt_trace": prompt_trace,
             "runtime_view_state": runtime_view_state,
             "turn_record": turn_record,
-            "agent_runtime": "graph",
+            "agent_runtime": "native_interviewer",
             "selected_public_runtime": "native_interviewer",
             "native_run_id": run_id,
         }
@@ -831,9 +841,14 @@ class NativeInterviewerRuntimeService:
         }
 
     def _build_advisory_context(self, case_state: dict[str, Any]) -> dict[str, Any]:
+        case_board = self._payload(case_state.get("case_board"))
         interviewer_state = self._payload(case_state.get("interviewer_state"))
         advisory = self._payload(interviewer_state.get("advisory_context"))
         if advisory:
+            if case_board_has_state(case_board):
+                advisory["missing_evidence"] = missing_evidence_from_case_board(
+                    case_board
+                )
             return advisory
         latest_score = self._latest_payload(case_state.get("score_history_tail"))
         risk_flags = latest_score.get("risk_flags", [])
@@ -854,11 +869,15 @@ class NativeInterviewerRuntimeService:
                 if isinstance(latest_score.get(key, 0), int)
             },
             "risk_codes": risk_codes,
-            "missing_evidence": [
-                item
-                for item in latest_score.get("missing_evidence", [])
-                if isinstance(item, str) and item.strip()
-            ],
+            "missing_evidence": (
+                missing_evidence_from_case_board(case_board)
+                if case_board_has_state(case_board)
+                else [
+                    item
+                    for item in latest_score.get("missing_evidence", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+            ),
             "risk_level": "high" if risk_codes else "none",
         }
 
@@ -894,7 +913,7 @@ class NativeInterviewerRuntimeService:
             "review_status": "high_risk",
             "recommended_next_step": "high_risk_review",
             "claim_conflicts": high_conflicts,
-            "reviewer_summary": "材料核验识别到冲突，当前应先围绕冲突点复核。",
+            "reviewer_summary": "证据核验识别到冲突，当前应先围绕冲突点复核。",
         }
 
     def _public_status(

@@ -1,9 +1,13 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, JSON, Index, Integer, LargeBinary, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
+def utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class SessionRecord(Base):
@@ -90,3 +94,14 @@ class AuthSessionRecord(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     user_agent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CaseMemorySnapshotRecord(Base):
+    __tablename__ = "case_memory_snapshots"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        default=utc_now_naive,
+    )

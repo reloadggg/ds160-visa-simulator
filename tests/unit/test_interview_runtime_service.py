@@ -626,6 +626,42 @@ def test_build_dynamic_turn_context_includes_phase3_structured_fields(
         "build_from_record",
         lambda current_record, turns=None: read_model,
     )
+    monkeypatch.setattr(
+        service.case_memory,
+        "public_case_board",
+        lambda session_id: {
+            "schema_version": "case_board.v1",
+            "claims": [
+                {
+                    "claim_id": "claim-funding",
+                    "field_path": "/funding/primary_source",
+                    "value": "parents",
+                    "status": "documented",
+                }
+            ],
+            "evidence_cards": [],
+            "proof_points": [],
+            "conflicts": [],
+            "next_move": None,
+        },
+    )
+    monkeypatch.setattr(
+        service.case_memory,
+        "public_evidence_graph",
+        lambda session_id: {
+            "schema_version": "evidence_graph.v1",
+            "claims": [
+                {
+                    "claim_id": "claim-funding",
+                    "field_path": "/funding/primary_source",
+                }
+            ],
+            "evidence_cards": [],
+            "proof_points": [],
+            "conflicts": [],
+            "edges": [],
+        },
+    )
 
     payload = service._build_dynamic_turn_context(
         session_id="sess-1",
@@ -680,6 +716,15 @@ def test_build_dynamic_turn_context_includes_phase3_structured_fields(
     assert payload["memory_strata"]["derived_memory"]["risk_codes"] == [
         "supporting_evidence_missing"
     ]
+    assert payload["case_board"]["claims"][0]["claim_id"] == "claim-funding"
+    assert payload["evidence_graph"]["claims"][0]["claim_id"] == "claim-funding"
+    assert payload["memory_strata"]["evidence_memory"]["case_board_counts"] == {
+        "claims": 1,
+        "evidence_cards": 0,
+        "proof_points": 0,
+        "conflicts": 0,
+    }
+    assert payload["memory_strata"]["evidence_memory"]["evidence_graph_edges"] == 0
     assert payload["current_focus"]["document_type"] == "funding_proof"
     assert payload["last_turn_decision"] == "need_more_evidence"
     assert payload["gate_progress"] == {"status": "ready_for_interview"}
@@ -885,7 +930,7 @@ def test_build_dynamic_turn_context_includes_uploaded_document_feedback_in_evide
                         "status": "helpful",
                         "supported_document_type": "funding_proof",
                         "current_focus_document_type": "funding_proof",
-                        "message": "这份材料对当前关键证明 funding_proof 有帮助。",
+                        "message": "这份材料对当前待核实事实 funding_proof 有帮助。",
                     },
                 }
             },
@@ -945,7 +990,7 @@ def test_build_dynamic_turn_context_includes_uploaded_document_feedback_in_evide
             "status": "helpful",
             "supported_document_type": "funding_proof",
             "current_focus_document_type": "funding_proof",
-            "message": "这份材料对当前关键证明 funding_proof 有帮助。",
+            "message": "这份材料对当前待核实事实 funding_proof 有帮助。",
             "document_id": "doc-helpful",
             "filename": "funding-proof.pdf",
             "document_type": "funding_proof",
@@ -967,7 +1012,7 @@ def test_build_dynamic_turn_context_includes_uploaded_document_feedback_in_evide
                     "status": "helpful",
                     "supported_document_type": "funding_proof",
                     "current_focus_document_type": "funding_proof",
-                    "message": "这份材料对当前关键证明 funding_proof 有帮助。",
+                    "message": "这份材料对当前待核实事实 funding_proof 有帮助。",
                 },
             },
             {

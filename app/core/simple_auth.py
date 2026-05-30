@@ -20,6 +20,8 @@ from app.db.session import SessionLocal
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 BASE_PUBLIC_PATHS = {
     "/healthz",
+    "/livez",
+    "/version",
     "/v1/auth/login",
     "/v1/auth/me",
 }

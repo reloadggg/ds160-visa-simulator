@@ -8,6 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test:case-board-presentation": "node --test tests/case-board-presentation-contract.test.mjs",
+    "test:message-source": "node --test tests/message-source-contract.test.mjs",
+    "test:upload-feedback": "node --test tests/upload-feedback-contract.test.mjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {

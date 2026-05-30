@@ -7,10 +7,14 @@ __pycache__/
 docs/superpowers/
 .worktrees/
 .dev/
+.deploy-backups/
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 .env
 *.tsbuildinfo
 data/
+deploy/certs/
 *_raw_materials_pack.zip
 rag_live_eval_*.json
 rag_live_eval_*.md

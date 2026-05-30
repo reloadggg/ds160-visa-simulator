@@ -71,13 +71,15 @@ ResponseMapper  只做旧 API 兼容映射，不改写语义
 4. `prompt_trace`、`runtime_trace_json`、`runtime_view_state`、`turn_record` 平行表达同一件事。
    - 正确做法：graph event 是事实源，旧字段从 graph event 派生。
 5. 材料上传后直接触发旧 runtime 主回复的隐式副作用。
-   - 正确做法：parse worker 先提交 evidence / case state；后置 material refresh 只能经 `MessageService` 的 runtime selector，graph mode 下走 `GraphRuntimeAdapter.run_material_change(...)`。
+   - 正确做法：parse worker 先提交 evidence / case state；后置 material refresh 只能经 `MessageService` 的 runtime selector；当前公开默认由 `NativeInterviewerRuntimeService.run_material_change(...)` 刷新，只有未来真实 LangGraph public promotion 才改走 `GraphRuntimeAdapter.run_material_change(...)`。
    - refresh 失败不能把已完成 parse job 回滚为 failed。
 
 ### 可以先保留但冻结
 
 1. `InterviewerRuntimeService`
-   - 仅用于 `legacy` / `graph_shadow` 对照，不再加新能力。
+   - 已按 `docs/architecture/legacy-runtime-deprecation-decision.md` 冻结。
+   - 仅用于显式 `legacy` 或 `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true` 的回滚路径，不再加新能力。
+   - 生产完成 split Compose + Postgres cutover 后只保留一个发布周期，下一删除窗口移除 live path。
 2. `RuntimeLedgerService`
    - 继续服务报告和前端兼容，等 graph events 完整后替换。
 3. `GateRuntimeService`
@@ -98,7 +100,7 @@ ResponseMapper  只做旧 API 兼容映射，不改写语义
 新增环境变量：
 
 ```text
-AGENT_RUNTIME=legacy | graph_shadow | graph_canary | graph
+AGENT_RUNTIME=legacy | native_interviewer | graph_shadow | graph_canary | graph
 AGENT_RUNTIME_CANARY_PERCENT=0..100
 AGENT_RUNTIME_TRACE_ENABLED=true | false
 AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true | false
@@ -107,19 +109,19 @@ AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true | false
 语义：
 
 - `legacy`：当前主流程，graph 不运行。
-- `graph_shadow`：legacy 仍写用户可见回复，graph 同步旁路运行并记录 trace / eval，不影响用户。
-- `graph_canary`：按 session hash 百分比让 graph 写用户可见回复；未命中走 legacy。
-- `graph`：graph 是默认主流程，legacy 只保留回滚。
+- `native_interviewer`：当前默认公开主流程，由 `NativeInterviewerRuntimeService` 写用户可见回复。
+- `graph_shadow`：native interviewer 写用户可见回复，graph 同步旁路运行并记录 trace / eval，不影响用户。
+- `graph_canary` / `graph`：当前保留为历史兼容模式；公开回复仍走 native interviewer，`selected_public_runtime` 必须暴露真实执行路径。
 
 当前上线默认：
 
 ```text
-AGENT_RUNTIME=graph
-AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true
-AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=false
+AGENT_RUNTIME=native_interviewer
+AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false
+AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true
 ```
 
-`AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=false` 表示 graph 已接管事务和响应映射，但 graph 内部 adjudication 仍使用 deterministic safe path；真实 typed adjudicator 需要 live smoke 和 provider 指标通过后再单独开启。
+默认不静默回 legacy；需要临时回滚时优先显式设置 `AGENT_RUNTIME=legacy`。`AGENT_RUNTIME=graph` 不再作为新部署默认值；如果后续要让 LangGraph 成为公开 writer，必须单独完成 replay + live smoke + provider 指标验证。
 
 ## 兼容输出合同
 
@@ -156,6 +158,12 @@ graph 可追加但不能替换的字段：
 ```
 
 前端在替换期只依赖旧字段；`graph_trace` 只作为 debug / observability 数据。
+
+兼容字段语义：
+
+- `requested_documents` / `remaining_required_documents` 是旧消费者兼容投影，不是 Case Memory 的事实源。
+- 当 response、material refresh 或 runtime view fallback 显式包含上述字段时，该字段就是本次投影的权威结果；空数组表示没有材料缺口，不允许再从旧 `runtime_view_state`、`interviewer_state_json`、`current_focus.document_type` 或 Gate 历史状态补回。
+- 只有字段缺失时，才允许为了旧 API 消费者读取上一层 runtime/interviewer state 作为 fallback。
 
 ## 主流程替换阶段
 
@@ -206,7 +214,7 @@ graph 可追加但不能替换的字段：
 
 ### Phase A - Graph Adapter 接入，不写用户回复
 
-目标：让 `MessageService` 能选择 runtime，但 graph 只 shadow。
+目标：让 `MessageService` 能选择 runtime，但 graph 只 shadow；当前公开 writer 固定为 native interviewer，legacy 只做显式回滚路径。
 
 任务：
 
@@ -215,7 +223,7 @@ graph 可追加但不能替换的字段：
 3. 在 `MessageService.handle_user_turn()` 中加入选择器：
    - gate `family_not_selected` 仍走 gate。
    - `legacy` 走 `InterviewerRuntimeService`。
-   - `graph_shadow` 同时跑 legacy + graph，返回 legacy。
+   - `graph_shadow` 同时跑 native + graph，返回 native public response。
 4. shadow 失败只写 trace，不影响用户。
 5. graph shadow 输出必须经过 `RuntimeViewContractService`。
 6. `GraphRuntimeAdapter` 不依赖 `CapabilityOrchestrator` 或 `InterviewerTurnProjectorService`。
@@ -225,16 +233,16 @@ graph 可追加但不能替换的字段：
 - 现有前端字段不变。
 - shadow graph 不新增第二个 assistant turn。
 - shadow graph 不触发真实额外用户可见消息。
-- shadow graph 失败不 rollback legacy response。
+- shadow graph 失败不 rollback native public response。
 - `uv run pytest -q -m "not live_llm"` 通过。
 
 停止条件：
 
 - 如果 shadow 会写第二条 assistant turn，立即停止。
 
-### Phase B - Deterministic Graph 替换主流程
+### Phase B - Deterministic Graph 公开接管评估
 
-目标：先用 deterministic graph 接管一小类可控场景，证明主流程 wiring 正确。
+目标：如果要让 LangGraph 成为公开 writer，先用 deterministic graph 接管一小类可控场景，证明主流程 wiring 正确。
 
 范围：
 
@@ -249,8 +257,8 @@ graph 可追加但不能替换的字段：
 3. `GraphEvent` 写入 trace payload。
 4. 新增 `POST /v1/sessions/{session_id}/runtime-traces/{run_id}` 或等价 debug endpoint。
 5. `messages/stream` 保持 `accepted -> analyzing -> final/error` 兼容，同时可附加 graph event 摘要。
-6. parse worker 默认只更新材料状态；自动 material refresh 通过 graph 显式节点执行，不再在 worker 里隐式启动旧主流程。
-7. debug fill / debug material bundle 的 material refresh 在 graph mode 下走 graph；debug 场景名进入 graph 前脱敏，避免把 `school_mismatch_bundle` 等 oracle 信号暴露给模型或 graph event。
+6. parse worker 默认只更新材料状态；自动 material refresh 通过当前公开 runtime 显式执行，不再在 worker 里隐式启动旧主流程。
+7. debug fill / debug material bundle 的 material refresh 在 native / graph-compatible mode 下走 native interviewer；debug 场景名进入 runtime 前脱敏，避免把 `school_mismatch_bundle` 等 oracle 信号暴露给模型或 trace。
 
 验收：
 
@@ -340,15 +348,15 @@ graph 可追加但不能替换的字段：
 
 - replay 只能测字段、不能测行为时，不允许 canary。
 
-### Phase F - Canary 上线
+### Phase F - 未来 LangGraph public promotion canary
 
-目标：小流量真实替换，并保留快速回滚。
+目标：仅当后续明确要让 LangGraph 成为公开 writer 时，才做小流量真实替换，并保留快速回滚。当前线上默认仍是 `native_interviewer`。
 
 步骤：
 
 1. 部署时保持：
    - `AGENT_RUNTIME=graph_shadow`
-   - `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true`
+   - `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false`
 2. 观察 24 小时或至少 30 个真实/测试 session：
    - 500 rate
    - provider error rate
@@ -369,22 +377,22 @@ graph 可追加但不能替换的字段：
 
 ```bash
 AGENT_RUNTIME=legacy
-docker compose up -d --build
+docker compose up -d ds160-api ds160-worker
 ```
 
 停止条件：
 
 - 任一档出现新增 500、重复模板、无法解释冲突、citation 缺失率异常，回滚到上一档。
 
-### Phase G - 默认 graph，保留 legacy 回滚
+### Phase G - 默认 native interviewer，保留 legacy 回滚
 
-目标：线上默认 graph，legacy 只作为短期回滚。
+目标：线上默认 `native_interviewer`，legacy 只作为短期回滚；LangGraph 只在 shadow/eval 或单独 public promotion 任务中接管。
 
 任务：
 
-1. 默认 `.env.example` / compose 设为 `AGENT_RUNTIME=graph`。
+1. 默认 `.env.example` / compose 设为 `AGENT_RUNTIME=native_interviewer`。
 2. legacy 代码冻结，不再新增能力。
-3. 继续保留 `AGENT_RUNTIME=legacy` 一个发布周期。
+3. 继续保留 `AGENT_RUNTIME=legacy` 一个发布周期；保留/删除边界以 `docs/architecture/legacy-runtime-deprecation-decision.md` 为准。
 4. 删除旧 runtime 前必须有完整 replay + live smoke 证据。
 5. 删除或降级旧复杂组件：
    - `CapabilityOrchestrator` 主流程职责删除。
@@ -394,10 +402,11 @@ docker compose up -d --build
 
 停止条件：
 
-- 如果 graph trace 不能定位单轮失败原因，不删除 legacy。
+- 如果 native/graph trace 不能定位单轮失败原因，不删除 legacy。
 
 ## 部署前 Checklist
 
+- 先运行 `uv run python -m app.cli.main release-preflight`，确认 legacy freeze / deletion 的必跑项没有被误判为完成；已在本次发布窗口完成的证据必须用 `--replay-corpus-passed`、`--focused-tests-passed`、`--live-smoke-passed`、`--docker-smoke-passed` 显式传入。`live-smoke` 指 focused live smoke，不等同于全量 live conversation / OpenAI API 套件。
 - `uv run python -m compileall app`
 - `uv run pytest -q -m "not live_llm"`
 - `uv run python -m app.cli.main eval-graph-fixture --fixture fixtures/graph_replay/school_mismatch_where.json`
@@ -421,11 +430,11 @@ Phase A0 已落地：
 
 Phase A / B 当前已落地：
 
-- `AGENT_RUNTIME=legacy|graph_shadow|graph_canary|graph` selector 已接入 `MessageService.handle_user_turn(...)`。
+- `AGENT_RUNTIME=legacy|native_interviewer|graph_shadow|graph_canary|graph` selector 已接入 `MessageService.handle_user_turn(...)`。
 - 官方 `langgraph.graph.StateGraph` 已编译为 `CompiledStateGraph` 并由 `GraphRuntimeAdapter` 调用。
-- 普通用户消息的 `graph_shadow` 返回 legacy public response，并把 graph trace 附在同一条 assistant turn metadata；material refresh 的 shadow trace 写入 `last_material_refresh`，不创建 assistant turn。
-- deterministic graph mode 已能写 public assistant turn，前端旧字段保持兼容。
-- material-change refresh 已接入 graph runtime，覆盖 debug fill、debug material bundle、parse worker。
+- 普通用户消息的 `graph_shadow` 返回 native public response，并把 graph trace 附在同一条 assistant turn metadata；material refresh 的 shadow trace 写入 `last_material_refresh`，不创建 assistant turn。
+- 当前公开默认由 `NativeInterviewerRuntimeService` 写 assistant turn；`graph` / `graph_canary` 仍作为历史兼容标签映射到 native interviewer，响应必须暴露 `selected_public_runtime`。
+- material-change refresh 当前由 native interviewer 公开主链路处理；`graph_shadow` 继续保留 graph trace。
 - parse worker 在解析 job 完成后触发 refresh；refresh 异常只记录日志，不反向污染 completed job。
 
 下一批实现进入 Phase C / D：

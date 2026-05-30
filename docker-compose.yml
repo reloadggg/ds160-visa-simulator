@@ -1,44 +1,175 @@
+x-ds160-build: &ds160-build
+  context: .
+  args:
+    NEXT_PUBLIC_APP_VERSION: ${NEXT_PUBLIC_APP_VERSION:-0.1.2}
+    NEXT_PUBLIC_GIT_SHA: ${NEXT_PUBLIC_GIT_SHA:-}
+    NEXT_PUBLIC_BUILD_TIME: ${NEXT_PUBLIC_BUILD_TIME:-}
+    APP_GIT_SHA: ${APP_GIT_SHA:-}
+    APP_BUILD_TIME: ${APP_BUILD_TIME:-}
+
+x-ds160-environment: &ds160-environment
+  APP_AUTH_PASSWORD: ${APP_AUTH_PASSWORD:-}
+  APP_AUTH_SESSION_TTL_SECONDS: ${APP_AUTH_SESSION_TTL_SECONDS:-86400}
+  APP_AUTH_IDLE_TIMEOUT_SECONDS: ${APP_AUTH_IDLE_TIMEOUT_SECONDS:-28800}
+  APP_AUTH_COOKIE_SECURE: ${APP_AUTH_COOKIE_SECURE:-true}
+  APP_AUTH_COOKIE_SAMESITE: ${APP_AUTH_COOKIE_SAMESITE:-lax}
+  APP_AUTH_PROTECT_DOCS: ${APP_AUTH_PROTECT_DOCS:-true}
+  APP_COMPAT_API_KEY: ${APP_COMPAT_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  AGENT_RUNTIME: ${AGENT_RUNTIME:-native_interviewer}
+  AGENT_RUNTIME_CANARY_PERCENT: ${AGENT_RUNTIME_CANARY_PERCENT:-0}
+  AGENT_RUNTIME_TRACE_ENABLED: ${AGENT_RUNTIME_TRACE_ENABLED:-true}
+  AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY: ${AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY:-false}
+  AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED: ${AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED:-true}
+  APP_GIT_SHA: ${APP_GIT_SHA:-}
+  APP_BUILD_TIME: ${APP_BUILD_TIME:-}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://ds160.efastt.store}
+  DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql+psycopg://ds160:ds160@postgres:5432/ds160}
+
 services:
+  ds160-api:
+    build: *ds160-build
+    image: ds160-agent2:latest
+    container_name: ds160-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    environment:
+      <<: *ds160-environment
+      DS160_PROCESS: api
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      PARSE_WORKER_INLINE: "0"
+    volumes:
+      - ds160-agent2-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  ds160-web:
+    build: *ds160-build
+    image: ds160-agent2:latest
+    container_name: ds160-web
+    env_file:
+      - .env
+    expose:
+      - "3000"
+    environment:
+      DS160_PROCESS: web
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 3000
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/', timeout=5).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  ds160-worker:
+    build: *ds160-build
+    image: ds160-agent2:latest
+    container_name: ds160-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ds160-api:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      <<: *ds160-environment
+      DS160_PROCESS: worker
+      PARSE_WORKER_INLINE: "0"
+    volumes:
+      - ds160-agent2-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"from app.core.health import database_health; from app.db.session import engine; raise SystemExit(0 if database_health(engine)['status'] == 'ok' else 1)\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   ds160-agent2:
-    build: .
+    profiles:
+      - combined
+    build: *ds160-build
     image: ds160-agent2:latest
     container_name: ds160-agent2
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     expose:
       - "3000"
       - "8000"
     environment:
-      APP_AUTH_PASSWORD: ${APP_AUTH_PASSWORD:-}
-      APP_AUTH_SESSION_TTL_SECONDS: ${APP_AUTH_SESSION_TTL_SECONDS:-86400}
-      APP_AUTH_IDLE_TIMEOUT_SECONDS: ${APP_AUTH_IDLE_TIMEOUT_SECONDS:-28800}
-      APP_AUTH_COOKIE_SECURE: ${APP_AUTH_COOKIE_SECURE:-true}
-      APP_AUTH_COOKIE_SAMESITE: ${APP_AUTH_COOKIE_SAMESITE:-lax}
-      APP_AUTH_PROTECT_DOCS: ${APP_AUTH_PROTECT_DOCS:-true}
-      APP_COMPAT_API_KEY: ${APP_COMPAT_API_KEY:-}
+      <<: *ds160-environment
+      DS160_PROCESS: combined
       API_HOST: 0.0.0.0
       API_PORT: 8000
       WEB_HOST: 0.0.0.0
       WEB_PORT: 3000
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      AGENT_RUNTIME: ${AGENT_RUNTIME:-graph}
-      AGENT_RUNTIME_CANARY_PERCENT: ${AGENT_RUNTIME_CANARY_PERCENT:-0}
-      AGENT_RUNTIME_TRACE_ENABLED: ${AGENT_RUNTIME_TRACE_ENABLED:-true}
-      AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY: ${AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY:-true}
-      AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED: ${AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED:-true}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://ds160.efastt.store}
-      DATABASE_URL: sqlite:////data/app.sqlite3
       PARSE_WORKER_INLINE: ${PARSE_WORKER_INLINE:-1}
     volumes:
       - ds160-agent2-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ds160-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ds160}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ds160}
+      POSTGRES_DB: ${POSTGRES_DB:-ds160}
+    volumes:
+      - ds160-agent2-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   nginx:
     image: nginx:1.27-alpine
     container_name: ds160-nginx
     depends_on:
-      - ds160-agent2
+      ds160-api:
+        condition: service_healthy
+      ds160-web:
+        condition: service_healthy
     ports:
       - "${NGINX_PUBLIC_PORT:-18000}:18000"
     volumes:
@@ -48,3 +179,4 @@ services:
 
 volumes:
   ds160-agent2-data:
+  ds160-agent2-postgres:

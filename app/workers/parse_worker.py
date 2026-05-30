@@ -8,9 +8,10 @@ from app.db.models import JobRecord
 from app.db.session import SessionLocal
 from sqlalchemy.orm import Session
 
+from app.domain.case_memory import MaterialUnderstandingJob
+from app.domain.evidence import DocumentAssessment, EvidenceItem
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
-from app.domain.evidence import DocumentAssessment, EvidenceItem
 from app.services.case_memory_service import CaseMemoryService
 from app.services.file_service import CASE_UNDERSTANDING_JOB_KIND
 from app.services.document_pipeline import DocumentPipelineService
@@ -38,8 +39,6 @@ class ParseWorker:
 
     def run_once(self) -> bool:
         job = self.documents.claim_next_job(CASE_UNDERSTANDING_JOB_KIND)
-        if job is None:
-            job = self.documents.claim_next_job("gate_parse")
         if job is None:
             return False
 
@@ -96,13 +95,50 @@ class ParseWorker:
                 )
                 self.db.rollback()
             return True
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
             failed_job = self.db.get(JobRecord, job_id)
             if failed_job is not None:
                 failed_job.status = "failed"
+            self._mark_material_understanding_failed(
+                document_id=document_id,
+                job_id=job_id,
+                error=exc,
+            )
             self.db.commit()
             raise
+
+    def _mark_material_understanding_failed(
+        self,
+        *,
+        document_id: str,
+        job_id: str,
+        error: BaseException | None,
+    ) -> None:
+        document = self.documents.get_document(document_id)
+        if document is None:
+            return
+        self.case_memory.upsert_material_understanding(
+            document_id=document_id,
+            job=MaterialUnderstandingJob(
+                job_id=job_id,
+                document_id=document_id,
+                status="failed",
+                error_code="parse_failed",
+                error_message=self._failure_message(error),
+            ),
+        )
+
+    def _failure_message(self, error: BaseException | None) -> str:
+        if error is None:
+            return "Document parsing failed before material understanding completed."
+        detail = str(error).strip()
+        if not detail:
+            return f"{error.__class__.__name__} before material understanding."
+        return (
+            f"{error.__class__.__name__} before material understanding: "
+            f"{detail[:240]}"
+        )
 
     def _evidence_item_from_record(self, record) -> EvidenceItem:
         return EvidenceItem(

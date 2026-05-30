@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import {
+  AlertCircle,
   FileText,
   FileImage,
   FolderOpen,
@@ -23,6 +24,11 @@ import {
 } from "lucide-react"
 import type { SessionHistoryEntry, UploadedMaterial } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
+import {
+  isMaterialUnderstandingFailed,
+  materialUnderstandingErrorMessage,
+  materialUnderstandingStatus,
+} from "@/lib/upload-feedback-policy"
 
 interface MaterialsPanelProps {
   currentMaterials: UploadedMaterial[]
@@ -77,6 +83,21 @@ function MaterialPreview({ material }: { material: UploadedMaterial }) {
 
 function materialOpenUrl(material: UploadedMaterial): string | null {
   return material.content_url ?? material.preview_url ?? null
+}
+
+function materialStatusLabel(material: UploadedMaterial): string {
+  switch (materialUnderstandingStatus(material)) {
+    case "queued":
+      return "案例理解更新中"
+    case "processing":
+      return "案例理解中"
+    case "failed":
+      return "理解失败"
+    case "completed":
+      return "已理解"
+    default:
+      return material.status_label
+  }
 }
 
 function FieldTable({ fields }: { fields?: Record<string, string> }) {
@@ -159,8 +180,11 @@ function CaseUnderstandingSummary({ material }: { material: UploadedMaterial }) 
   const conflicts = material.conflicts ?? []
   const unknowns = material.case_board_delta?.latest_material?.unknowns ?? []
   const nextMove = material.next_move ?? material.case_board_delta?.next_move ?? null
+  const failed = isMaterialUnderstandingFailed(material)
+  const failureMessage = materialUnderstandingErrorMessage(material)
 
   if (
+    !failed &&
     !claims.length &&
     !evidenceCards.length &&
     !proofPoints.length &&
@@ -174,6 +198,20 @@ function CaseUnderstandingSummary({ material }: { material: UploadedMaterial }) 
   return (
     <div className="space-y-4">
       <div className="text-xs font-medium text-muted-foreground">案例理解</div>
+
+      {failed ? (
+        <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-destructive">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-sm font-medium">材料理解失败</div>
+              <div className="mt-1 break-words text-xs leading-5">
+                {failureMessage ?? "请重新上传一份更清晰的文件，或稍后重试。"}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {claims.length ? (
         <div className="space-y-2">
@@ -306,9 +344,16 @@ function MaterialGrid({
 
 function MaterialCard({ material }: { material: UploadedMaterial }) {
   const openUrl = materialOpenUrl(material)
+  const failed = isMaterialUnderstandingFailed(material)
+  const statusLabel = materialStatusLabel(material)
 
   return (
-    <div className="group relative min-w-0 overflow-hidden rounded-2xl border border-border bg-background transition-all hover:shadow-md">
+    <div
+      className={cn(
+        "group relative min-w-0 overflow-hidden rounded-2xl border bg-background transition-all hover:shadow-md",
+        failed ? "border-destructive/35" : "border-border",
+      )}
+    >
       <div className="aspect-[4/3] border-b border-border p-3">
         <MaterialPreview material={material} />
         <div className="absolute right-3 top-3">
@@ -361,7 +406,7 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                         识别结果 (Document Type)
                       </div>
                       <div className="break-words text-sm font-semibold text-foreground">
-                        {material.document_type_label ?? material.status_label}
+                        {material.document_type_label ?? statusLabel}
                       </div>
                     </div>
 
@@ -438,9 +483,18 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
             识别结果
           </div>
           <div className="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">
-            {material.document_type_label ?? material.status_label}
+            {material.document_type_label ?? statusLabel}
           </div>
         </div>
+        {failed ? (
+          <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 break-words">
+              {materialUnderstandingErrorMessage(material) ??
+                "材料理解失败，请重新上传或稍后重试。"}
+            </span>
+          </div>
+        ) : null}
         {material.claims?.length ? (
           <div className="space-y-1 rounded-xl border border-border bg-background px-3 py-2">
             <div className="text-xs text-muted-foreground">已理解事实</div>
@@ -452,7 +506,7 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
           </div>
         ) : material.understanding_status ? (
           <div className="break-words text-xs leading-5 text-muted-foreground">
-            理解状态：{material.understanding_status}
+            理解状态：{statusLabel}
           </div>
         ) : null}
         {material.raw_text ? (

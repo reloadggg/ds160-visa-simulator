@@ -19,6 +19,7 @@ from app.services.message_service import (
     MessageService,
     SessionNotFoundError,
 )
+from app.services.case_memory_service import CaseMemoryService
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.runtime_view_contract_service import RuntimeViewContractService
 from app.services.session_read_model_service import SessionReadModelService
@@ -160,6 +161,9 @@ def create_response(
     assistant_turn = _latest_assistant_turn(db, session_record.session_id)
     response_id = _response_id(session_record.session_id, assistant_turn)
     read_model = SessionReadModelService(db).build_from_record(session_record)
+    case_memory = CaseMemoryService(db)
+    case_board = case_memory.public_case_board(session_record.session_id)
+    evidence_graph = case_memory.public_evidence_graph(session_record.session_id)
     runtime_view_state = RuntimeViewContractService.payload(
         read_model.runtime_view_state,
         anchored_only=True,
@@ -213,6 +217,8 @@ def create_response(
                 runtime_view_state,
                 result,
             ),
+            "case_board": case_board,
+            "evidence_graph": evidence_graph,
             "prompt_trace": RuntimeViewContractService.prompt_trace(
                 runtime_view_state,
                 result,

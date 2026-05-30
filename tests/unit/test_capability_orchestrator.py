@@ -80,7 +80,7 @@ def test_capability_orchestrator_builds_plan_outputs_and_artifacts(monkeypatch) 
                 "active_main_flow_feedback": {
                     "status": "helpful",
                     "current_focus_document_type": "funding_proof",
-                    "message": "这份材料对当前关键证明有帮助。",
+                    "message": "这份材料对当前待核实事实有帮助。",
                 },
             },
             "advisory_context": {
@@ -396,6 +396,76 @@ def test_document_review_fallback_uses_claim_history_after_profile_conflict() ->
     assert review["claim_conflicts"][0]["field_paths"] == ["/funding/primary_source"]
 
 
+def test_document_review_fallback_uses_case_board_without_legacy_documents() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    review = orchestrator._fallback_document_review_from_context(
+        {
+            "case_board": {
+                "schema_version": "case_board.v1",
+                "claims": [
+                    {
+                        "claim_id": "claim-user-school",
+                        "field_path": "/education/school_name",
+                        "value": "NYU",
+                        "status": "contradicted",
+                    },
+                    {
+                        "claim_id": "claim-i20-school",
+                        "field_path": "/education/school_name",
+                        "value": "Example University",
+                        "status": "contradicted",
+                    },
+                ],
+                "evidence_cards": [
+                    {
+                        "evidence_id": "ev-user-school",
+                        "source_type": "user_turn",
+                        "excerpt": "I will study at NYU.",
+                        "claim_refs": ["claim-user-school"],
+                    },
+                    {
+                        "evidence_id": "ev-i20-school",
+                        "source_type": "uploaded_file",
+                        "document_id": "doc-i20",
+                        "excerpt": "School Name: Example University",
+                        "claim_refs": ["claim-i20-school"],
+                    },
+                ],
+                "proof_points": [],
+                "conflicts": [
+                    {
+                        "conflict_id": "conflict-education-school-name",
+                        "claim_ids": [
+                            "claim-user-school",
+                            "claim-i20-school",
+                        ],
+                        "evidence_ids": ["ev-user-school", "ev-i20-school"],
+                        "summary": "学校名称在口头说明和 I-20 材料之间不一致。",
+                        "severity": "high",
+                    }
+                ],
+            },
+            "documents": [],
+        }
+    )
+
+    assert review is not None
+    assert review["review_status"] == "high_risk"
+    assert review["recommended_next_step"] == "high_risk_review"
+    assert review["cross_document_conflicts"] == []
+    assert review["claim_conflicts"] == [
+        {
+            "conflict_type": "claim_vs_document",
+            "severity": "high",
+            "summary": "学校名称在口头说明和 I-20 材料之间不一致。",
+            "field_paths": ["/education/school_name"],
+            "document_ids": ["doc-i20"],
+            "evidence_refs": ["ev-user-school", "ev-i20-school"],
+        }
+    ]
+
+
 def test_document_review_merge_promotes_high_severity_fallback_conflicts() -> None:
     orchestrator = CapabilityOrchestrator(db=object())
 
@@ -548,3 +618,21 @@ def test_remaining_required_documents_prefers_active_focus_not_in_gate() -> None
     )
 
     assert remaining == ["relationship_proof_between_applicant_and_sponsors"]
+
+
+def test_remaining_required_documents_respects_explicit_empty_evidence_digest() -> None:
+    orchestrator = CapabilityOrchestrator(db=object())
+
+    remaining = orchestrator._remaining_required_documents(
+        gate_progress={
+            "required_documents": [
+                {"document_type": "funding_proof", "status": "missing"},
+            ]
+        },
+        evidence_digest={
+            "remaining_required_documents": [],
+            "missing_evidence": [],
+        },
+    )
+
+    assert remaining == []

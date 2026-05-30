@@ -1,0 +1,66 @@
+{
+  "schema_version": "ds160.runtime_debug.v1",
+  "material_understanding": [
+    {
+      "document_id": "doc-failed-understanding",
+      "filename": "broken.pdf",
+      "document_status": "uploaded",
+      "understanding_status": "failed",
+      "document_type": "funding_proof",
+      "understanding_error": {
+        "code": "parse_failed",
+        "message": "RuntimeError before material understanding."
+      },
+      "latest_material": {
+        "document_id": "doc-failed-understanding",
+        "filename": "broken.pdf",
+        "understanding_status": "failed",
+        "unknowns": [
+          "RuntimeError before material understanding."
+        ]
+      }
+    }
+  ],
+  "timeline": [
+    {
+      "phase": "material_understanding",
+      "step": "document",
+      "status": "failed",
+      "summary": "broken.pdf: failed (RuntimeError before material understanding.)",
+      "document_id": "doc-failed-understanding",
+      "payload": {
+        "document_id": "doc-failed-understanding",
+        "filename": "broken.pdf",
+        "document_status": "uploaded",
+        "understanding_status": "failed",
+        "document_type": "funding_proof",
+        "understanding_error": {
+          "code": "parse_failed",
+          "message": "RuntimeError before material understanding."
+        },
+        "latest_material": {
+          "document_id": "doc-failed-understanding",
+          "filename": "broken.pdf",
+          "understanding_status": "failed",
+          "unknowns": [
+            "RuntimeError before material understanding."
+          ]
+        }
+      }
+    },
+    {
+      "phase": "error",
+      "step": "material_understanding",
+      "status": "failed",
+      "summary": "RuntimeError before material understanding.",
+      "document_id": "doc-failed-understanding",
+      "payload": {
+        "source": "material_understanding",
+        "document_id": "doc-failed-understanding",
+        "filename": "broken.pdf",
+        "code": "parse_failed",
+        "message": "RuntimeError before material understanding."
+      }
+    }
+  ]
+}

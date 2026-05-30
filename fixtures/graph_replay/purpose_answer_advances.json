@@ -1,0 +1,117 @@
+{
+  "fixture_id": "purpose-answer-advances",
+  "state": {
+    "schema_version": "agent-runtime.v1",
+    "session_id": "sess-purpose-advance",
+    "run_id": "run-purpose-advance",
+    "user_turn": {
+      "content": "I chose this computer science program because it focuses on applied AI and matches my undergraduate project experience."
+    },
+    "case_state": {
+      "assert_purpose_followup_advances": true,
+      "expected_next_topic_terms": [
+        "career",
+        "毕业",
+        "计划"
+      ],
+      "recent_user_turns": [
+        {
+          "content": "I want to study computer science in the U.S."
+        },
+        {
+          "content": "I chose this computer science program because it focuses on applied AI and matches my undergraduate project experience."
+        }
+      ],
+      "recent_assistant_messages": [
+        {
+          "content": "为什么选择这个计算机科学项目？"
+        }
+      ],
+      "case_memory": {
+        "claims": [
+          {
+            "claim_id": "claim-program-purpose",
+            "field_path": "/education/program_reason",
+            "value": "applied AI focus matches prior project experience",
+            "status": "stated",
+            "supporting_evidence_ids": [
+              "ev-purpose-turn"
+            ],
+            "conflicting_evidence_ids": [],
+            "confidence": 0.74
+          }
+        ],
+        "evidence_cards": [
+          {
+            "evidence_id": "ev-purpose-turn",
+            "source_type": "user_turn",
+            "excerpt": "applied AI and matches my undergraduate project experience",
+            "claim_refs": [
+              "claim-program-purpose"
+            ],
+            "confidence": 0.74
+          }
+        ],
+        "proof_points": [],
+        "conflicts": []
+      },
+      "case_board": {
+        "schema_version": "case_board.v1",
+        "claims": [],
+        "evidence_cards": [],
+        "proof_points": [],
+        "conflicts": [],
+        "next_move": {
+          "move_type": "ask",
+          "question": "毕业后的职业计划是什么？",
+          "reason": "用户已经解释项目选择，下一步核验学习计划与职业路径是否一致。",
+          "claim_refs": [
+            "claim-program-purpose"
+          ],
+          "evidence_refs": [
+            "ev-purpose-turn"
+          ]
+        }
+      }
+    },
+    "final_response": {
+      "assistant_message": "你已经说明项目选择和 applied AI 经历有关。毕业后的 career plan 是什么？这个计划和你现在选择的项目怎么衔接？",
+      "assistant_message_author": "adjudication_agent",
+      "decision": "continue_interview",
+      "requested_documents": [],
+      "public_claims": [],
+      "used_citation_ids": [],
+      "guard_status": "passed",
+      "next_safe_action": "continue_interview"
+    }
+  },
+  "events": [
+    {
+      "event_type": "accepted",
+      "run_id": "run-purpose-advance",
+      "sequence": 0,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "trigger": "user_turn"
+      }
+    },
+    {
+      "event_type": "final",
+      "run_id": "run-purpose-advance",
+      "sequence": 1,
+      "schema_version": "agent-runtime.v1",
+      "payload": {
+        "final_response": {
+          "assistant_message": "你已经说明项目选择和 applied AI 经历有关。毕业后的 career plan 是什么？这个计划和你现在选择的项目怎么衔接？",
+          "assistant_message_author": "adjudication_agent",
+          "decision": "continue_interview"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "checks": [
+      "purpose_followup_advances"
+    ]
+  }
+}

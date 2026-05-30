@@ -7,4 +7,7 @@ def test_live_api_client_fixture_bootstraps_app(
     response = live_api_client.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["checks"]["database"]["status"] == "ok"
+    assert payload["checks"]["app"]["version"]

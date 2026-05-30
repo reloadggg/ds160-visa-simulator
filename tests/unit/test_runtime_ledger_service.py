@@ -375,3 +375,92 @@ def test_runtime_ledger_does_not_promote_document_review_primary_to_active_focus
     assert latest_view_state.current_key_question == "What is the purpose of your travel?"
     assert latest_view_state.current_key_proof is None
     assert latest_view_state.requested_documents == []
+
+
+def test_runtime_ledger_turn_record_empty_requested_documents_do_not_fallback_to_focus(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'runtime-ledger-empty-requested.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        service = RuntimeLedgerService(db)
+        session_record = SessionRepository(db).create(
+            declared_family="f1",
+            gate_status_json={"status": "ready_for_interview"},
+        )
+        session_record.current_governor_decision = "need_more_evidence"
+        db.add(session_record)
+        db.flush()
+
+        repo = SessionTurnRepository(db)
+        assistant_turn = repo.append_assistant_turn(
+            session_id=session_record.session_id,
+            content="Which school issued your I-20?",
+            source="native_interviewer_runtime",
+            metadata_json={
+                "turn_record": {
+                    "decision": "need_more_evidence",
+                    "requested_documents": [],
+                    "remaining_required_documents": [],
+                    "focus": {
+                        "kind": "required_document",
+                        "document_type": "funding_proof",
+                    },
+                }
+            },
+        )
+
+        ledger = service.build_session_ledger(session_record.session_id)
+        latest_view_state = service.latest_view_state(ledger)
+
+    assert latest_view_state.source_turn_id == assistant_turn.turn_id
+    assert latest_view_state.requested_documents == []
+    assert latest_view_state.remaining_required_documents == []
+
+
+def test_runtime_ledger_turn_record_empty_remaining_documents_do_not_fallback_to_requested(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'runtime-ledger-empty-remaining.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        service = RuntimeLedgerService(db)
+        session_record = SessionRepository(db).create(
+            declared_family="f1",
+            gate_status_json={"status": "ready_for_interview"},
+        )
+        session_record.current_governor_decision = "need_more_evidence"
+        db.add(session_record)
+        db.flush()
+
+        repo = SessionTurnRepository(db)
+        repo.append_assistant_turn(
+            session_id=session_record.session_id,
+            content="Please upload your funding proof.",
+            source="native_interviewer_runtime",
+            metadata_json={
+                "turn_record": {
+                    "decision": "need_more_evidence",
+                    "requested_documents": ["funding_proof"],
+                    "remaining_required_documents": [],
+                    "focus": {
+                        "kind": "required_document",
+                        "document_type": "funding_proof",
+                    },
+                }
+            },
+        )
+
+        ledger = service.build_session_ledger(session_record.session_id)
+        latest_view_state = service.latest_view_state(ledger)
+
+    assert latest_view_state.requested_documents == ["funding_proof"]
+    assert latest_view_state.remaining_required_documents == []

@@ -275,6 +275,112 @@ def test_graph_case_state_builder_projects_case_memory_from_document_artifacts()
     assert case_state["case_board"]["latest_material"]["document_id"] == "doc-i20"
 
 
+def test_graph_case_state_builder_prefers_first_class_case_memory_snapshot() -> None:
+    record = SessionRecord(
+        session_id="sess-case-memory-read-model",
+        declared_family="f1",
+        gate_status_json={"status": "ready_for_interview"},
+    )
+    documents = [
+        DocumentRecord(
+            document_id="doc-stale",
+            session_id=record.session_id,
+            filename="stale.pdf",
+            status="parsed",
+            artifact_json={
+                "document_type": "funding_proof",
+                "case_board_delta": {
+                    "latest_material": {
+                        "document_id": "doc-stale",
+                        "filename": "stale.pdf",
+                        "understanding_status": "completed",
+                    }
+                },
+                "material_understanding_result": {
+                    "evidence_cards": [
+                        {
+                            "evidence_id": "ev-stale",
+                            "source_type": "uploaded_file",
+                            "document_id": "doc-stale",
+                            "excerpt": "Funding source: parents",
+                            "claim_refs": ["claim-stale"],
+                            "confidence": 0.8,
+                        }
+                    ],
+                    "extracted_claims": [
+                        {
+                            "claim_id": "claim-stale",
+                            "field_path": "/funding/primary_source",
+                            "value": "parents",
+                            "status": "documented",
+                            "supporting_evidence_ids": ["ev-stale"],
+                            "confidence": 0.8,
+                        }
+                    ],
+                    "confidence": 0.8,
+                },
+            },
+        )
+    ]
+    snapshot = {
+        "latest_material": {
+            "document_id": "doc-i20",
+            "filename": "i20.pdf",
+            "understanding_status": "completed",
+            "document_type": "i20",
+        },
+        "claims": [
+            {
+                "claim_id": "claim-school",
+                "field_path": "/education/school_name",
+                "value": "Example University",
+                "status": "documented",
+                "supporting_evidence_ids": ["ev-school"],
+                "confidence": 0.93,
+            }
+        ],
+        "evidence_cards": [
+            {
+                "evidence_id": "ev-school",
+                "source_type": "uploaded_file",
+                "document_id": "doc-i20",
+                "excerpt": "School Name: Example University",
+                "claim_refs": ["claim-school"],
+                "confidence": 0.93,
+            }
+        ],
+        "proof_points": [],
+        "conflicts": [],
+    }
+    evidence_graph = {
+        "schema_version": "evidence_graph.v1",
+        "claims": snapshot["claims"],
+        "evidence_cards": snapshot["evidence_cards"],
+        "edges": [
+            {
+                "source": "claim-school",
+                "target": "ev-school",
+                "relation": "support",
+            }
+        ],
+    }
+
+    case_state = GraphCaseStateBuilder().build(
+        record,
+        [],
+        documents=documents,
+        case_memory_snapshot=snapshot,
+        evidence_graph=evidence_graph,
+    )
+
+    assert [item["claim_id"] for item in case_state["case_memory"]["claims"]] == [
+        "claim-school"
+    ]
+    assert case_state["case_board"]["claims"] == snapshot["claims"]
+    assert case_state["case_board"]["latest_material"]["document_id"] == "doc-i20"
+    assert case_state["evidence_graph"]["edges"] == evidence_graph["edges"]
+
+
 def test_graph_case_state_builder_projects_material_next_move() -> None:
     record = SessionRecord(
         session_id="sess-case-next-move",
@@ -721,6 +827,7 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
                             "source_type": "debug_material",
                             "excerpt": "School Name: Example University",
                             "metadata": {
+                                "expected_findings": "hidden graph oracle",
                                 "synthetic_bundle_id": "dbg-bundle-secret",
                                 "debug_bundle_scenario": "school_mismatch_bundle",
                             },
@@ -740,6 +847,7 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
                             "source_type": "debug_material",
                             "excerpt": "School Name: Example University",
                             "metadata": {
+                                "expected_findings": "hidden graph oracle",
                                 "debug_bundle_scenario_label": "学校材料冲突包",
                             },
                         }
@@ -747,6 +855,7 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
                 },
                 "metadata": {
                     "debug_material_bundle": True,
+                    "expected_findings": "hidden graph oracle",
                     "synthetic_bundle_id": "dbg-bundle-secret",
                     "debug_bundle_scenario": "school_mismatch_bundle",
                     "debug_bundle_scenario_label": "学校材料冲突包",
@@ -772,6 +881,7 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
             page_number=1,
             text="School Name: Example University",
             metadata_json={
+                "expected_findings": "hidden graph oracle",
                 "synthetic_bundle_id": "dbg-bundle-secret",
                 "debug_bundle_scenario": "school_mismatch_bundle",
             },
@@ -789,11 +899,42 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
             excerpt="School Name: Example University",
             confidence=1.0,
             metadata_json={
+                "expected_findings": "hidden graph oracle",
                 "synthetic_bundle_id": "dbg-bundle-secret",
                 "debug_bundle_scenario": "school_mismatch_bundle",
             },
         )
     ]
+    case_memory_snapshot = {
+        "claims": [],
+        "evidence_cards": [
+            {
+                "evidence_id": "ev-debug-snapshot",
+                "source_type": "debug_material",
+                "excerpt": "School Name: Example University",
+                "metadata": {
+                    "expected_findings": "hidden graph oracle",
+                    "synthetic_bundle_id": "dbg-bundle-secret",
+                    "debug_bundle_scenario": "school_mismatch_bundle",
+                },
+            }
+        ],
+        "proof_points": [],
+        "conflicts": [],
+    }
+    evidence_graph = {
+        "schema_version": "evidence_graph.v1",
+        "evidence_cards": case_memory_snapshot["evidence_cards"],
+        "edges": [
+            {
+                "source": "claim-debug",
+                "target": "ev-debug-snapshot",
+                "relation": "support",
+                "expected_findings": "hidden graph oracle",
+                "synthetic_bundle_id": "dbg-bundle-secret",
+            }
+        ],
+    }
 
     case_state = GraphCaseStateBuilder().build(
         record,
@@ -801,37 +942,39 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
         documents=documents,
         document_chunks=chunks,
         evidence_items=evidence,
+        case_memory_snapshot=case_memory_snapshot,
+        evidence_graph=evidence_graph,
     )
 
     assert case_state["documents"][0]["artifact"] == {
-            "source_type": "text",
+        "source_type": "text",
+        "document_type": "i20",
+        "case_board_delta": {
+            "latest_material": {
+                "document_id": "doc-debug",
+                "filename": "debug_i20.txt",
+                "understanding_status": "completed",
+            },
+            "evidence_cards": [
+                {
+                    "evidence_id": "ev-debug",
+                    "source_type": "debug_material",
+                    "excerpt": "School Name: Example University",
+                }
+            ],
+        },
+        "material_understanding_result": {
+            "evidence_cards": [
+                {
+                    "evidence_id": "ev-debug",
+                    "source_type": "debug_material",
+                    "excerpt": "School Name: Example University",
+                }
+            ]
+        },
+        "metadata": {"debug_material_bundle": True},
+        "document_assessment": {
             "document_type": "i20",
-            "case_board_delta": {
-                "latest_material": {
-                    "document_id": "doc-debug",
-                    "filename": "debug_i20.txt",
-                    "understanding_status": "completed",
-                },
-                "evidence_cards": [
-                    {
-                        "evidence_id": "ev-debug",
-                        "source_type": "debug_material",
-                        "excerpt": "School Name: Example University",
-                    }
-                ],
-            },
-            "material_understanding_result": {
-                "evidence_cards": [
-                    {
-                        "evidence_id": "ev-debug",
-                        "source_type": "debug_material",
-                        "excerpt": "School Name: Example University",
-                    }
-                ]
-            },
-            "metadata": {"debug_material_bundle": True},
-            "document_assessment": {
-                "document_type": "i20",
             "document_type_candidates": ["i20"],
             "relevance": "high",
             "supported_claims": ["/education/school_name"],
@@ -844,3 +987,4 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
     assert "dbg-bundle-secret" not in serialized
     assert "school_mismatch_bundle" not in serialized
     assert "学校材料冲突包" not in serialized
+    assert "hidden graph oracle" not in serialized

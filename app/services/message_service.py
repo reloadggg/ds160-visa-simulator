@@ -52,7 +52,18 @@ class SessionClosedError(RuntimeError):
         super().__init__(detail)
 
 
-PublicRuntimeMode = Literal["legacy", "graph"]
+PublicRuntimeMode = Literal["legacy", "native_interviewer"]
+
+
+def _explicit_list_field(
+    payload: dict,
+    key: str,
+    *,
+    fallback: list[str] | None = None,
+) -> list[str]:
+    if key in payload:
+        return list(payload.get(key) or [])
+    return list(fallback or [])
 
 
 class MessageService:
@@ -390,12 +401,57 @@ class MessageService:
         return record.phase_state == "session_closed"
 
     def _select_public_runtime(self, session_id: str) -> PublicRuntimeMode:
-        if settings.agent_runtime == "graph":
-            return "graph"
+        if settings.agent_runtime in {"graph", "graph_shadow", "native_interviewer"}:
+            return "native_interviewer"
         if settings.agent_runtime == "graph_canary":
             if self._is_graph_canary_selected(session_id):
-                return "graph"
+                return "native_interviewer"
         return "legacy"
+
+    def _selected_agent_runtime_label(self, runtime_mode: PublicRuntimeMode) -> str:
+        if runtime_mode != "native_interviewer":
+            return settings.agent_runtime
+        if settings.agent_runtime == "native_interviewer":
+            return "native_interviewer"
+        if settings.agent_runtime == "graph_shadow":
+            return "graph_shadow"
+        return "graph"
+
+    def _runtime_execution_payload(
+        self,
+        *,
+        requested_public_runtime: PublicRuntimeMode,
+        public_runtime: PublicRuntimeMode,
+        execution_runtime: str,
+        source: str,
+        fallback_runtime: str | None = None,
+        error: dict | None = None,
+        graph_shadow: dict | None = None,
+    ) -> dict:
+        payload = {
+            "schema_version": "runtime.execution.v1",
+            "configured_runtime": settings.agent_runtime,
+            "requested_public_runtime": requested_public_runtime,
+            "public_runtime": public_runtime,
+            "execution_runtime": execution_runtime,
+            "runtime_engine": execution_runtime,
+            "source": source,
+            "fail_open_to_legacy": settings.agent_runtime_fail_open_to_legacy,
+        }
+        if fallback_runtime:
+            payload["fallback_runtime"] = fallback_runtime
+        if error:
+            payload["error_type"] = error.get("error_type")
+            payload["error_message"] = error.get("error_message")
+        if graph_shadow:
+            payload["shadow_runtime"] = graph_shadow.get("agent_runtime")
+            payload["shadow_run_id"] = graph_shadow.get("graph_run_id")
+        if (
+            settings.agent_runtime in {"graph", "graph_canary", "graph_shadow"}
+            and requested_public_runtime == "native_interviewer"
+        ):
+            payload["compatibility_runtime_label"] = settings.agent_runtime
+        return {key: value for key, value in payload.items() if value is not None}
 
     def _is_graph_canary_selected(self, session_id: str) -> bool:
         percent = settings.agent_runtime_canary_percent
@@ -415,7 +471,7 @@ class MessageService:
         *,
         graph_shadow: dict | None,
     ) -> dict:
-        if runtime_mode == "graph":
+        if runtime_mode == "native_interviewer":
             try:
                 response = self.native_interviewer_runtime.run_turn(
                     record,
@@ -438,16 +494,50 @@ class MessageService:
                     "error_message": str(exc),
                     "fallback_runtime": "legacy",
                 }
+                response["agent_runtime"] = self._selected_agent_runtime_label(
+                    runtime_mode
+                )
+                response["selected_public_runtime"] = "legacy"
+                response["runtime_execution"] = self._runtime_execution_payload(
+                    requested_public_runtime="native_interviewer",
+                    public_runtime="legacy",
+                    execution_runtime="interviewer_runtime_service",
+                    source="message_turn",
+                    fallback_runtime="legacy",
+                    error=response["graph_runtime_error"],
+                    graph_shadow=graph_shadow,
+                )
                 return response
+            response["agent_runtime"] = self._selected_agent_runtime_label(runtime_mode)
             response["selected_public_runtime"] = "native_interviewer"
+            response["runtime_execution"] = self._runtime_execution_payload(
+                requested_public_runtime="native_interviewer",
+                public_runtime="native_interviewer",
+                execution_runtime="native_interviewer_runtime",
+                source="message_turn",
+                graph_shadow=graph_shadow,
+            )
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
 
         interview_response = self.interviewer_runtime.run_turn(record, message_text)
         response = self.gate_runtime.merge_interview_response(interview_response, record)
+        response["agent_runtime"] = settings.agent_runtime
+        response["selected_public_runtime"] = "legacy"
+        response["runtime_execution"] = self._runtime_execution_payload(
+            requested_public_runtime="legacy",
+            public_runtime="legacy",
+            execution_runtime="interviewer_runtime_service",
+            source="message_turn",
+            graph_shadow=graph_shadow,
+        )
         if graph_shadow:
-            response["agent_runtime"] = settings.agent_runtime
-            response["selected_public_runtime"] = "legacy"
+            response["runtime_execution"]["shadow_runtime"] = graph_shadow.get(
+                "agent_runtime"
+            )
+            response["runtime_execution"]["shadow_run_id"] = graph_shadow.get(
+                "graph_run_id"
+            )
         return response
 
     def _run_material_change_public_runtime(
@@ -458,7 +548,7 @@ class MessageService:
         reason: str,
         graph_shadow: dict | None,
     ) -> dict:
-        if runtime_mode == "graph":
+        if runtime_mode == "native_interviewer":
             try:
                 response = self.native_interviewer_runtime.run_material_change(
                     record,
@@ -476,15 +566,49 @@ class MessageService:
                     "error_message": str(exc),
                     "fallback_runtime": "legacy",
                 }
+                response["agent_runtime"] = self._selected_agent_runtime_label(
+                    runtime_mode
+                )
+                response["selected_public_runtime"] = "legacy"
+                response["runtime_execution"] = self._runtime_execution_payload(
+                    requested_public_runtime="native_interviewer",
+                    public_runtime="legacy",
+                    execution_runtime="interviewer_runtime_service",
+                    source="material_change",
+                    fallback_runtime="legacy",
+                    error=response["graph_runtime_error"],
+                    graph_shadow=graph_shadow,
+                )
                 return response
+            response["agent_runtime"] = self._selected_agent_runtime_label(runtime_mode)
             response["selected_public_runtime"] = "native_interviewer"
+            response["runtime_execution"] = self._runtime_execution_payload(
+                requested_public_runtime="native_interviewer",
+                public_runtime="native_interviewer",
+                execution_runtime="native_interviewer_runtime",
+                source="material_change",
+                graph_shadow=graph_shadow,
+            )
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
 
         response = self._run_legacy_material_change(record, reason=reason)
+        response["agent_runtime"] = settings.agent_runtime
+        response["selected_public_runtime"] = "legacy"
+        response["runtime_execution"] = self._runtime_execution_payload(
+            requested_public_runtime="legacy",
+            public_runtime="legacy",
+            execution_runtime="interviewer_runtime_service",
+            source="material_change",
+            graph_shadow=graph_shadow,
+        )
         if graph_shadow:
-            response["agent_runtime"] = settings.agent_runtime
-            response["selected_public_runtime"] = "legacy"
+            response["runtime_execution"]["shadow_runtime"] = graph_shadow.get(
+                "agent_runtime"
+            )
+            response["runtime_execution"]["shadow_run_id"] = graph_shadow.get(
+                "graph_run_id"
+            )
         return response
 
     def _run_legacy_material_change(self, record, *, reason: str) -> dict:
@@ -511,8 +635,6 @@ class MessageService:
                 user_turn=user_turn,
             )
         except Exception as exc:
-            if not settings.agent_runtime_fail_open_to_legacy:
-                raise
             return {
                 "status": "error",
                 "agent_runtime": "graph_shadow",
@@ -545,8 +667,6 @@ class MessageService:
                 reason=self._graph_material_change_reason(reason),
             )
         except Exception as exc:
-            if not settings.agent_runtime_fail_open_to_legacy:
-                raise
             return {
                 "status": "error",
                 "agent_runtime": "graph_shadow",
@@ -608,7 +728,11 @@ class MessageService:
         record.current_governor_decision = decision
         record.current_focus_json = current_focus
         record.interviewer_state_json = {
-            "owner": "graph_runtime",
+            "owner": (
+                "native_interviewer_runtime"
+                if response.get("selected_public_runtime") == "native_interviewer"
+                else "graph_runtime"
+            ),
             "status": decision,
             "public_status": runtime_view_state.get("public_status"),
             "decision": decision,
@@ -636,6 +760,7 @@ class MessageService:
             "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
             "native_run_id": response.get("native_run_id"),
             "selected_public_runtime": response.get("selected_public_runtime"),
+            "runtime_execution": dict(response.get("runtime_execution", {}) or {}),
             "graph_run_id": response.get("graph_run_id"),
             "graph_trace": dict(response.get("graph_trace", {}) or {}),
         }
@@ -651,8 +776,10 @@ class MessageService:
         decision = response.get("governor_decision") or "need_more_evidence"
         record.current_governor_decision = decision
         requested_documents = list(response.get("requested_documents", []) or [])
-        remaining_required_documents = list(
-            response.get("remaining_required_documents", []) or requested_documents
+        remaining_required_documents = _explicit_list_field(
+            response,
+            "remaining_required_documents",
+            fallback=requested_documents,
         )
         if requested_documents:
             record.current_focus_json = {
@@ -701,8 +828,7 @@ class MessageService:
             if response.get("agent_runtime") == "graph"
             and response.get("selected_public_runtime", "graph") == "graph"
             else "native_interviewer_runtime"
-            if response.get("agent_runtime") == "graph"
-            and response.get("selected_public_runtime") == "native_interviewer"
+            if response.get("selected_public_runtime") == "native_interviewer"
             else "interviewer_runtime_service"
         )
         assistant_turn = self.session_turn_repo.append_assistant_turn(
@@ -723,6 +849,7 @@ class MessageService:
                 "graph_trace": response.get("graph_trace"),
                 "graph_events": response.get("graph_events"),
                 "graph_runtime_error": response.get("graph_runtime_error"),
+                "runtime_execution": response.get("runtime_execution"),
             },
             commit=False,
         )
@@ -798,9 +925,15 @@ class MessageService:
                 "current_focus_kind": current_focus.get("kind"),
                 "document_review": dict(response.get("document_review", {}) or {}),
                 "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+                "runtime_execution": dict(
+                    response.get("runtime_execution", {}) or {}
+                ),
             }
         )
-        if response.get("agent_runtime") == "graph":
+        if (
+            response.get("agent_runtime") == "graph"
+            or response.get("selected_public_runtime") == "native_interviewer"
+        ):
             graph_runtime_view_state = dict(original_runtime_view_state)
             graph_runtime_view_state["source_turn_id"] = assistant_turn.turn_id
             graph_runtime_view_state["prompt_trace"] = dict(
@@ -831,15 +964,17 @@ class MessageService:
             or runtime_view_state.get("governor_decision")
             or record.current_governor_decision
         )
-        response["requested_documents"] = list(
-            response.get("requested_documents", [])
-            or runtime_view_state.get("requested_documents", [])
-            or []
+        response["requested_documents"] = _explicit_list_field(
+            response,
+            "requested_documents",
+            fallback=list(runtime_view_state.get("requested_documents", []) or []),
         )
-        response["remaining_required_documents"] = list(
-            response.get("remaining_required_documents", [])
-            or runtime_view_state.get("remaining_required_documents", [])
-            or []
+        response["remaining_required_documents"] = _explicit_list_field(
+            response,
+            "remaining_required_documents",
+            fallback=list(
+                runtime_view_state.get("remaining_required_documents", []) or []
+            ),
         )
         response["turn_decision"] = dict(response.get("turn_decision", {}) or {})
         if not response["turn_decision"] and response.get("governor_decision"):
@@ -856,6 +991,8 @@ class MessageService:
             "governor_decision": response.get("governor_decision"),
             "turn_decision": dict(response.get("turn_decision", {}) or {}),
             "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
+            "runtime_execution": dict(response.get("runtime_execution", {}) or {}),
+            "native_run_id": response.get("native_run_id"),
             "graph_run_id": response.get("graph_run_id"),
             "graph_trace": dict(response.get("graph_trace", {}) or {}),
             "graph_events": list(response.get("graph_events", []) or []),
@@ -892,15 +1029,17 @@ class MessageService:
             or interviewer_state.get("decision")
             or record.current_governor_decision
         )
-        requested_documents = list(
-            response.get("requested_documents", [])
-            or interviewer_state.get("requested_documents", [])
-            or []
+        requested_documents = _explicit_list_field(
+            response,
+            "requested_documents",
+            fallback=list(interviewer_state.get("requested_documents", []) or []),
         )
-        remaining_required_documents = list(
-            response.get("remaining_required_documents", [])
-            or interviewer_state.get("remaining_required_documents", [])
-            or []
+        remaining_required_documents = _explicit_list_field(
+            response,
+            "remaining_required_documents",
+            fallback=list(
+                interviewer_state.get("remaining_required_documents", []) or []
+            ),
         )
         return {
             "source_turn_id": None,

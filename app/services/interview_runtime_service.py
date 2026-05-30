@@ -23,6 +23,7 @@ from app.repositories.session_repo import SessionRepository
 from app.repositories.document_repo import DocumentRepository
 from app.services.advisory_review_service import AdvisoryReviewService
 from app.services.capability_orchestrator import CapabilityOrchestrator
+from app.services.case_memory_service import CaseMemoryService
 from app.services.consistency_service import ConsistencyService
 from app.services.ds160_context_engine import DS160ContextEngine
 from app.services.ds160_memory_manager import DS160MemoryManager
@@ -55,6 +56,7 @@ class InterviewRuntimeService:
         self.model_factory = AgentModelFactory()
         self.session_repo = SessionRepository(db)
         self.document_repo = DocumentRepository(db)
+        self.case_memory = CaseMemoryService(db)
         self.session_read_model = SessionReadModelService(db)
         self.extractor = ExtractorService(db)
         self.consistency = ConsistencyService()
@@ -829,12 +831,15 @@ class InterviewRuntimeService:
         )
         read_model = None
         documents = []
+        case_board: dict[str, Any] = {}
+        evidence_graph: dict[str, Any] = {}
         if record is not None:
             read_model = self.session_read_model.build_from_record(
                 record,
                 turns=recent_turns,
             )
             documents = self.document_repo.list_session_documents(session_id)
+            case_board, evidence_graph = self._case_memory_context(session_id)
         advisory_context = self._build_advisory_context(score)
         memory_bundle = self.memory_manager.build(
             profile=profile,
@@ -846,6 +851,8 @@ class InterviewRuntimeService:
             boundary_decision=governor_decision,
             documents=documents,
             gate_progress=gate_progress,
+            case_board=case_board,
+            evidence_graph=evidence_graph,
         )
         snapshot = self.context_engine.build_dynamic_turn_context(
             session_id=session_id,
@@ -861,6 +868,18 @@ class InterviewRuntimeService:
             prompt_roles=PromptRoleContract(),
         )
         return snapshot.model_dump(mode="json")
+
+    def _case_memory_context(
+        self,
+        session_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            return (
+                self.case_memory.public_case_board(session_id),
+                self.case_memory.public_evidence_graph(session_id),
+            )
+        except AttributeError:
+            return {}, {}
 
     def _build_advisory_context(self, score: ScoreState) -> TurnAdvisoryContext:
         return self.advisory_review.build_context(score)

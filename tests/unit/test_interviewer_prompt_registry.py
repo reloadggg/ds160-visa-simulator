@@ -128,7 +128,7 @@ def test_default_fallback_messages_are_window_style() -> None:
     registry = InterviewerPromptRegistry()
     fallback = registry.fallback_messages()
 
-    assert fallback["need_more_evidence"] == "请提供当前这项证明材料。"
+    assert fallback["need_more_evidence"] == "请提供当前这项补强证据。"
     assert fallback["high_risk_review"] == "这里有关键不一致，请解释。"
     for decision in (
         "need_more_evidence",

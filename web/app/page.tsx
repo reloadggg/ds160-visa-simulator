@@ -39,6 +39,7 @@ function Workbench() {
     visaType,
     isInitializing,
     messages,
+    activityEvents,
     isSending,
     isUploading,
     chatError,
@@ -179,6 +180,7 @@ function Workbench() {
         >
           <ChatPanel
             messages={messages}
+            activityEvents={activityEvents}
             onSendMessage={handleSendMessage}
             userName={userProfile?.displayName ?? "User"}
             userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}

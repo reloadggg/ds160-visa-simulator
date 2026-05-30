@@ -9,7 +9,13 @@ import fitz
 
 from app.core import settings as settings_module
 from app.db.base import Base
-from app.db.models import DocumentRecord, JobRecord, SessionRecord, SessionTurnRecord
+from app.db.models import (
+    CaseMemorySnapshotRecord,
+    DocumentRecord,
+    JobRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
@@ -221,6 +227,74 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     assert post_worker_response.json()["governor_decision"] == "continue_interview"
 
 
+def test_parse_worker_marks_parse_failure_visible_in_case_memory(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+    upload_response = client.post(
+        f"/v1/sessions/{session_id}/files",
+        files={
+            "file": (
+                "broken.pdf",
+                build_pdf_bytes("This file will fail in the parser."),
+                "application/pdf",
+            )
+        },
+    )
+    assert upload_response.status_code == 202
+    document_id = upload_response.json()["document_id"]
+
+    def fail_processing(self, document_id: str) -> None:
+        raise RuntimeError(f"parser crashed for {document_id}")
+
+    monkeypatch.setattr(
+        "app.services.document_pipeline.DocumentPipelineService.process_document",
+        fail_processing,
+    )
+
+    with db_session_factory() as db:
+        with pytest.raises(RuntimeError, match="parser crashed"):
+            ParseWorker(db).run_once()
+
+    with db_session_factory() as db:
+        document = db.get(DocumentRecord, document_id)
+        jobs = db.scalars(select(JobRecord)).all()
+        job = next(
+            (
+                item
+                for item in jobs
+                if item.payload_json.get("document_id") == document_id
+            ),
+            None,
+        )
+        snapshot = db.get(CaseMemorySnapshotRecord, session_id)
+
+        assert document is not None
+        assert job is not None
+        assert snapshot is not None
+        assert job.kind == "case_understanding"
+        assert job.status == "failed"
+        assert document.artifact_json["understanding_status"] == "failed"
+        assert document.artifact_json["understanding_error"]["code"] == "parse_failed"
+        assert "RuntimeError before material understanding" in document.artifact_json[
+            "understanding_error"
+        ]["message"]
+        assert document.artifact_json["case_board_delta"]["latest_material"] == {
+            "document_id": document_id,
+            "filename": "broken.pdf",
+            "understanding_status": "failed",
+            "unknowns": [
+                document.artifact_json["understanding_error"]["message"],
+            ],
+        }
+        assert snapshot.snapshot_json["schema_version"] == "case_memory_snapshot.v1"
+        assert snapshot.snapshot_json["claims"] == []
+        assert snapshot.snapshot_json["evidence_cards"] == []
+
+
 def test_parse_worker_claims_oldest_queued_job_first(
     client: TestClient,
     db_session_factory,
@@ -353,6 +427,17 @@ def test_parse_worker_material_refresh_updates_graph_state_without_assistant_tur
     material_refresh = record.interviewer_state_json["last_material_refresh"]
     assert material_refresh["agent_runtime"] == "graph"
     assert material_refresh["selected_public_runtime"] == "native_interviewer"
+    assert material_refresh["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "source": "material_change",
+        "fail_open_to_legacy": False,
+        "compatibility_runtime_label": "graph",
+    }
     assert material_refresh["prompt_trace"]["native_trigger"] == "material_change"
     assert material_refresh["prompt_trace"]["material_change_reason"] == "case_understanding"
     assert material_refresh["assistant_turn_created"] is False

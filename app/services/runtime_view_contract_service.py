@@ -5,6 +5,12 @@ from typing import Any
 from app.platform.runtime_ledger import RuntimeViewState
 
 
+def _explicit_list_field(payload: dict[str, Any], key: str) -> list[str] | None:
+    if key not in payload:
+        return None
+    return list(payload.get(key) or [])
+
+
 class RuntimeViewContractService:
     @staticmethod
     def payload(
@@ -44,16 +50,11 @@ class RuntimeViewContractService:
     ) -> list[str]:
         fallback = fallback or {}
         if runtime_view_state.get("source_turn_id"):
-            return list(
-                runtime_view_state.get("requested_documents", [])
-                or fallback.get("requested_documents", [])
-                or []
-            )
-        return list(
-            fallback.get("requested_documents", [])
-            or runtime_view_state.get("requested_documents", [])
-            or []
-        )
+            return list(runtime_view_state.get("requested_documents", []) or [])
+        fallback_documents = _explicit_list_field(fallback, "requested_documents")
+        if fallback_documents is not None:
+            return fallback_documents
+        return list(runtime_view_state.get("requested_documents", []) or [])
 
     @staticmethod
     def remaining_required_documents(
@@ -63,15 +64,15 @@ class RuntimeViewContractService:
         fallback = fallback or {}
         if runtime_view_state.get("source_turn_id"):
             return list(
-                runtime_view_state.get("remaining_required_documents", [])
-                or fallback.get("remaining_required_documents", [])
-                or []
+                runtime_view_state.get("remaining_required_documents", []) or []
             )
-        return list(
-            fallback.get("remaining_required_documents", [])
-            or runtime_view_state.get("remaining_required_documents", [])
-            or []
+        fallback_documents = _explicit_list_field(
+            fallback,
+            "remaining_required_documents",
         )
+        if fallback_documents is not None:
+            return fallback_documents
+        return list(runtime_view_state.get("remaining_required_documents", []) or [])
 
     @staticmethod
     def turn_decision(
