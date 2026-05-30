@@ -711,7 +711,7 @@ uv run python -m app.cli.main release-preflight --replay-corpus-passed --focused
 - 针对该失败，Docker 构建新增 `UV_HTTP_TIMEOUT` build arg，默认 `180` 秒，并通过 Compose build args 可覆盖，避免默认 30 秒下载超时再次中断维护窗口。
 - 远程生产第二次 cutover 改为本地 Windows Docker 构建、传输 image tar、服务器 `docker load`，避免再次在小服务器上构建。服务器成功加载 `ds160-agent2:latest`，image id 为 `bfce27d78f95`，应用镜像内 `APP_GIT_SHA=1b70176`。
 - 第二次 cutover 在 `SKIP_DOCKER_BUILD=1` 下进入维护窗口：备份目录为 `.deploy-backups/20260530T160105Z-split-postgres-cutover`，旧 `ds160-agent2` 已停止并复制 SQLite 备份，`postgres` 与 `ds160-api` 曾达到 healthy，随后卡在 `migrate-sqlite-to-postgres --dry-run`。之后公网 `/healthz` 超时，SSH TCP 可连接但 `sshd` 不返回 banner。
-- 2026-05-31 复查：本地和 GitHub 均为 `fe6f460`，服务器仍 SSH banner timeout，公网 `https://ds160.efastt.store/healthz` 仍超时；因此不能宣称生产 cutover 完成，也不能标记总目标完成。
+- 2026-05-31 复查：本地和 GitHub 均为 `2ec63cb`，服务器仍 SSH banner timeout，公网 `https://ds160.efastt.store/healthz` 仍超时；因此不能宣称生产 cutover 完成，也不能标记总目标完成。
 - 已追加低资源保护：`scripts/production-split-postgres-cutover.sh` 现在支持 `MIGRATION_TIMEOUT_SECONDS=600`、`ROLLBACK_ON_FAILURE=1`，迁移先只启动 Postgres，并用一次性 app 容器读取备份文件；失败时尝试停止 split 服务并 `docker start ds160-agent2`。新增 `scripts/production-recover-combined.sh`，用于 SSH 恢复后快速停止 split 服务并启动旧 combined 容器，不执行 build、不打印 `.env`。
 
 ## 仍未完成
