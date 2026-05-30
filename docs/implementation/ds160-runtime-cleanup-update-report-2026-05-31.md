@@ -1,9 +1,9 @@
 # DS-160 Runtime 清理与生产切换更新报告
 
-生成时间：2026-05-31  
-分支：`refactor/agent-runtime-graph`  
-当前 HEAD：`2ec63cb fix: add production recovery guardrails`  
-覆盖范围：从 `c299f7c` 之后到 `2ec63cb` 的本轮实施、验证、生产切换尝试与恢复保护。  
+生成时间：2026-05-31
+分支：`refactor/agent-runtime-graph`
+实施基线 HEAD：`2ec63cb fix: add production recovery guardrails`
+覆盖范围：从 `c299f7c` 之后到 `2ec63cb` 的本轮实施、验证、生产切换尝试与恢复保护；本报告文件自身的提交不改变实施结论。
 
 ## 一句话结论
 
@@ -13,8 +13,8 @@
 
 - 本地工作树：干净。
 - 本地分支：`refactor/agent-runtime-graph`。
-- GitHub 远端分支：`2ec63cbc74b360b64203c3c52d69537024fdc1d5`。
-- 当前提交：`2ec63cb fix: add production recovery guardrails`。
+- GitHub 远端实施基线：`2ec63cbc74b360b64203c3c52d69537024fdc1d5`。
+- 实施基线提交：`2ec63cb fix: add production recovery guardrails`。
 - 服务器：`root@conectv6.302dog.icu`，目录 `/opt/ds160-agent2`。
 - 生产公网：`https://ds160.efastt.store/healthz` 当前超时。
 - SSH：TCP 可连接，但 `sshd` 不返回 banner，报 `Connection timed out during banner exchange`。
