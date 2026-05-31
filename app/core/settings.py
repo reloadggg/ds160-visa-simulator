@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_timeout_seconds: float = 60.0
+    ai_material_bundle_timeout_seconds: float = 180.0
     run_live_llm_tests: bool = False
     app_auth_password: str | None = None
     app_auth_session_ttl_seconds: int = 60 * 60 * 24

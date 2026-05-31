@@ -213,7 +213,7 @@ class OpenAIAgentsMaterialBundleRunner:
             openai_client=AsyncOpenAI(
                 api_key=api_key,
                 base_url=base_url,
-                timeout=settings.openai_timeout_seconds,
+                timeout=settings.ai_material_bundle_timeout_seconds,
             ),
         )
 
@@ -300,6 +300,7 @@ class AIMaterialBundleGeneratorService:
             "prompt_pack_id": "ds160.ai_material_bundle",
             "prompt_version": "v1",
             "seed_text_present": True,
+            "timeout_seconds": settings.ai_material_bundle_timeout_seconds,
         }
         return GeneratedMaterialBundleOutput.model_validate(output), trace
 

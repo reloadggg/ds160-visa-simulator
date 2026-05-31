@@ -138,6 +138,57 @@ def test_case_memory_service_persists_material_understanding_in_document_artifac
         engine.dispose()
 
 
+def test_case_memory_snapshot_persist_handles_concurrent_first_insert(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-snapshot-race.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                CaseMemorySnapshotRecord(
+                    session_id="sess-1",
+                    snapshot_json={"schema_version": "old"},
+                )
+            )
+            db.commit()
+
+            service = CaseMemoryService(db)
+            snapshot = service.build_snapshot("sess-1")
+            original_get = db.get
+            snapshot_get_calls = 0
+
+            def stale_first_get(entity, ident, *args, **kwargs):
+                nonlocal snapshot_get_calls
+                if entity is CaseMemorySnapshotRecord and ident == "sess-1":
+                    snapshot_get_calls += 1
+                    if snapshot_get_calls == 1:
+                        return None
+                return original_get(entity, ident, *args, **kwargs)
+
+            monkeypatch.setattr(db, "get", stale_first_get)
+
+            service._persist_snapshot("sess-1", snapshot)
+            db.commit()
+
+            persisted = original_get(CaseMemorySnapshotRecord, "sess-1")
+            assert persisted is not None
+            assert persisted.snapshot_json["schema_version"] == (
+                "case_memory_snapshot.v1"
+            )
+            assert snapshot_get_calls >= 2
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_case_memory_service_records_unavailable_understanding(tmp_path) -> None:
     engine = create_engine(
         f"sqlite:///{tmp_path / 'case-memory-unavailable.sqlite3'}",

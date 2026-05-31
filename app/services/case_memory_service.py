@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -439,14 +440,24 @@ class CaseMemoryService:
         }
         record = self.db.get(CaseMemorySnapshotRecord, session_id)
         if record is None:
-            record = CaseMemorySnapshotRecord(
-                session_id=session_id,
-                snapshot_json=payload,
-                updated_at=utc_now_naive(),
-            )
-        else:
-            record.snapshot_json = payload
-            record.updated_at = utc_now_naive()
+            try:
+                with self.db.begin_nested():
+                    self.db.add(
+                        CaseMemorySnapshotRecord(
+                            session_id=session_id,
+                            snapshot_json=payload,
+                            updated_at=utc_now_naive(),
+                        )
+                    )
+                    self.db.flush()
+                return
+            except IntegrityError:
+                record = self.db.get(CaseMemorySnapshotRecord, session_id)
+                if record is None:
+                    raise
+
+        record.snapshot_json = payload
+        record.updated_at = utc_now_naive()
         self.db.add(record)
         self.db.flush()
 

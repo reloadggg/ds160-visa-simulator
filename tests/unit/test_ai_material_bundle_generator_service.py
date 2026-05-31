@@ -7,6 +7,7 @@ from agents.exceptions import UserError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core import settings as settings_module
 from app.db.base import Base
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.domain.runtime import build_initial_gate_status
@@ -199,6 +200,12 @@ def test_openai_agents_runner_uses_non_strict_output_schema(
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            captured["timeout"] = timeout
+
     class FakeResult:
         def final_output_as(self, output_type, raise_if_incorrect_type: bool = True):
             captured["final_output_type"] = output_type
@@ -257,8 +264,17 @@ def test_openai_agents_runner_uses_non_strict_output_schema(
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
     monkeypatch.setattr(
+        settings_module.settings,
+        "ai_material_bundle_timeout_seconds",
+        240.0,
+    )
+    monkeypatch.setattr(
         "app.services.ai_material_bundle_generator_service.Agent",
         FakeAgent,
+    )
+    monkeypatch.setattr(
+        "app.services.ai_material_bundle_generator_service.AsyncOpenAI",
+        FakeAsyncOpenAI,
     )
     monkeypatch.setattr(
         "app.services.ai_material_bundle_generator_service.Runner.run_sync",
@@ -275,6 +291,7 @@ def test_openai_agents_runner_uses_non_strict_output_schema(
     output_schema = captured["output_type"]
     assert isinstance(output_schema, AgentOutputSchema)
     assert output_schema.is_strict_json_schema() is False
+    assert captured["timeout"] == 240.0
     assert captured["final_output_type"] is GeneratedMaterialBundleOutput
     assert output.documents[2].fields["/education/school_name"] == "New York University"
 
