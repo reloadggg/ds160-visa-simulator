@@ -105,7 +105,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"from app.core.health import database_health; from app.db.session import engine; raise SystemExit(0 if database_health(engine)['status'] == 'ok' else 1)\"",
+          "python -c \"import os; from sqlalchemy import create_engine, text; engine = create_engine(os.environ['DATABASE_URL'], pool_pre_ping=True); conn = engine.connect(); conn.execute(text('select 1')).scalar(); conn.close()\"",
         ]
       interval: 10s
       timeout: 15s

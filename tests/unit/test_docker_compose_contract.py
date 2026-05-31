@@ -51,7 +51,9 @@ def test_compose_uses_postgres_readiness_and_layered_app_healthcheck() -> None:
     assert "127.0.0.1:3000" in web_healthcheck
 
     worker_healthcheck = " ".join(worker["healthcheck"]["test"])
-    assert "database_health" in worker_healthcheck
+    assert "select 1" in worker_healthcheck
+    assert "DATABASE_URL" in worker_healthcheck
+    assert "database_health" not in worker_healthcheck
     assert worker["healthcheck"]["timeout"] == "15s"
 
     postgres_healthcheck = " ".join(postgres["healthcheck"]["test"])
