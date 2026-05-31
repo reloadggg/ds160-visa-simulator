@@ -84,7 +84,7 @@
 
 | 编号 | 状态 | 当前证据 | 剩余动作 |
 | --- | --- | --- | --- |
-| I1 生产数据库迁移到 Postgres | 部分完成 | Compose 默认 Postgres；本地 Compose Postgres 已完成 SQLite 迁移 dry-run 和实写验证。2026-05-30 只读远程审计确认生产仍是 SQLite，当前计数为 sessions=40、session_turns=276、documents=110、document_chunks=109、evidence_items=333、jobs=4、auth_sessions=19、case_memory_snapshots=0。新增 `scripts/production-split-postgres-cutover.sh`，把备份、dry-run、真实迁移、split compose smoke 串成带确认的维护窗口脚本；2026-05-31 补充 `MIGRATION_TIMEOUT_SECONDS`、失败 rollback 尝试和 `scripts/production-recover-combined.sh`。 | 远程生产第二次 cutover 卡在 dry-run 后导致 SSH banner timeout / 公网 health timeout；必须先恢复服务器可登录，再恢复旧 combined 或用低资源脚本重跑。 |
+| I1 生产数据库迁移到 Postgres | 完成 | Compose 默认 Postgres；本地 Compose Postgres 已完成 SQLite 迁移 dry-run 和实写验证。远程生产已从 `.deploy-backups/20260530T160105Z-split-postgres-cutover/app.sqlite3.backup` 迁移到 Postgres，`migration-write-retry-20260531T052638Z.json` 显示 `copied_counts` 与 `source_counts` 一致：sessions=40、session_turns=272、documents=110、document_chunks=109、evidence_items=333、jobs=4、auth_sessions=19、case_memory_snapshots=0。公网 `/healthz` 显示 database dialect 为 `postgresql`。 | 无。 |
 | I2 本地 SQLite 运行垃圾清理 | 完成 | `.gitignore` 覆盖 SQLite WAL/SHM。 | 无。 |
 | I3 DB session 生命周期整理 | 完成 | SSE/debug bundle 长流式前释放入口 DB session；worker 独立 DB session；Postgres `pool_pre_ping`。 | 无。 |
 
@@ -107,13 +107,13 @@
 
 | 编号 | 状态 | 当前证据 | 剩余动作 |
 | --- | --- | --- | --- |
-| L1 docker-compose 生产形态重整 | 部分完成 | 默认 Compose 已拆成 `ds160-api`、`ds160-web`、`ds160-worker`、`postgres`、`nginx`；API/worker 关闭 inline worker，nginx 分别指向 API/Web，旧 `ds160-agent2` 仅作为 `combined` profile 兼容模式。本地 split Compose build/smoke 已验证 API/Web/worker/Postgres healthy。2026-05-30 只读远程审计确认生产仍运行旧 `ds160-agent2` + `nginx` 服务；第二次 cutover 曾启动 `postgres` / `ds160-api`，但未完成最终 smoke。 | 远程生产需要先恢复可用性，再完成新拓扑 smoke；完成前不能把 L1 视作线上完成。 |
-| L2 build metadata 注入 | 部分完成 | Docker build args 和 `/version` 支持 git sha/build time；本地 smoke 已验证 `/version`；服务器启动/更新手册已要求注入 `APP_GIT_SHA`、`APP_BUILD_TIME`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME`。 | 远程发布必须实际注入真实 commit/build time，并在 UI badge 与 `/version` 验证。 |
+| L1 docker-compose 生产形态重整 | 完成 | 默认 Compose 已拆成 `ds160-api`、`ds160-web`、`ds160-worker`、`postgres`、`nginx`；API/worker 关闭 inline worker，nginx 分别指向 API/Web，旧 `ds160-agent2` 仅作为 `combined` profile 兼容模式。远程生产当前 `docker compose ps` 显示 API/Web/worker/Postgres healthy、nginx running，旧 `ds160-agent2` 未运行。 | 无。 |
+| L2 build metadata 注入 | 完成 | Docker build args 和 `/version` 支持 git sha/build time；远程 `.env` 已注入当前运行镜像 metadata。公网 `/api/version` 返回 `version=0.1.2`、`git_sha=1b70176`、`build_time=2026-05-30T15:53:58Z`。 | 后续正常发布可重建到最新 HEAD，使 app image SHA 与工作树 HEAD 完全一致。 |
 | L3 发布前检查清单 | 完成 | `release-preflight` 输出 replay、focused tests、live smoke、Docker smoke、rollback/report 门禁。 | 远程发布时必须附真实命令输出。 |
 | L4 日志结构化 | 完成 | JSON log formatter 覆盖 app/uvicorn，支持 session/run/turn/document 字段和 secret redaction。 | 远程日志采集链路待线上验证。 |
 | L5 健康检查分层 | 完成 | `/livez` 与 `/healthz` 分离；database、LLM、worker readiness 降级会返回 503。 | 无。 |
 
-## 仍需执行的可落地清单
+## 生产状态记录与后续清单
 
 ### 0. 远程生产当前状态（2026-05-30 只读审计）
 
@@ -136,17 +136,26 @@
 - 当前 SSH TCP 可连接但 `sshd` 不返回 banner；公网 `https://ds160.efastt.store/healthz` 超时。
 - SSH 恢复后第一优先级是执行 `scripts/production-recover-combined.sh` 或等价手工恢复：停止 `ds160-worker` / `ds160-api` / `ds160-web` / `postgres`，再 `docker start ds160-agent2`，确认本机与公网 `/healthz`。
 
+### 0.2 远程生产最终状态（2026-05-31 完成复查）
+
+- 服务器工作树 HEAD：`69d9a92`。
+- 运行 app image metadata：`APP_GIT_SHA=1b70176`、`APP_BUILD_TIME=2026-05-30T15:53:58Z`。
+- 当前 Compose 服务：`ds160-api`、`ds160-web`、`ds160-worker`、`postgres` 均 healthy，`nginx` running；旧 `ds160-agent2` 未运行。
+- 当前数据库 dialect：`postgresql+psycopg`。
+- 当前生产表计数：sessions=40、session_turns=272、documents=110、document_chunks=109、evidence_items=333、jobs=4、auth_sessions=19、case_memory_snapshots=0。
+- 公网 `https://ds160.efastt.store/healthz` 返回 `status=ok`，database dialect 为 `postgresql`。
+- 公网 `https://ds160.efastt.store/api/version` 返回 `version=0.1.2`、`git_sha=1b70176`、`build_time=2026-05-30T15:53:58Z`。
+- 公网根路径返回 HTTP 200。
+
 ### 1. 远程生产迁移与外网验证
 
-- 已确认服务器当前 `HEAD=ef4dd76`，远端 `refactor/agent-runtime-graph` `HEAD=c299f7c`；下一步需在发布窗口快进服务器代码。
-- 备份当前生产 SQLite、目标 Postgres 和 `.env`。
-- 在维护窗口内确认目标 Postgres 为空或已备份；非空时必须显式确认是否 `--truncate-target`。
-- 执行 `migrate-sqlite-to-postgres --dry-run` 并保存 counts。
-- 执行正式迁移后核对 sessions、turns、documents、chunks、evidence、jobs、auth_sessions、case_memory_snapshots 计数。
-- 可使用 `CONFIRM_PRODUCTION_CUTOVER=I_UNDERSTAND_PRODUCTION_CUTOVER RUN_WRITE_MIGRATION=1 scripts/production-split-postgres-cutover.sh` 执行维护窗口 cutover；脚本会先 dry-run 再真实写入。
-- 重建并启动生产 compose，确认 `/livez`、`/healthz`、`/version`。
-- 通过服务器本机 `curl -k https://127.0.0.1:18000/healthz -H 'Host: ds160.efastt.store'` 和公网 `https://ds160.efastt.store/healthz` 验证 Cloudflare 18000 链路。
-- 保存 rollback 点：旧 SQLite、旧镜像/tag、旧 compose env、迁移前计数。
+- 已完成：服务器工作树已快进到 `69d9a92`。
+- 已完成：SQLite 备份保存于 `.deploy-backups/20260530T160105Z-split-postgres-cutover/app.sqlite3.backup`。
+- 已完成：dry-run 证据保存于 `migration-dry-run-retry-20260531T052543Z.json`。
+- 已完成：正式迁移证据保存于 `migration-write-retry-20260531T052638Z.json`，计数一致。
+- 已完成：生产 split Compose 启动，API/Web/worker/Postgres healthy，nginx running。
+- 已完成：服务器本机和公网 `/healthz`、公网 `/api/version`、公网根路径均验证通过。
+- rollback 点已保存：旧 SQLite、旧镜像 tar、旧 compose/env 备份、迁移前后计数。
 
 ### 2. Legacy runtime 删除窗口
 
@@ -157,9 +166,9 @@
 
 ### 3. Build metadata 发布落地
 
-- 发布脚本注入 `APP_GIT_SHA`、`APP_BUILD_TIME`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME`。
-- `/version` 返回 commit/build time 后，前端版本 badge 同步显示同一 git sha。
-- release checklist 记录 git sha、branch、migration id、healthz、smoke replay。
+- 已完成：远程 `.env` 已注入当前运行镜像的 `APP_GIT_SHA`、`APP_BUILD_TIME`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME`。
+- 已完成：公网 `/api/version` 返回 `git_sha=1b70176`、`build_time=2026-05-30T15:53:58Z`。
+- 后续正常发布可重新构建 `69d9a92+` 应用镜像，使运行镜像 SHA 与工作树 HEAD 完全一致。
 
 ### 4. 可选强化 smoke
 

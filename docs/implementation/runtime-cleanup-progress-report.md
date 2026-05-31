@@ -713,17 +713,21 @@ uv run python -m app.cli.main release-preflight --replay-corpus-passed --focused
 - 第二次 cutover 在 `SKIP_DOCKER_BUILD=1` 下进入维护窗口：备份目录为 `.deploy-backups/20260530T160105Z-split-postgres-cutover`，旧 `ds160-agent2` 已停止并复制 SQLite 备份，`postgres` 与 `ds160-api` 曾达到 healthy，随后卡在 `migrate-sqlite-to-postgres --dry-run`。之后公网 `/healthz` 超时，SSH TCP 可连接但 `sshd` 不返回 banner。
 - 2026-05-31 复查：本地和 GitHub 均为 `2ec63cb`，服务器仍 SSH banner timeout，公网 `https://ds160.efastt.store/healthz` 仍超时；因此不能宣称生产 cutover 完成，也不能标记总目标完成。
 - 已追加低资源保护：`scripts/production-split-postgres-cutover.sh` 现在支持 `MIGRATION_TIMEOUT_SECONDS=600`、`ROLLBACK_ON_FAILURE=1`，迁移先只启动 Postgres，并用一次性 app 容器读取备份文件；失败时尝试停止 split 服务并 `docker start ds160-agent2`。新增 `scripts/production-recover-combined.sh`，用于 SSH 恢复后快速停止 split 服务并启动旧 combined 容器，不执行 build、不打印 `.env`。
+- 2026-05-31 SSH 恢复后完成生产迁移：确认 split services 已恢复但 Postgres 为空，停止 unhealthy worker 后从 `.deploy-backups/20260530T160105Z-split-postgres-cutover/app.sqlite3.backup` 重新执行 dry-run 与正式迁移。dry-run 源计数为 sessions=40、session_turns=272、documents=110、document_chunks=109、evidence_items=333、jobs=4、auth_sessions=19、case_memory_snapshots=0，目标为空；正式写入后 `copied_counts`、`source_counts`、`target_after_counts` 完全一致。
+- 2026-05-31 生产 split 拓扑验证通过：服务器工作树 HEAD=`69d9a92`；`ds160-api`、`ds160-web`、`ds160-worker`、`ds160-postgres` 均 healthy，`ds160-nginx` running，旧 `ds160-agent2` 未运行。worker healthcheck 已改为轻量 SQLAlchemy `select 1`，避免弱服务器上完整 app import 超时。
+- 2026-05-31 公网 smoke 通过：`https://ds160.efastt.store/healthz` 返回 `status=ok` 且 database dialect=`postgresql`；`/api/version` 返回 `version=0.1.2`、`git_sha=1b70176`、`build_time=2026-05-30T15:53:58Z`；根路径返回 HTTP 200。
+- 最终报告已生成：`docs/implementation/ds160-runtime-cleanup-final-report-2026-05-31.md`。
 
-## 仍未完成
+## 完成状态与后续项
 
-以下任务仍需继续实施，不能把总目标标记为完成：
+本轮核心目标已完成：runtime cleanup、Case Memory/Evidence Graph、上传理解、前端状态分层、debug 可观测、split Compose、Postgres 迁移、生产公网 smoke 和最终报告均已落地。
 
 完整 A-L 对账和剩余执行清单见
 `docs/implementation/runtime-cleanup-task-audit.md`。
 
 - T6/T7：已完成 runtime、reports、OpenAI-compatible metadata、OpenAI Responses metadata、runtime debug snapshot、post-interview review context、export artifact、`GraphCaseStateBuilder` fallback 脱敏、前端 debug 摘要、Analysis Panel、mock/demo 数据、legacy 兼容文案与材料 fallback 的 Case Memory / Evidence Graph 消费，修复了 replay fixture 的 Case Board next_move 引用漂移，把 graph/native/report 的 missing-evidence advisory fallback 收口到 Case Board proof points，冻结 anchored/non-anchored runtime view、runtime ledger turn_record、material refresh response、Gate turn record、capability document review fallback 与 user report missing_evidence 下 requested/remaining 文档字段的 fallback 污染，补齐 Case Board latest material / open proof point 状态判断，并收口生产代码中的“关键证明/待证明点/待补清单/材料核验/材料齐套”旧口径；兼容字段仍保留给旧 API 消费者，删除需等待外部消费者迁移和发布窗口确认。
 - T8/T9：已完成新上传主路径、parse 失败节点可见性、前端 timeline/materials/debug panel 产品化展示，并补齐本地 production 浏览器端到端证据；后续可在 Docker/Postgres 环境补 UI 上传 smoke，但主阻断已不是上传合同。
-- T10/T11/T12/T13：已完成代码、静态合同、`docker.exe compose config --quiet` 配置渲染、真实 Postgres 容器启动、app `/healthz` / `/livez` / `/version` 健康检查、本地 `app.sqlite3` 到 Compose Postgres 的 migration dry-run 与本地 Compose Postgres 实写迁移验证，以及基于临时 nginx 容器的 18000 edge smoke；本轮已重新刷新 Docker/Postgres/nginx local smoke 证据。远端生产正式写入迁移仍必须在备份和维护窗口内执行。
+- T10/T11/T12/T13：已完成代码、静态合同、`docker.exe compose config --quiet` 配置渲染、真实 Postgres 容器启动、app `/healthz` / `/livez` / `/version` 健康检查、本地 `app.sqlite3` 到 Compose Postgres 的 migration dry-run 与本地 Compose Postgres 实写迁移验证，以及基于临时 nginx 容器的 18000 edge smoke；远程生产正式写入迁移和公网 smoke 已完成。
 - T14/T15：架构 spec、AI-native case understanding spec、前端 Case Board 合同和状态管理合同已跟随当前 runtime / Case Memory / frontend presentation 语义更新；后续只需在真实 LangGraph public promotion 或 legacy 字段删除时继续追加合同变更。
 - T16：已新增可执行 release preflight，并补齐 replay corpus、focused non-live runtime tests、focused live LLM smoke、Docker/Postgres smoke 证据；本轮已完成 legacy runtime freeze 的 `graph_shadow` 收口，并通过 `legacy-runtime-deprecation-decision.md` 接受“生产 cutover 后保留一个发布周期再删除”的决策。当前实现只保留显式 `legacy` 与显式 fail-open fallback。
 
@@ -731,7 +735,6 @@ uv run python -m app.cli.main release-preflight --replay-corpus-passed --focused
 
 优先继续：
 
-1. 远程生产迁移：在服务器备份 SQLite、Postgres 和 `.env`，用新 split Compose 拓扑执行 dry-run、正式迁移和计数核对。
-2. 公网 Cloudflare 链路：在服务器用真实 origin certs 重跑 `nginx` 18000 smoke，并从公网验证 `https://ds160.efastt.store/healthz`。
-3. Build metadata 发布落地：发布脚本注入 `APP_GIT_SHA`、`APP_BUILD_TIME`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME`，并在 UI badge 与 `/version` 双向验证。
-4. Legacy runtime 删除窗口：决策已完成；生产 split Compose + Postgres cutover 后，按 `legacy-runtime-deprecation-decision.md` 删除旧 runtime 文件、settings enum、fail-open fallback 和相关兼容测试。
+1. Legacy runtime 删除窗口：决策已完成；生产 split Compose + Postgres cutover 后，按 `legacy-runtime-deprecation-decision.md` 保留一个发布周期，再删除旧 runtime 文件、settings enum、fail-open fallback 和相关兼容测试。
+2. 重新构建应用镜像到最新 HEAD：当前运行 app image 是 `1b70176`，后续正常发布可构建 `69d9a92+` 镜像，使 `/version` 与工作树 HEAD 完全一致。
+3. 可选线上 UI 上传 smoke：用浏览器补一次 `.txt` 415 和损坏 PDF parse failed 的真实 UI 验证。
