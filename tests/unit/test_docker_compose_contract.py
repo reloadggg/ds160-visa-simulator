@@ -52,6 +52,7 @@ def test_compose_uses_postgres_readiness_and_layered_app_healthcheck() -> None:
 
     worker_healthcheck = " ".join(worker["healthcheck"]["test"])
     assert "database_health" in worker_healthcheck
+    assert worker["healthcheck"]["timeout"] == "15s"
 
     postgres_healthcheck = " ".join(postgres["healthcheck"]["test"])
     assert "pg_isready" in postgres_healthcheck

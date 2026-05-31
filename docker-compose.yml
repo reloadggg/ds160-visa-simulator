@@ -108,7 +108,7 @@ services:
           "python -c \"from app.core.health import database_health; from app.db.session import engine; raise SystemExit(0 if database_health(engine)['status'] == 'ok' else 1)\"",
         ]
       interval: 10s
-      timeout: 5s
+      timeout: 15s
       retries: 12
     restart: unless-stopped
 
