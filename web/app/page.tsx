@@ -68,7 +68,6 @@ function Workbench() {
     latestDebugMaterialBundle,
     isLoadingRuntimeDebug,
     runtimeDebugError,
-    debugMaterialSeedText,
     userModelConfig,
     availableModels,
     isLoadingModels,
@@ -129,7 +128,6 @@ function Workbench() {
           onReset={handleReset}
           onDebugMaterialBundleScenario={handleDebugMaterialBundleScenario}
           isDebugBundleGenerating={isDebugBundleGenerating}
-          debugMaterialSeedText={debugMaterialSeedText}
           onExportConversationImage={handleExportConversationImage}
         />
       )
@@ -255,7 +253,6 @@ function Workbench() {
                 feedback={settingsFeedback}
                 isDebugBundleGenerating={isDebugBundleGenerating}
                 debugBundleProgress={debugBundleProgress}
-                debugMaterialSeedText={debugMaterialSeedText}
                 userModelConfig={userModelConfig}
                 availableModels={availableModels}
                 isLoadingModels={isLoadingModels}

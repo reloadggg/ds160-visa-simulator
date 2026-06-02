@@ -32,7 +32,7 @@ DS-160 AI 面签模拟器不是一个普通聊天机器人，也不是传统 Saa
 - 🔎 接入服务端 RAG 知识库，优先引用官方政策、领馆页面和互惠表信息
 - 🧭 识别当前回答中的待核实事实、材料冲突、不完整解释和高风险信号
 - 📊 生成面向用户的准备建议和面向内部调试的运行报告
-- 🧪 验证 native interviewer 公开 runtime、LangGraph replay/shadow 基座、Case Memory、材料理解、RAG 检索、Governor 护栏和前端 Case Board 体验
+- 🧪 验证 native interviewer 公开 runtime、LangGraph replay/eval 基座、Case Memory、材料理解、RAG 检索、Governor 护栏和前端 Case Board 体验
 
 ## 🧠 核心体验
 
@@ -43,7 +43,7 @@ DS-160 AI 面签模拟器不是一个普通聊天机器人，也不是传统 Saa
 - 右侧是 Case Board，展示已理解事实、证据片段、冲突、待核实事实和下一问原因
 - 上传材料后，系统会判断材料能证明什么、是否与口头陈述冲突，而不是要求用户先手动分类
 - 会话结束或阶段性复盘时，可以生成用户报告和内部分析报告
-- 前端会直接显示版本号，调试台可查看当前 session 的 runtime、材料生成、fallback 和流式事件
+- 前端会直接显示版本号，调试台可查看当前 session 的 runtime、材料生成、材料刷新错误和流式事件
 
 后端看到的是一条可追踪的 Agent 运行链路：
 
@@ -58,7 +58,7 @@ DS-160 AI 面签模拟器不是一个普通聊天机器人，也不是传统 Saa
 - 后端版本显示来自 `app/core/app_version.py`，同时支持 `APP_GIT_SHA`、`APP_BUILD_TIME` 覆盖。
 - 每次部署到服务器前都要递增前端版本号；否则无法从 UI 判断是否已经更新。
 - 工作台左侧“调试台”会读取 `GET /v1/sessions/{session_id}/debug/runtime`，需要开启 `ALLOW_RUNTIME_DEBUG=true` 或复用 `ALLOW_DEBUG_FILL=true`。
-- 调试台会展示消息流/材料包流的实时事件、runtime snapshot、材料生成来源、fallback 原因和可复制调试包。
+- 调试台会展示消息流/材料包流的实时事件、runtime snapshot、材料生成来源、材料刷新错误和可复制调试包。
 
 ## 🏗️ 系统架构
 
@@ -87,7 +87,7 @@ NativeInterviewerRuntimeService
         └── Legacy Gate Projection
 
 LangGraph DS160TurnGraph
-        └── replay / shadow / future public-promotion candidate
+        └── replay / eval / future public-promotion candidate
 ```
 
 ### 架构分层
@@ -96,7 +96,7 @@ LangGraph DS160TurnGraph
 | --- | --- |
 | `web/` | Next.js 前端工作台，负责会话、材料、报告、历史和鉴权体验 |
 | `app/api/routers/` | FastAPI 路由层，对外暴露 session、message、file、report、auth 等接口 |
-| `app/services/` | 业务编排层，承载 native interviewer 公开 runtime、LangGraph replay/shadow 适配、Case Memory、材料理解、报告生成和状态同步 |
+| `app/services/` | 业务编排层，承载 native interviewer 公开 runtime、LangGraph replay/eval 适配、Case Memory、材料理解、报告生成和状态同步 |
 | `app/agents/` | Agent 运行单元，负责问题生成、材料复核、裁决和结构化输出 |
 | `app/domain/` | 领域模型与跨层合同，例如 Case Memory、证据卡、运行状态和决策结构 |
 | `app/integrations/` | 外部模型、embedding、rerank、文件解析等集成适配 |
@@ -111,7 +111,7 @@ LangGraph DS160TurnGraph
 3. 上传材料会创建 `case_understanding` 任务；PDF/图片由多模态模型直接理解，图片不再走 OCR。
 4. `CaseMemoryService` 把材料理解结果和用户明确陈述写入 Case Memory / Evidence Graph。
 5. Runtime state builder 把 Case Memory、最近 turn、材料证据、RAG 引用和旧兼容字段组装成面谈状态。
-6. 当前公开主流程由 `NativeInterviewerRuntimeService` 选择下一问；LangGraph 保留为 replay/shadow 和后续公开 promotion 的候选基座。Governor / guard 只负责高风险、拒签和 grounding 边界。
+6. 当前公开主流程由 `NativeInterviewerRuntimeService` 选择下一问；LangGraph 保留为 replay/eval 和后续公开 promotion 的候选基座，不在普通请求中并发 shadow 调用。Governor / guard 只负责高风险、拒签和 grounding 边界。
 7. 系统返回唯一一条面签式主回复，并同步更新 runtime view、trace、Case Board、score 和报告上下文。
 
 ## 🧩 关键设计
@@ -130,7 +130,7 @@ LangGraph DS160TurnGraph
 
 系统把模型放在面谈主循环中，但不会让模型直接裸奔。模型输出会被结构化 schema、runtime projector、Governor 和报告合同约束，确保前端、报告和测试能消费稳定字段。
 
-当前公开主流程由 `NativeInterviewerRuntimeService` 写用户可见回复；`AGENT_RUNTIME=graph` / `graph_canary` 目前只是兼容标签，响应里的 `selected_public_runtime` 必须暴露真实执行路径。LangGraph 继续作为 replay、shadow trace 和后续 public promotion 的图执行基座；未来如果试验 OpenAI Agents SDK，也只能藏在单个 runtime runner 后面，不能接管会话状态、handoff 或用户可见主回复。
+当前公开主流程由 `NativeInterviewerRuntimeService` 写用户可见回复；`AGENT_RUNTIME=graph` / `graph_shadow` / `graph_canary` 目前只是兼容标签，响应里的 `selected_public_runtime` 必须暴露真实执行路径。LangGraph 继续作为 replay、显式评测和后续 public promotion 的图执行基座；未来如果试验 OpenAI Agents SDK，也只能藏在单个 runtime runner 后面，不能接管会话状态、handoff 或用户可见主回复。
 
 ### 🛂 Governor 护栏
 
@@ -161,9 +161,9 @@ Gate primary document、`score.missing_evidence`、document review 建议和 gov
 
 ### 🧪 调试材料包
 
-本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端从“材料包”菜单生成 F-1 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
+本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端从“材料包”菜单基于显式提示词生成 F-1 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
 
-材料正文会模拟 DS-160 确认页、护照 OCR、I-20、录取信、银行证明和亲属关系证明的真实文本形态；所有人名、学校、证件号和机构名仍使用明显合成占位值。
+材料正文会模拟 DS-160 确认页、护照 OCR、I-20、录取信、银行证明和亲属关系证明的真实文本形态；提示词为空或 AI 生成失败时不会写入演示占位材料。
 
 当前支持：
 

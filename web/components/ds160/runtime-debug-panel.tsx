@@ -381,20 +381,6 @@ export function RuntimeDebugPanel({
                   {displayValue(generation.seed_source)}
                 </div>
               </div>
-              <div>
-                <div className="text-xs text-muted-foreground">fallback</div>
-                <div className="mt-1 font-mono">
-                  {displayValue(generation.fallback_used)}
-                </div>
-              </div>
-              {generation.fallback_reason ? (
-                <div className="md:col-span-2">
-                  <div className="text-xs text-muted-foreground">fallback_reason</div>
-                  <div className="mt-1 break-words rounded-lg bg-muted/40 p-3 text-xs">
-                    {displayValue(generation.fallback_reason)}
-                  </div>
-                </div>
-              ) : null}
             </CardContent>
           </Card>
 

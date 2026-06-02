@@ -319,11 +319,7 @@ function buildDebugBundleFinalMessage(
   const option = getDebugMaterialBundleOption(bundle.scenario)
   const source =
     bundle.generation?.source === "ai"
-      ? "AI 已根据你的会话信息生成"
-      : bundle.generation?.fallback_used
-        ? "AI 材料生成失败"
-      : bundle.generation?.mode !== "deterministic"
-        ? "未找到足够会话事实，已使用演示占位资料生成"
+      ? "AI 已根据你的提示词生成"
       : "已生成"
   return `${source}${option.label}：${formatRequestedDocuments(documentNames)}。材料已写入材料库，可以直接打开查看正文和提取字段。`
 }
@@ -2829,14 +2825,6 @@ export function useSessionWorkbench() {
     }
   }, [interviewReview, sessionId, visaType])
 
-  const debugMaterialSeedText = useMemo(() => {
-    const userContents = messages
-      .filter((message) => message.role === "user")
-      .map((message) => message.content.trim())
-      .filter(Boolean)
-    return userContents.slice(-4).join("\n\n")
-  }, [messages])
-
   const runDebugMaterialBundle = useCallback(
     async (scenario: DebugMaterialBundleScenario, seedText?: string) => {
       if (!sessionId || isDebugBundleGenerating) {
@@ -2855,12 +2843,20 @@ export function useSessionWorkbench() {
       }
 
       const progressLines: string[] = []
-      const normalizedSeedText = seedText?.trim() || debugMaterialSeedText
+      const normalizedSeedText = seedText?.trim() ?? ""
+      if (!normalizedSeedText) {
+        const message = "请先填写材料生成依据；系统不会写入演示占位材料。"
+        setSettingsFeedback(message)
+        appendActivityEvent({
+          kind: "debug",
+          content: message,
+          status: "error",
+        })
+        return
+      }
       const progressMessageId = appendActivityEvent({
         kind: "debug",
-        content: normalizedSeedText
-          ? `正在根据会话信息生成${getDebugMaterialBundleOption(scenario).label}...`
-          : `正在生成${getDebugMaterialBundleOption(scenario).label}...`,
+        content: `正在根据提示词生成${getDebugMaterialBundleOption(scenario).label}...`,
         status: "sending",
       })
       const updateProgress = (line: string) => {
@@ -2884,7 +2880,7 @@ export function useSessionWorkbench() {
             recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
             updateProgress(describeDebugBundleEvent(event))
           },
-          normalizedSeedText || null,
+          normalizedSeedText,
           "ai_if_available",
         )
         setLatestDebugMaterialBundle(result)
@@ -2930,23 +2926,12 @@ export function useSessionWorkbench() {
         }
         await refreshReports(sessionId)
         await refreshRuntimeDebugSnapshot(sessionId)
-        if (result.generation?.fallback_used && result.generation.fallback_reason) {
-          setSettingsFeedback(
-            `AI 材料生成失败，已使用备用材料包：${result.generation.fallback_reason}`,
-          )
-        } else if (
-          result.generation?.source === "deterministic" &&
-          result.generation?.mode !== "deterministic"
-        ) {
-          setSettingsFeedback(
-            "未找到可用于 AI 生成的会话事实，已使用演示占位材料。",
-          )
-        } else if (result.main_flow_refresh_error) {
+        if (result.main_flow_refresh_error) {
           setSettingsFeedback(
             `材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
           )
         } else {
-          setSettingsFeedback("材料包已生成，前端已接收完整流式进度。")
+          setSettingsFeedback("AI 材料包已生成，前端已接收完整流式进度。")
         }
       } catch (error) {
         updateActivityEventStatus(progressMessageId, "error")
@@ -2963,7 +2948,6 @@ export function useSessionWorkbench() {
     [
       appendActivityEvent,
       appendMessage,
-      debugMaterialSeedText,
       getErrorMessage,
       isDebugBundleGenerating,
       mockMode,
@@ -3079,7 +3063,6 @@ export function useSessionWorkbench() {
     latestDebugMaterialBundle,
     isLoadingRuntimeDebug,
     runtimeDebugError,
-    debugMaterialSeedText,
     userModelConfig,
     availableModels,
     isLoadingModels,

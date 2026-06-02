@@ -262,8 +262,6 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
         "runtime_engine": "native_interviewer_runtime",
         "source": "message_turn",
         "fail_open_to_legacy": False,
-        "shadow_runtime": "graph_shadow",
-        "shadow_run_id": metadata["runtime_execution"]["shadow_run_id"],
         "compatibility_runtime_label": "graph_shadow",
     }
     assert metadata["native_run_id"].startswith("native-run-")
@@ -290,7 +288,7 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
     assert assistant_turns[0].metadata_json["runtime_execution"] == metadata[
         "runtime_execution"
     ]
-    assert assistant_turns[0].metadata_json["graph_shadow"]["status"] == "completed"
+    assert assistant_turns[0].metadata_json.get("graph_shadow") is None
 
 
 def test_chat_completions_graph_mode_keeps_metadata_contract(

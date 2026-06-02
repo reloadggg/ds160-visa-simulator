@@ -401,8 +401,8 @@ Runtime notes:
 - 用户可见的 `assistant_message` 只能来自当前选中的公开 interviewer runtime。
 - 材料理解、Case Memory 更新、Governor 和 guard 不会额外写第二条用户可见主回复。
 - 当前默认 `AGENT_RUNTIME=native_interviewer`，主流程经 `NativeInterviewerRuntimeService` 运行。
-- `AGENT_RUNTIME=graph` 只保留为当前 native interviewer 公开主链路的兼容别名；`graph_shadow` 才会旁路运行 `GraphRuntimeAdapter` / LangGraph trace。
-- `runtime_execution` 是判断真实执行路径的稳定字段；它区分配置值、请求的公开 runtime、实际公开 writer、执行引擎和 fallback。默认 `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false`，不会静默回 legacy。
+- `AGENT_RUNTIME=graph` / `graph_shadow` / `graph_canary` 只保留为当前 native interviewer 公开主链路的兼容配置标签；公开请求不再旁路运行 `GraphRuntimeAdapter` / LangGraph shadow。
+- `runtime_execution` 是判断真实执行路径的稳定字段；它区分配置值、请求的公开 runtime、实际公开 writer 和执行引擎。自动 fail-open 到 legacy 的配置已移除，native 失败不会静默生成 legacy 回复。
 - typed adjudication 模型不可用时，fallback 会读取 `case_board.next_move` 和 `case_memory.conflicts`，不会退回“先补齐材料”的固定话术。
 
 ### `POST /v1/sessions/{session_id}/messages/stream`

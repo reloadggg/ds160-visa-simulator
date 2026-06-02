@@ -1,29 +1,28 @@
 # Legacy Runtime Deprecation Decision
 
 日期：2026-05-30
-状态：已接受，待生产 cutover 后执行删除窗口
+状态：已接受，精简分支已执行第一步冻结
 
 ## 决策
 
-`InterviewerRuntimeService` 不再是产品主链路，也不再接收新能力。当前保留它只为一个目的：在生产完成 split Compose + Postgres cutover 后的一个发布周期内，提供显式回滚路径。
+`InterviewerRuntimeService` 不再是产品主链路，也不再接收新能力。当前保留它只为一个目的：短期提供人工显式回滚路径，后续删除 live path。
 
-保留入口只允许两类：
+保留入口只允许一类：
 
 - `AGENT_RUNTIME=legacy`：人工显式回滚到旧 runtime。
-- `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=true`：native / graph-compatible public runtime 失败后的显式 fail-open fallback。
 
 默认生产入口必须保持：
 
 ```text
 AGENT_RUNTIME=native_interviewer
-AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false
 ```
 
 ## 禁止事项
 
 - 不允许把 legacy runtime 作为 `graph`、`graph_canary` 或 `graph_shadow` 的公开 writer。
 - 不允许在 legacy runtime 中新增产品能力、提示词策略、材料理解策略或 Case Board 新语义。
-- 不允许让 material refresh 默认调用 legacy；只有显式 fail-open 且 native refresh 失败时才可 fallback。
+- 不允许让 material refresh 在 native 失败后自动调用 legacy。
+- 不允许使用 `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY` 重新打开自动 fallback；该配置值已从运行时 settings 中移除，旧环境变量会被忽略。
 - 不允许用 `agent_runtime` display label 推断真实 writer；必须读取 `runtime_execution`。
 
 ## 删除条件
@@ -37,14 +36,14 @@ AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false
 - focused live LLM smoke 通过。
 - Docker/Postgres smoke 通过。
 - `release-preflight` 输出 `ok=true`。
-- 生产日志能按 session / run / turn 定位 native runtime、graph shadow 和 fallback 路径。
+- 生产日志能按 session / run / turn 定位 native runtime、显式 legacy 回滚和材料刷新失败路径。
 
 ## 删除范围
 
 删除窗口内优先移除：
 
 - `AGENT_RUNTIME=legacy` 配置值。
-- `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY` 到 legacy 的 fallback 分支。
+- `AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY` 废弃配置字段。
 - `MessageService` 中 legacy public runtime 分支。
 - `InterviewerRuntimeService` live path 及只为 legacy 存在的测试夹具。
 - 文档中 legacy rollback 指令，替换为 native runtime / previous image rollback。

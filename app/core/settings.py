@@ -47,7 +47,6 @@ class Settings(BaseSettings):
     ] = "native_interviewer"
     agent_runtime_canary_percent: int = 0
     agent_runtime_trace_enabled: bool = True
-    agent_runtime_fail_open_to_legacy: bool = False
     agent_runtime_typed_adjudication_enabled: bool = True
     rag_enabled: bool = False
     rag_vector_store: str = "chroma"

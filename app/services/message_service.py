@@ -15,7 +15,6 @@ from app.repositories.session_turn_repo import (
 )
 from app.services.case_memory_service import CaseMemoryService
 from app.services.gate_runtime_service import GateRuntimeService
-from app.services.graph_runtime_adapter import GraphRuntimeAdapter
 from app.services.interview_memory_service import (
     INTERVIEW_MEMORY_KEY,
     InterviewMemoryService,
@@ -73,7 +72,6 @@ class MessageService:
         self.session_turn_repo = SessionTurnRepository(db)
         self.gate_runtime = GateRuntimeService(db)
         self.interviewer_runtime = InterviewerRuntimeService(db)
-        self.graph_runtime = GraphRuntimeAdapter(db)
         self.native_interviewer_runtime = NativeInterviewerRuntimeService(db)
         self.session_read_model = SessionReadModelService(db)
         self.case_memory = CaseMemoryService(db)
@@ -145,16 +143,13 @@ class MessageService:
                 self.session_repo.save(record)
                 return response
 
-            graph_shadow = self._run_graph_shadow(record, message_text, user_turn)
             runtime_mode = self._select_public_runtime(record.session_id)
             response = self._run_public_runtime(
                 runtime_mode,
                 record,
                 message_text,
                 user_turn,
-                graph_shadow=graph_shadow,
             )
-            self._attach_graph_shadow(response, graph_shadow)
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
             self._strip_internal_runtime_fields(response)
@@ -375,15 +370,12 @@ class MessageService:
             return {}
 
         try:
-            graph_shadow = self._run_material_change_graph_shadow(record, reason=reason)
             runtime_mode = self._select_public_runtime(record.session_id)
             response = self._run_material_change_public_runtime(
                 runtime_mode,
                 record,
                 reason=reason,
-                graph_shadow=graph_shadow,
             )
-            self._attach_graph_shadow(response, graph_shadow)
             self._sync_material_refresh_response_state(record, response, reason=reason)
             self._strip_internal_runtime_fields(response)
             self.session_repo.save(record)
@@ -426,7 +418,6 @@ class MessageService:
         source: str,
         fallback_runtime: str | None = None,
         error: dict | None = None,
-        graph_shadow: dict | None = None,
     ) -> dict:
         payload = {
             "schema_version": "runtime.execution.v1",
@@ -436,16 +427,13 @@ class MessageService:
             "execution_runtime": execution_runtime,
             "runtime_engine": execution_runtime,
             "source": source,
-            "fail_open_to_legacy": settings.agent_runtime_fail_open_to_legacy,
+            "fail_open_to_legacy": False,
         }
         if fallback_runtime:
             payload["fallback_runtime"] = fallback_runtime
         if error:
             payload["error_type"] = error.get("error_type")
             payload["error_message"] = error.get("error_message")
-        if graph_shadow:
-            payload["shadow_runtime"] = graph_shadow.get("agent_runtime")
-            payload["shadow_run_id"] = graph_shadow.get("graph_run_id")
         if (
             settings.agent_runtime in {"graph", "graph_canary", "graph_shadow"}
             and requested_public_runtime == "native_interviewer"
@@ -468,46 +456,13 @@ class MessageService:
         record,
         message_text: str,
         user_turn: SessionTurnRecord,
-        *,
-        graph_shadow: dict | None,
     ) -> dict:
         if runtime_mode == "native_interviewer":
-            try:
-                response = self.native_interviewer_runtime.run_turn(
-                    record,
-                    message_text,
-                    user_turn=user_turn,
-                )
-            except Exception as exc:
-                if not settings.agent_runtime_fail_open_to_legacy:
-                    raise
-                interview_response = self.interviewer_runtime.run_turn(record, message_text)
-                response = self.gate_runtime.merge_interview_response(
-                    interview_response,
-                    record,
-                )
-                response["graph_runtime_error"] = {
-                    "status": "error",
-                    "agent_runtime": settings.agent_runtime,
-                    "selected_public_runtime": "native_interviewer",
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                    "fallback_runtime": "legacy",
-                }
-                response["agent_runtime"] = self._selected_agent_runtime_label(
-                    runtime_mode
-                )
-                response["selected_public_runtime"] = "legacy"
-                response["runtime_execution"] = self._runtime_execution_payload(
-                    requested_public_runtime="native_interviewer",
-                    public_runtime="legacy",
-                    execution_runtime="interviewer_runtime_service",
-                    source="message_turn",
-                    fallback_runtime="legacy",
-                    error=response["graph_runtime_error"],
-                    graph_shadow=graph_shadow,
-                )
-                return response
+            response = self.native_interviewer_runtime.run_turn(
+                record,
+                message_text,
+                user_turn=user_turn,
+            )
             response["agent_runtime"] = self._selected_agent_runtime_label(runtime_mode)
             response["selected_public_runtime"] = "native_interviewer"
             response["runtime_execution"] = self._runtime_execution_payload(
@@ -515,7 +470,6 @@ class MessageService:
                 public_runtime="native_interviewer",
                 execution_runtime="native_interviewer_runtime",
                 source="message_turn",
-                graph_shadow=graph_shadow,
             )
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
@@ -529,15 +483,7 @@ class MessageService:
             public_runtime="legacy",
             execution_runtime="interviewer_runtime_service",
             source="message_turn",
-            graph_shadow=graph_shadow,
         )
-        if graph_shadow:
-            response["runtime_execution"]["shadow_runtime"] = graph_shadow.get(
-                "agent_runtime"
-            )
-            response["runtime_execution"]["shadow_run_id"] = graph_shadow.get(
-                "graph_run_id"
-            )
         return response
 
     def _run_material_change_public_runtime(
@@ -546,40 +492,12 @@ class MessageService:
         record,
         *,
         reason: str,
-        graph_shadow: dict | None,
     ) -> dict:
         if runtime_mode == "native_interviewer":
-            try:
-                response = self.native_interviewer_runtime.run_material_change(
-                    record,
-                    reason=self._graph_material_change_reason(reason),
-                )
-            except Exception as exc:
-                if not settings.agent_runtime_fail_open_to_legacy:
-                    raise
-                response = self._run_legacy_material_change(record, reason=reason)
-                response["graph_runtime_error"] = {
-                    "status": "error",
-                    "agent_runtime": settings.agent_runtime,
-                    "selected_public_runtime": "native_interviewer",
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                    "fallback_runtime": "legacy",
-                }
-                response["agent_runtime"] = self._selected_agent_runtime_label(
-                    runtime_mode
-                )
-                response["selected_public_runtime"] = "legacy"
-                response["runtime_execution"] = self._runtime_execution_payload(
-                    requested_public_runtime="native_interviewer",
-                    public_runtime="legacy",
-                    execution_runtime="interviewer_runtime_service",
-                    source="material_change",
-                    fallback_runtime="legacy",
-                    error=response["graph_runtime_error"],
-                    graph_shadow=graph_shadow,
-                )
-                return response
+            response = self.native_interviewer_runtime.run_material_change(
+                record,
+                reason=self._graph_material_change_reason(reason),
+            )
             response["agent_runtime"] = self._selected_agent_runtime_label(runtime_mode)
             response["selected_public_runtime"] = "native_interviewer"
             response["runtime_execution"] = self._runtime_execution_payload(
@@ -587,7 +505,6 @@ class MessageService:
                 public_runtime="native_interviewer",
                 execution_runtime="native_interviewer_runtime",
                 source="material_change",
-                graph_shadow=graph_shadow,
             )
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
@@ -600,15 +517,7 @@ class MessageService:
             public_runtime="legacy",
             execution_runtime="interviewer_runtime_service",
             source="material_change",
-            graph_shadow=graph_shadow,
         )
-        if graph_shadow:
-            response["runtime_execution"]["shadow_runtime"] = graph_shadow.get(
-                "agent_runtime"
-            )
-            response["runtime_execution"]["shadow_run_id"] = graph_shadow.get(
-                "graph_run_id"
-            )
         return response
 
     def _run_legacy_material_change(self, record, *, reason: str) -> dict:
@@ -617,71 +526,6 @@ class MessageService:
             reason=reason,
         )
         return self.gate_runtime.merge_interview_response(interview_response, record)
-
-    def _run_graph_shadow(
-        self,
-        record,
-        message_text: str,
-        user_turn: SessionTurnRecord,
-    ) -> dict | None:
-        if settings.agent_runtime != "graph_shadow":
-            return None
-        if not settings.agent_runtime_trace_enabled:
-            return None
-        try:
-            shadow_response = self.graph_runtime.run_turn(
-                record,
-                message_text,
-                user_turn=user_turn,
-            )
-        except Exception as exc:
-            return {
-                "status": "error",
-                "agent_runtime": "graph_shadow",
-                "error_type": exc.__class__.__name__,
-                "error_message": str(exc),
-            }
-        return {
-            "status": "completed",
-            "agent_runtime": "graph_shadow",
-            "graph_run_id": shadow_response.get("graph_run_id"),
-            "graph_trace": dict(shadow_response.get("graph_trace", {}) or {}),
-            "graph_events": list(shadow_response.get("graph_events", []) or []),
-            "turn_decision": dict(shadow_response.get("turn_decision", {}) or {}),
-            "prompt_trace": dict(shadow_response.get("prompt_trace", {}) or {}),
-        }
-
-    def _run_material_change_graph_shadow(
-        self,
-        record,
-        *,
-        reason: str,
-    ) -> dict | None:
-        if settings.agent_runtime != "graph_shadow":
-            return None
-        if not settings.agent_runtime_trace_enabled:
-            return None
-        try:
-            shadow_response = self.graph_runtime.run_material_change(
-                record,
-                reason=self._graph_material_change_reason(reason),
-            )
-        except Exception as exc:
-            return {
-                "status": "error",
-                "agent_runtime": "graph_shadow",
-                "error_type": exc.__class__.__name__,
-                "error_message": str(exc),
-            }
-        return {
-            "status": "completed",
-            "agent_runtime": "graph_shadow",
-            "graph_run_id": shadow_response.get("graph_run_id"),
-            "graph_trace": dict(shadow_response.get("graph_trace", {}) or {}),
-            "graph_events": list(shadow_response.get("graph_events", []) or []),
-            "turn_decision": dict(shadow_response.get("turn_decision", {}) or {}),
-            "prompt_trace": dict(shadow_response.get("prompt_trace", {}) or {}),
-        }
 
     def _graph_material_change_reason(self, reason: str) -> str:
         normalized = reason.strip()
@@ -695,14 +539,6 @@ class MessageService:
         if normalized.startswith("case_understanding:"):
             return "case_understanding"
         return "materials_updated"
-
-    def _attach_graph_shadow(
-        self,
-        response: dict,
-        graph_shadow: dict | None,
-    ) -> None:
-        if graph_shadow:
-            response["graph_shadow"] = graph_shadow
 
     def _strip_internal_runtime_fields(self, response: dict) -> None:
         response.pop("graph_shadow", None)
@@ -841,7 +677,6 @@ class MessageService:
                 "turn_decision": (response.get("turn_decision", {}) or {}).get("decision"),
                 "current_focus_kind": (record.current_focus_json or {}).get("kind"),
                 "prompt_trace": response.get("prompt_trace", {}),
-                "graph_shadow": response.get("graph_shadow"),
                 "agent_runtime": response.get("agent_runtime"),
                 "selected_public_runtime": response.get("selected_public_runtime"),
                 "native_run_id": response.get("native_run_id"),
@@ -996,7 +831,6 @@ class MessageService:
             "graph_run_id": response.get("graph_run_id"),
             "graph_trace": dict(response.get("graph_trace", {}) or {}),
             "graph_events": list(response.get("graph_events", []) or []),
-            "graph_shadow": response.get("graph_shadow"),
             "graph_runtime_error": response.get("graph_runtime_error"),
             "runtime_view_state": runtime_view_state,
             "assistant_turn_created": False,

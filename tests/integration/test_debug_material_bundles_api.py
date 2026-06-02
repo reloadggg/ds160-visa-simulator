@@ -27,6 +27,7 @@ from app.services.runtime_errors import ModelRuntimeError
 
 
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "fixtures"
+SEED_TEXT = "我会去 New York University 读 MS Computer Science，父母资助。"
 
 
 @pytest.fixture()
@@ -81,18 +82,178 @@ def install_material_refresh_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
+def generated_bundle_for_scenario(
+    scenario: str,
+    *,
+    include_synthetic_user_turns: bool = True,
+) -> GeneratedMaterialBundleOutput:
+    school_name = "New York University"
+    admission_school = (
+        "Columbia University"
+        if scenario == "school_mismatch_bundle"
+        else school_name
+    )
+    ds160_passport = "P12345678"
+    passport_number = (
+        "P87654321"
+        if scenario == "identity_mismatch_bundle"
+        else ds160_passport
+    )
+    first_year_cost = "68000"
+    available_funds = "9800" if scenario == "funding_shortfall_bundle" else "90000"
+    funding_fields = {
+        "/funding/primary_source": "parents",
+        "/funding/available_funds": available_funds,
+        "/funding/sponsor_relationship": "parents",
+    }
+    if scenario == "sponsor_chain_gap_bundle":
+        funding_fields["/funding/source_detail"] = (
+            "family company equity transfer proceeds"
+        )
+        funding_text = (
+            "Incoming Remittance and Balance Summary - OCR Extract\n"
+            "Account Holder: Li Wei and Zhang Min\n"
+            f"Available Balance: USD {available_funds}\n"
+            "Remittance Memo: family company equity transfer proceeds\n"
+            "Company Name on Memo: Horizon Robotics LLC\n"
+        )
+    else:
+        funding_text = (
+            "Bank of China\n"
+            "Certificate of Deposit Balance - OCR Extract\n"
+            "Account Holder: Li Wei and Zhang Min\n"
+            "Primary Source of Support: parents\n"
+            f"Available Balance: USD {available_funds}\n"
+        )
+
+    synthetic_turns = []
+    if scenario == "claim_vs_document_bundle" and include_synthetic_user_turns:
+        synthetic_turns.append(
+            {
+                "role": "user",
+                "content": (
+                    "I am self-funded and will pay the tuition and living expenses "
+                    "with my own savings."
+                ),
+                "field_claims": {"/funding/primary_source": "self"},
+            }
+        )
+
+    return GeneratedMaterialBundleOutput(
+        documents=[
+            {
+                "document_type": "ds160",
+                "filename": "ai_ds160.txt",
+                "raw_text": (
+                    "Online Nonimmigrant Visa Application\n"
+                    "Applicant Name Provided: Morgan Lee\n"
+                    f"Passport/Travel Document Number: {ds160_passport}\n"
+                    "Purpose: STUDENT (F1)\n"
+                ),
+                "fields": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/identity/passport_number": ds160_passport,
+                    "/visa_intent/travel_purpose": "STUDENT (F1)",
+                },
+            },
+            {
+                "document_type": "passport_bio",
+                "filename": "ai_passport.txt",
+                "raw_text": (
+                    "PASSPORT BIOGRAPHIC PAGE - OCR TEXT\n"
+                    "Full Name: Morgan Lee\n"
+                    f"Passport No.: {passport_number}\n"
+                    "Nationality: China\n"
+                ),
+                "fields": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/identity/passport_number": passport_number,
+                    "/identity/nationality": "China",
+                },
+            },
+            {
+                "document_type": "i20",
+                "filename": "ai_i20.txt",
+                "raw_text": (
+                    "Certificate of Eligibility for Nonimmigrant Student Status\n"
+                    f"School Name: {school_name}\n"
+                    "Program of Study: MS Computer Science\n"
+                    "Financials - Estimated average costs\n"
+                    f"First Year Cost Total: USD {first_year_cost}\n"
+                ),
+                "fields": {
+                    "/education/school_name": school_name,
+                    "/education/program_name": "MS Computer Science",
+                    "/education/first_year_cost": first_year_cost,
+                },
+            },
+            {
+                "document_type": "admission_letter",
+                "filename": "ai_admission.txt",
+                "raw_text": (
+                    f"{admission_school}\n"
+                    "Office of Graduate Admission\n"
+                    "Program: MS Computer Science\n"
+                ),
+                "fields": {
+                    "/education/school_name": admission_school,
+                    "/education/program_name": "MS Computer Science",
+                },
+            },
+            {
+                "document_type": "funding_proof",
+                "filename": "ai_funding.txt",
+                "raw_text": funding_text,
+                "fields": funding_fields,
+            },
+            {
+                "document_type": "relationship_proof_between_applicant_and_sponsors",
+                "filename": "ai_relationship.txt",
+                "raw_text": (
+                    "Household Register Extract\n"
+                    "Applicant: Morgan Lee\n"
+                    "Father: Li Wei\n"
+                    "Mother: Zhang Min\n"
+                    "Relationship: parents\n"
+                ),
+                "fields": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/funding/sponsor_relationship": "parents",
+                    "/family/parent_names": "Li Wei; Zhang Min",
+                },
+            },
+        ],
+        synthetic_turns=synthetic_turns,
+    )
+
+
+def install_ai_material_generator_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
+        assert seed_text == SEED_TEXT
+        return generated_bundle_for_scenario(
+            scenario,
+            include_synthetic_user_turns=include_synthetic_user_turns,
+        ), {"generator": "stub"}
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fake_generate,
+    )
+
+
 def test_debug_material_bundle_api_persists_documents_and_evidence(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     refresh_calls = install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
     response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "funding_shortfall_bundle"},
+        json={"scenario": "funding_shortfall_bundle", "seed_text": SEED_TEXT},
     )
 
     assert response.status_code == 200
@@ -114,17 +275,52 @@ def test_debug_material_bundle_api_persists_documents_and_evidence(
     assert record.gate_status_json["status"] == "ready_for_interview"
 
 
+def test_debug_material_bundle_api_rejects_missing_seed_without_writing_materials(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("AI generation requires explicit request seed text")
+        ),
+    )
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle"},
+    )
+
+    assert response.status_code == 422
+    assert "请先填写材料生成依据" in response.json()["detail"]
+    with db_session_factory() as db:
+        assert db.query(DocumentRecord).filter_by(session_id=session_id).count() == 0
+        assert (
+            db.query(EvidenceItemRecord).filter_by(session_id=session_id).count()
+            == 0
+        )
+        assert (
+            db.query(SessionTurnRecord).filter_by(session_id=session_id).count()
+            == 0
+        )
+
+
 def test_runtime_debug_snapshot_includes_material_generation_metadata(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
     bundle_response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "normal_f1_bundle"},
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
     )
     response = client.get(f"/v1/sessions/{session_id}/debug/runtime")
 
@@ -134,8 +330,8 @@ def test_runtime_debug_snapshot_includes_material_generation_metadata(
     assert payload["schema_version"] == "ds160.runtime_debug.v1"
     assert payload["backend"]["version"]
     assert payload["material_generation"]["scenario"] == "normal_f1_bundle"
-    assert payload["material_generation"]["generation"]["source"] == "deterministic"
-    assert payload["material_generation"]["generation"]["seed_source"] is None
+    assert payload["material_generation"]["generation"]["source"] == "ai"
+    assert payload["material_generation"]["generation"]["seed_source"] == "request"
     assert payload["timeline"][0]["phase"] == "material_generation"
     assert payload["timeline"][0]["step"] == "debug_material_bundle"
     assert payload["timeline"][0]["status"] == "completed"
@@ -336,13 +532,14 @@ def test_debug_material_bundle_stream_emits_progress_and_final(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
     with client.stream(
         "POST",
         f"/v1/sessions/{session_id}/debug/material-bundles/stream",
-        json={"scenario": "identity_mismatch_bundle"},
+        json={"scenario": "identity_mismatch_bundle", "seed_text": SEED_TEXT},
     ) as response:
         body = response.read().decode()
 
@@ -365,74 +562,9 @@ def test_debug_material_bundle_api_accepts_seeded_ai_generation(
     def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
         captured["scenario"] = scenario
         captured["seed_text"] = seed_text
-        return GeneratedMaterialBundleOutput(
-            documents=[
-                {
-                    "document_type": "ds160",
-                    "filename": "ai_ds160.txt",
-                    "raw_text": (
-                        "Online Nonimmigrant Visa Application\n"
-                        "Applicant: TEST APPLICANT\n"
-                        "Purpose: STUDENT (F1)\n"
-                    ),
-                    "fields": {
-                        "/identity/full_name": "TEST APPLICANT",
-                        "/visa_intent/travel_purpose": "STUDENT (F1)",
-                    },
-                },
-                {
-                    "document_type": "passport_bio",
-                    "filename": "ai_passport.txt",
-                    "raw_text": (
-                        "PASSPORT BIOGRAPHIC PAGE\n"
-                        "Full Name: TEST APPLICANT\n"
-                        "Passport No.: X12345678\n"
-                    ),
-                    "fields": {
-                        "/identity/full_name": "TEST APPLICANT",
-                        "/identity/passport_number": "X12345678",
-                    },
-                },
-                {
-                    "document_type": "i20",
-                    "filename": "ai_i20.txt",
-                    "raw_text": (
-                        "Certificate of Eligibility for Nonimmigrant Student Status\n"
-                        "School Name: New York University\n"
-                        "Program of Study: MS Computer Science\n"
-                    ),
-                    "fields": {
-                        "/education/school_name": "New York University",
-                        "/education/program_name": "MS Computer Science",
-                    },
-                },
-                {
-                    "document_type": "admission_letter",
-                    "filename": "ai_admission.txt",
-                    "raw_text": (
-                        "New York University\n"
-                        "Office of Graduate Admission\n"
-                        "Program: MS Computer Science\n"
-                    ),
-                    "fields": {
-                        "/education/school_name": "New York University",
-                        "/education/program_name": "MS Computer Science",
-                    },
-                },
-                {
-                    "document_type": "funding_proof",
-                    "filename": "ai_funding.txt",
-                    "raw_text": (
-                        "Bank Balance Certificate\n"
-                        "Primary Source of Support: parents\n"
-                        "Available Balance: USD 90000\n"
-                    ),
-                    "fields": {
-                        "/funding/primary_source": "parents",
-                        "/funding/available_funds": "90000",
-                    },
-                },
-            ],
+        return generated_bundle_for_scenario(
+            scenario,
+            include_synthetic_user_turns=include_synthetic_user_turns,
         ), {"generator": "stub"}
 
     monkeypatch.setattr(
@@ -446,7 +578,7 @@ def test_debug_material_bundle_api_accepts_seeded_ai_generation(
         f"/v1/sessions/{session_id}/debug/material-bundles",
         json={
             "scenario": "normal_f1_bundle",
-            "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+            "seed_text": SEED_TEXT,
         },
     )
 
@@ -454,7 +586,7 @@ def test_debug_material_bundle_api_accepts_seeded_ai_generation(
     payload = response.json()
     assert captured == {
         "scenario": "normal_f1_bundle",
-        "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+        "seed_text": SEED_TEXT,
     }
     assert payload["generation"]["source"] == "ai"
     assert payload["documents"][2]["fields"]["/education/school_name"] == (
@@ -483,7 +615,7 @@ def test_debug_material_bundle_api_returns_error_when_seeded_ai_generation_fails
         f"/v1/sessions/{session_id}/debug/material-bundles",
         json={
             "scenario": "normal_f1_bundle",
-            "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+            "seed_text": SEED_TEXT,
         },
     )
 
@@ -525,7 +657,7 @@ def test_debug_material_bundle_stream_returns_error_when_seeded_ai_generation_fa
         f"/v1/sessions/{session_id}/debug/material-bundles/stream",
         json={
             "scenario": "normal_f1_bundle",
-            "seed_text": "我会去 New York University 读 MS Computer Science，父母资助。",
+            "seed_text": SEED_TEXT,
         },
     ) as response:
         body = response.read().decode()
@@ -556,12 +688,13 @@ def test_claim_vs_document_bundle_fallback_detects_claim_history_conflict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
     response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "claim_vs_document_bundle"},
+        json={"scenario": "claim_vs_document_bundle", "seed_text": SEED_TEXT},
     )
 
     assert response.status_code == 200
@@ -598,6 +731,7 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    install_ai_material_generator_stub(monkeypatch)
 
     def legacy_refresh_must_not_run(self, record, *, reason: str) -> dict:
         raise AssertionError("legacy material refresh should not run in graph mode")
@@ -611,7 +745,7 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
 
     response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "school_mismatch_bundle"},
+        json={"scenario": "school_mismatch_bundle", "seed_text": SEED_TEXT},
     )
 
     assert response.status_code == 200
@@ -700,6 +834,7 @@ def test_debug_material_bundle_native_prompt_does_not_leak_oracle_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    install_ai_material_generator_stub(monkeypatch)
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
         lambda self, declared_family: {
@@ -726,7 +861,7 @@ def test_debug_material_bundle_native_prompt_does_not_leak_oracle_context(
 
     bundle_response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "school_mismatch_bundle"},
+        json={"scenario": "school_mismatch_bundle", "seed_text": SEED_TEXT},
     )
 
     assert bundle_response.status_code == 200
@@ -752,13 +887,13 @@ def test_debug_material_bundle_native_prompt_does_not_leak_oracle_context(
     assert "学校材料冲突包" not in serialized_prompt
 
 
-def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
+def test_debug_material_bundle_graph_failure_preserves_materials_without_legacy_fallback(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
+    install_ai_material_generator_stub(monkeypatch)
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
         lambda self, record, *, reason: (_ for _ in ()).throw(
@@ -766,47 +901,27 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
         ),
     )
 
-    def fake_legacy_refresh(self, record, *, reason: str) -> dict:
-        record.phase_state = "interview"
-        record.current_governor_decision = "continue_interview"
-        record.current_focus_json = {
-            "owner": "interviewer_runtime_service",
-            "kind": "interview_question",
-            "question": "Please continue with your study plan.",
-        }
-        record.interviewer_state_json = {
-            "owner": "interviewer_runtime_service",
-            "status": "continue_interview",
-            "decision": "continue_interview",
-            "governor_decision": "continue_interview",
-            "current_focus": record.current_focus_json,
-        }
-        return {
-            "assistant_message": "Please continue with your study plan.",
-            "governor_decision": "continue_interview",
-            "requested_documents": [],
-            "remaining_required_documents": [],
-            "turn_decision": {"decision": "continue_interview"},
-            "document_review": {},
-            "runtime_view_state": {},
-            "prompt_trace": {},
-        }
-
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
-        fake_legacy_refresh,
+        lambda self, record, *, reason: (_ for _ in ()).throw(
+            AssertionError("legacy material refresh should not run after native failure")
+        ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
     response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "claim_vs_document_bundle"},
+        json={"scenario": "claim_vs_document_bundle", "seed_text": SEED_TEXT},
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["assistant_message"] == "Please continue with your study plan."
+    assert payload["assistant_message"] is None
+    assert payload["material_refresh"] == {}
+    assert payload["main_flow_refresh_error"] == (
+        "RuntimeError: native material refresh exploded"
+    )
 
     with db_session_factory() as db:
         documents = db.query(DocumentRecord).filter_by(session_id=session_id).all()
@@ -821,20 +936,6 @@ def test_debug_material_bundle_graph_failure_preserves_persisted_materials(
     assert len(evidence) >= len(payload["documents"])
     assert any(turn.source == "debug_material_bundle" for turn in turns)
     assert all(turn.role != "assistant" for turn in turns)
-    assert payload["material_refresh"]["graph_runtime_error"] == {
-        "status": "error",
-        "agent_runtime": "graph",
-        "selected_public_runtime": "native_interviewer",
-        "error_type": "RuntimeError",
-        "error_message": "native material refresh exploded",
-        "fallback_runtime": "legacy",
-    }
-    assert payload["material_refresh"]["selected_public_runtime"] == "legacy"
-    assert payload["material_refresh"]["runtime_execution"]["public_runtime"] == "legacy"
-    assert (
-        payload["material_refresh"]["runtime_execution"]["fallback_runtime"]
-        == "legacy"
-    )
 
 
 def test_debug_material_bundle_refresh_error_returns_final_payload(
@@ -842,6 +943,8 @@ def test_debug_material_bundle_refresh_error_returns_final_payload(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    install_ai_material_generator_stub(monkeypatch)
+
     def fail_refresh(self, session_id: str, *, reason: str) -> dict:
         raise RuntimeError("session turn index conflict")
 
@@ -854,7 +957,7 @@ def test_debug_material_bundle_refresh_error_returns_final_payload(
 
     response = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
-        json={"scenario": "normal_f1_bundle"},
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
     )
 
     assert response.status_code == 200

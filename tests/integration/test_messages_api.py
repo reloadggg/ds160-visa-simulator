@@ -1018,7 +1018,8 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
         final_payload["runtime_execution"]["execution_runtime"]
         == "native_interviewer_runtime"
     )
-    assert final_payload["runtime_execution"]["shadow_runtime"] == "graph_shadow"
+    assert "shadow_runtime" not in final_payload["runtime_execution"]
+    assert "shadow_run_id" not in final_payload["runtime_execution"]
     assert "graph_shadow" not in final_payload
 
     with db_session_factory() as db:
@@ -1033,7 +1034,7 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
 
     assert assistant_turn is not None
     assert assistant_turn.source == "native_interviewer_runtime"
-    assert assistant_turn.metadata_json["graph_shadow"]["status"] == "completed"
+    assert assistant_turn.metadata_json.get("graph_shadow") is None
 
 
 def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
@@ -1202,8 +1203,6 @@ def test_message_turn_graph_shadow_uses_native_public_response_and_single_assist
         "runtime_engine": "native_interviewer_runtime",
         "source": "message_turn",
         "fail_open_to_legacy": False,
-        "shadow_runtime": "graph_shadow",
-        "shadow_run_id": payload["runtime_execution"]["shadow_run_id"],
         "compatibility_runtime_label": "graph_shadow",
     }
     assert "graph_shadow" not in payload
@@ -1225,12 +1224,7 @@ def test_message_turn_graph_shadow_uses_native_public_response_and_single_assist
     assert record.interviewer_state_json["runtime_execution"] == payload[
         "runtime_execution"
     ]
-    graph_shadow = turns[1].metadata_json["graph_shadow"]
-    assert graph_shadow["status"] == "completed"
-    assert graph_shadow["agent_runtime"] == "graph_shadow"
-    assert graph_shadow["graph_run_id"].startswith("graph-run-")
-    assert graph_shadow["graph_trace"]["event_count"] > 0
-    assert graph_shadow["turn_decision"]["decision"] == "continue_interview"
+    assert turns[1].metadata_json.get("graph_shadow") is None
     assert turns[1].metadata_json["agent_runtime"] == "graph_shadow"
     assert turns[1].metadata_json["selected_public_runtime"] == "native_interviewer"
     assert turns[1].metadata_json["runtime_execution"] == payload[
@@ -1238,7 +1232,7 @@ def test_message_turn_graph_shadow_uses_native_public_response_and_single_assist
     ]
 
 
-def test_message_turn_graph_shadow_failure_keeps_native_public_response(
+def test_message_turn_graph_shadow_skips_shadow_runtime_and_keeps_native_response(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -1256,7 +1250,7 @@ def test_message_turn_graph_shadow_failure_keeps_native_public_response(
     )
 
     def legacy_must_not_run(self, record, message_text: str) -> dict:
-        raise AssertionError("legacy runtime should not run for graph_shadow failure")
+        raise AssertionError("legacy runtime should not run in graph_shadow mode")
 
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
@@ -1280,7 +1274,8 @@ def test_message_turn_graph_shadow_failure_keeps_native_public_response(
         payload["runtime_execution"]["execution_runtime"]
         == "native_interviewer_runtime"
     )
-    assert payload["runtime_execution"]["shadow_runtime"] == "graph_shadow"
+    assert "shadow_runtime" not in payload["runtime_execution"]
+    assert "shadow_run_id" not in payload["runtime_execution"]
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1293,13 +1288,7 @@ def test_message_turn_graph_shadow_failure_keeps_native_public_response(
         ("user", "user_message"),
         ("assistant", "native_interviewer_runtime"),
     ]
-    graph_shadow = turns[1].metadata_json["graph_shadow"]
-    assert graph_shadow == {
-        "status": "error",
-        "agent_runtime": "graph_shadow",
-        "error_type": "RuntimeError",
-        "error_message": "shadow exploded",
-    }
+    assert turns[1].metadata_json.get("graph_shadow") is None
 
 
 def test_message_turn_graph_mode_writes_public_response_and_single_assistant_turn(
@@ -1484,13 +1473,12 @@ def test_message_turn_graph_canary_hundred_percent_uses_native_compat_alias(
     assert assistant_turn.source == "native_interviewer_runtime"
 
 
-def test_message_turn_graph_failure_fails_open_to_legacy(
+def test_message_turn_graph_failure_does_not_fail_open_to_legacy(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
         lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
@@ -1498,42 +1486,19 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
         ),
     )
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "What is the purpose of your travel?",
-                    "requested_documents": [],
-                    "decision_hint": "continue_interview",
-                },
-            ),
-            {"model": "gpt-5.4"},
-        )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run after native failure")
+        ),
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I will study computer science."},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["assistant_message"] == "What is the purpose of your travel?"
-    assert payload["agent_runtime"] == "graph"
-    assert payload["selected_public_runtime"] == "legacy"
-    assert payload["runtime_execution"]["configured_runtime"] == "graph"
-    assert payload["runtime_execution"]["requested_public_runtime"] == "native_interviewer"
-    assert payload["runtime_execution"]["public_runtime"] == "legacy"
-    assert payload["runtime_execution"]["execution_runtime"] == "interviewer_runtime_service"
-    assert payload["runtime_execution"]["fallback_runtime"] == "legacy"
-    assert payload["runtime_execution"]["error_type"] == "RuntimeError"
-    assert payload["runtime_execution"]["error_message"] == "native exploded"
-    assert "graph_runtime_error" not in payload
+    with pytest.raises(RuntimeError, match="native exploded"):
+        client.post(
+            f"/v1/sessions/{session_id}/messages",
+            json={"role": "user", "content": "I will study computer science."},
+        )
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1542,20 +1507,7 @@ def test_message_turn_graph_failure_fails_open_to_legacy(
             .order_by(SessionTurnRecord.turn_index)
         ).all()
 
-    assert [(turn.role, turn.source) for turn in turns] == [
-        ("user", "user_message"),
-        ("assistant", "interviewer_runtime_service"),
-    ]
-    assert turns[1].metadata_json["graph_runtime_error"] == {
-        "status": "error",
-        "agent_runtime": "graph",
-        "selected_public_runtime": "native_interviewer",
-        "error_type": "RuntimeError",
-        "error_message": "native exploded",
-        "fallback_runtime": "legacy",
-    }
-    assert turns[1].metadata_json["selected_public_runtime"] == "legacy"
-    assert turns[1].metadata_json["runtime_execution"] == payload["runtime_execution"]
+    assert turns == []
 
 
 def test_message_turn_graph_native_missing_model_returns_503_without_canned_fallback(
@@ -1564,7 +1516,6 @@ def test_message_turn_graph_native_missing_model_returns_503_without_canned_fall
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
     monkeypatch.setattr(
         "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
         lambda self, record, message_text: (_ for _ in ()).throw(

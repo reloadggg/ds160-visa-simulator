@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import textwrap
@@ -176,7 +177,7 @@ def test_app_main_create_all_includes_evidence_tables(tmp_path: pytest.TempPathF
         check=True,
         capture_output=True,
         text=True,
-        cwd="/home/feng/ds160_pr/.worktrees/ds160-simulator-v1",
+        cwd=Path(__file__).resolve().parents[2],
         env=os.environ.copy(),
     )
     table_names = set(json.loads(result.stdout))

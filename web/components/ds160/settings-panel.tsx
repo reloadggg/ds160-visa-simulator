@@ -68,7 +68,6 @@ interface SettingsPanelProps {
   feedback?: string | null
   isDebugBundleGenerating?: boolean
   debugBundleProgress?: string[]
-  debugMaterialSeedText?: string
   userModelConfig: UserModelConfig
   availableModels: ModelListItem[]
   isLoadingModels: boolean
@@ -100,7 +99,6 @@ export function SettingsPanel({
   feedback,
   isDebugBundleGenerating = false,
   debugBundleProgress = [],
-  debugMaterialSeedText = "",
   userModelConfig,
   availableModels,
   isLoadingModels,
@@ -126,9 +124,7 @@ export function SettingsPanel({
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
     useState<DebugMaterialBundleScenario>(DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO)
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
-  const materialSeedText = materialSeedOverride.trim()
-    ? materialSeedOverride
-    : debugMaterialSeedText
+  const materialSeedText = materialSeedOverride
   const selectedDebugBundleOption = getDebugMaterialBundleOption(selectedDebugBundleScenario)
   const updateModelConfig = (patch: Partial<UserModelConfig>) => {
     onUserModelConfigChange({
@@ -604,7 +600,7 @@ export function SettingsPanel({
                   className="min-h-24 resize-y"
                 />
                 <div className="text-xs leading-5 text-muted-foreground">
-                  默认取当前会话最近几条用户消息；生成器会用它对齐学校、专业、资金来源和材料字段。
+                  这里是唯一生成依据，必填；生成失败不会写入材料。
                 </div>
               </div>
 
@@ -612,7 +608,9 @@ export function SettingsPanel({
                 variant="outline"
                 className="w-full justify-start"
                 onClick={handleDebugBundleSubmit}
-                disabled={!sessionId || isDebugBundleGenerating}
+                disabled={
+                  !sessionId || isDebugBundleGenerating || !materialSeedText.trim()
+                }
               >
                 <FlaskConical className={isDebugBundleGenerating ? "h-4 w-4 animate-pulse" : "h-4 w-4"} />
                 {isDebugBundleGenerating ? "正在生成材料包" : `生成${selectedDebugBundleOption.shortLabel}`}

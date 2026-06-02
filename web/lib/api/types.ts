@@ -189,13 +189,11 @@ export interface DebugMaterialBundleResponse {
   gate_status?: BackendSessionGateStatus | null
   main_flow_refresh_error?: string | null
   generation?: {
-    source?: "ai" | "deterministic" | string
+    source?: "ai" | string
     mode?: string
     seed_text_present?: boolean
-    seed_source?: "request" | "session_transcript" | string | null
+    seed_source?: "request" | string | null
     request_seed_text_present?: boolean
-    fallback_used?: boolean
-    fallback_reason?: string
     trace?: Record<string, unknown>
   }
 }

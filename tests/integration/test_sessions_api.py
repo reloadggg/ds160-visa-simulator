@@ -682,13 +682,12 @@ def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_
     assert material_refresh["assistant_turn_created"] is False
 
 
-def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
+def test_debug_fill_current_gap_graph_failure_does_not_fail_open_to_legacy(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", True)
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
         lambda self, record, *, reason: (_ for _ in ()).throw(
@@ -705,21 +704,12 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
     )
 
     assert response.status_code == 200
-    assert refresh_calls == ["debug_fill:ds160"]
-    assert response.json()["assistant_message"] == "Please continue with your study plan."
-    assert response.json()["material_refresh"]["graph_runtime_error"] == {
-        "status": "error",
-        "agent_runtime": "graph",
-        "selected_public_runtime": "native_interviewer",
-        "error_type": "RuntimeError",
-        "error_message": "native material refresh exploded",
-        "fallback_runtime": "legacy",
-    }
-    assert response.json()["material_refresh"]["selected_public_runtime"] == "legacy"
-    assert response.json()["material_refresh"]["runtime_execution"]["public_runtime"] == "legacy"
-    assert (
-        response.json()["material_refresh"]["runtime_execution"]["fallback_runtime"]
-        == "legacy"
+    payload = response.json()
+    assert refresh_calls == []
+    assert payload["assistant_message"] is None
+    assert payload["material_refresh"] == {}
+    assert payload["main_flow_refresh_error"] == (
+        "RuntimeError: native material refresh exploded"
     )
 
     with db_session_factory() as db:
@@ -730,18 +720,7 @@ def test_debug_fill_current_gap_graph_failure_fails_open_to_legacy(
 
     assert turns == []
     assert record is not None
-    assert record.interviewer_state_json["last_material_refresh"]["graph_runtime_error"] == {
-        "status": "error",
-        "agent_runtime": "graph",
-        "selected_public_runtime": "native_interviewer",
-        "error_type": "RuntimeError",
-        "error_message": "native material refresh exploded",
-        "fallback_runtime": "legacy",
-    }
-    assert (
-        record.interviewer_state_json["last_material_refresh"]["runtime_execution"]
-        == response.json()["material_refresh"]["runtime_execution"]
-    )
+    assert "last_material_refresh" not in (record.interviewer_state_json or {})
 
 
 def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
@@ -783,10 +762,6 @@ def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
         "runtime_engine": "native_interviewer_runtime",
         "source": "material_change",
         "fail_open_to_legacy": False,
-        "shadow_runtime": "graph_shadow",
-        "shadow_run_id": payload["material_refresh"]["runtime_execution"][
-            "shadow_run_id"
-        ],
         "compatibility_runtime_label": "graph_shadow",
     }
     assert (
@@ -797,18 +772,7 @@ def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
         payload["material_refresh"]["prompt_trace"]["material_change_reason"]
         == "material_added:ds160"
     )
-    assert payload["material_refresh"]["graph_shadow"]["status"] == "completed"
-    assert payload["material_refresh"]["graph_shadow"]["agent_runtime"] == "graph_shadow"
-    assert (
-        payload["material_refresh"]["graph_shadow"]["prompt_trace"]["graph_trigger"]
-        == "material_change"
-    )
-    assert (
-        payload["material_refresh"]["graph_shadow"]["prompt_trace"][
-            "material_change_reason"
-        ]
-        == "material_added:ds160"
-    )
+    assert "graph_shadow" not in payload["material_refresh"]
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -829,11 +793,7 @@ def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
         material_refresh["prompt_trace"]["material_change_reason"]
         == "material_added:ds160"
     )
-    graph_shadow = material_refresh["graph_shadow"]
-    assert graph_shadow["status"] == "completed"
-    assert graph_shadow["agent_runtime"] == "graph_shadow"
-    assert graph_shadow["prompt_trace"]["graph_trigger"] == "material_change"
-    assert graph_shadow["prompt_trace"]["material_change_reason"] == "material_added:ds160"
+    assert "graph_shadow" not in material_refresh
 
 
 def test_runtime_trace_endpoint_returns_graph_events(

@@ -31,8 +31,8 @@ from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.services.ai_material_bundle_generator_service import (
     AIMaterialBundleGeneratorService,
-    GeneratedBundleScenario,
     GeneratedMaterialBundleOutput,
+    find_oracle_text_marker,
 )
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.message_service import MessageService
@@ -91,17 +91,6 @@ class DebugMaterialBundleEvent:
     data: dict[str, Any]
 
 
-SYNTHETIC_APPLICANT_NAME = "TEST APPLICANT"
-SYNTHETIC_PASSPORT_NUMBER = "X00000000"
-SYNTHETIC_CONFLICT_PASSPORT_NUMBER = "Y11111111"
-SYNTHETIC_NATIONALITY = "EXAMPLELAND"
-SYNTHETIC_SEVIS_ID = "N0000000000"
-SYNTHETIC_SCHOOL_NAME = "Example University"
-SYNTHETIC_CONFLICT_SCHOOL_NAME = "Alternate Example University"
-SYNTHETIC_PROGRAM_NAME = "Master of Example Analytics"
-SYNTHETIC_PARENT_NAMES = ("PARENT SPONSOR A", "PARENT SPONSOR B")
-SYNTHETIC_COMPANY_NAME = "Example Family Business LLC"
-
 DEBUG_MATERIAL_BUNDLE_SCENARIOS: dict[str, str] = {
     "normal_f1_bundle": "自洽 F-1 基准材料包",
     "school_mismatch_bundle": "学校材料冲突包",
@@ -119,14 +108,6 @@ DOCUMENT_TYPE_LABELS: dict[str, str] = {
     "funding_proof": "资金证明",
     "relationship_proof_between_applicant_and_sponsors": "亲属关系证明",
 }
-
-ORACLE_TEXT_MARKERS = (
-    "Issue:",
-    "Missing:",
-    "Expected:",
-    "Defect:",
-    "This conflicts with",
-)
 
 _CLAIM_FIELD_BINDINGS: dict[str, tuple[str, str]] = {
     "/funding/primary_source": ("funding", "primary_source"),
@@ -339,180 +320,6 @@ class DebugMaterialBundleService:
             return normalized  # type: ignore[return-value]
         raise ValueError(f"unsupported debug material bundle scenario: {scenario}")
 
-    def _build_bundle_spec(
-        self,
-        scenario: DebugMaterialBundleScenario,
-        *,
-        include_synthetic_user_turns: bool,
-    ) -> DebugMaterialBundleSpec:
-        base_documents = self._normal_documents()
-        synthetic_turns: list[SyntheticTurnSpec] = []
-        expected_findings: list[ExpectedFinding] = []
-
-        if scenario == "normal_f1_bundle":
-            return DebugMaterialBundleSpec(
-                scenario=scenario,
-                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
-                documents=base_documents,
-            )
-
-        if scenario == "school_mismatch_bundle":
-            documents = [
-                *self._identity_documents(),
-                self._i20_document(school_name=SYNTHETIC_SCHOOL_NAME),
-                self._admission_letter_document(
-                    school_name=SYNTHETIC_CONFLICT_SCHOOL_NAME
-                ),
-                self._normal_funding_document(),
-                self._relationship_document(),
-            ]
-            expected_findings.append(
-                ExpectedFinding(
-                    kind="cross_document_conflict",
-                    field_path="/education/school_name",
-                    document_types=["i20", "admission_letter"],
-                    description=(
-                        "I-20 and admission letter contain different school names."
-                    ),
-                    severity="high",
-                )
-            )
-            if include_synthetic_user_turns:
-                synthetic_turns.append(
-                    SyntheticTurnSpec(
-                        role="user",
-                        content=(
-                            "I will study at Example University in the Master of "
-                            "Example Analytics program."
-                        ),
-                        field_claims={
-                            "/education/school_name": SYNTHETIC_SCHOOL_NAME
-                        },
-                    )
-                )
-            return DebugMaterialBundleSpec(
-                scenario=scenario,
-                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
-                documents=documents,
-                expected_findings=expected_findings,
-                synthetic_turns=synthetic_turns,
-            )
-
-        if scenario == "identity_mismatch_bundle":
-            documents = [
-                self._ds160_document(passport_number=SYNTHETIC_PASSPORT_NUMBER),
-                self._passport_document(
-                    passport_number=SYNTHETIC_CONFLICT_PASSPORT_NUMBER
-                ),
-                *self._study_documents(),
-                self._normal_funding_document(),
-                self._relationship_document(),
-            ]
-            expected_findings.append(
-                ExpectedFinding(
-                    kind="cross_document_conflict",
-                    field_path="/identity/passport_number",
-                    document_types=["ds160", "passport_bio"],
-                    description=(
-                        "DS-160 confirmation and passport bio page contain "
-                        "different passport numbers."
-                    ),
-                    severity="high",
-                )
-            )
-            return DebugMaterialBundleSpec(
-                scenario=scenario,
-                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
-                documents=documents,
-                expected_findings=expected_findings,
-            )
-
-        if scenario == "funding_shortfall_bundle":
-            documents = [
-                *self._identity_documents(),
-                self._i20_document(first_year_cost_usd="68000"),
-                self._admission_letter_document(),
-                self._funding_document(available_funds_usd="9800"),
-                self._relationship_document(),
-            ]
-            expected_findings.append(
-                ExpectedFinding(
-                    kind="funding_shortfall",
-                    field_path="/funding/available_funds",
-                    document_types=["i20", "funding_proof"],
-                    description=(
-                        "Available funds are below the first-year cost listed "
-                        "on the I-20."
-                    ),
-                    severity="high",
-                )
-            )
-            return DebugMaterialBundleSpec(
-                scenario=scenario,
-                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
-                documents=documents,
-                expected_findings=expected_findings,
-            )
-
-        if scenario == "sponsor_chain_gap_bundle":
-            documents = [
-                *self._identity_documents(),
-                *self._study_documents(),
-                self._equity_funding_document(),
-                self._relationship_document(),
-            ]
-            expected_findings.append(
-                ExpectedFinding(
-                    kind="funding_source_chain_gap",
-                    field_path="/funding/source_detail",
-                    document_types=["funding_proof"],
-                    description=(
-                        "Funding source relies on equity transfer proceeds, "
-                        "but no separate registration, transfer, tax, or "
-                        "payment trail documents are present."
-                    ),
-                    severity="medium",
-                )
-            )
-            return DebugMaterialBundleSpec(
-                scenario=scenario,
-                scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
-                documents=documents,
-                expected_findings=expected_findings,
-            )
-
-        documents = base_documents
-        if include_synthetic_user_turns:
-            synthetic_turns.append(
-                SyntheticTurnSpec(
-                    role="user",
-                    content=(
-                        "I am self-funded and will pay the tuition and living "
-                        "expenses with my own savings."
-                    ),
-                    field_claims={"/funding/primary_source": "self"},
-                )
-            )
-        expected_findings.append(
-            ExpectedFinding(
-                kind="claim_vs_document_conflict",
-                field_path="/funding/primary_source",
-                document_types=["funding_proof"],
-                description=(
-                    "The user says the case is self-funded, while funding "
-                    "documents show parent sponsorship."
-                ),
-                severity="high",
-            )
-        )
-        return DebugMaterialBundleSpec(
-            scenario=scenario,
-            scenario_label=DEBUG_MATERIAL_BUNDLE_SCENARIOS[scenario],
-            documents=documents,
-            expected_findings=expected_findings,
-            synthetic_turns=synthetic_turns,
-        )
-
     def _build_bundle_spec_for_request(
         self,
         record,
@@ -525,84 +332,58 @@ class DebugMaterialBundleService:
         normalized_mode = (generation_mode or "ai_if_available").strip().lower()
         requested_seed = (seed_text or "").strip()
         resolved_seed, seed_source = self._resolve_generation_seed(
-            record,
             requested_seed=requested_seed,
         )
-        should_try_ai = normalized_mode in {
-            "ai",
-            "ai_if_seeded",
-            "ai_if_available",
-        } and bool(resolved_seed)
-        if should_try_ai:
-            try:
-                generated, trace = AIMaterialBundleGeneratorService(self.db).generate(
-                    record=record,
-                    scenario=scenario,  # type: ignore[arg-type]
-                    seed_text=resolved_seed,
-                    include_synthetic_user_turns=include_synthetic_user_turns,
-                )
-                return self._bundle_spec_from_generated_output(
-                    scenario,
-                    generated,
-                ), {
-                    "source": "ai",
-                    "mode": normalized_mode,
-                    "seed_text_present": True,
-                    "seed_source": seed_source,
-                    "request_seed_text_present": bool(requested_seed),
-                    "fallback_used": False,
-                    "trace": trace,
-                }
-            except ModelRuntimeError as exc:
-                raise ModelRuntimeError(
-                    detail=(
-                        "AI 材料生成失败，未写入任何演示占位材料。"
-                        f"请稍后重试或更换模型。原始错误：{exc.detail}"
-                    ),
-                    status_code=exc.status_code,
-                    provider=exc.provider,
-                    model=exc.model,
-                    upstream_code=exc.upstream_code,
-                    body=exc.body,
-                    missing_env_vars=exc.missing_env_vars,
-                ) from exc
+        if not resolved_seed:
+            raise ModelRuntimeError(
+                detail="请先填写材料生成依据；系统不会生成或写入演示占位材料。",
+                status_code=422,
+            )
+        if normalized_mode not in {"ai", "ai_if_seeded", "ai_if_available"}:
+            raise ModelRuntimeError(
+                detail="固定演示材料包已移除；请提供材料生成依据并使用 AI 生成。",
+                status_code=422,
+            )
 
-        fallback_spec = self._build_bundle_spec(
-            scenario,
-            include_synthetic_user_turns=include_synthetic_user_turns,
-        )
-        return fallback_spec, {
-            "source": "deterministic",
-            "mode": normalized_mode or "deterministic",
-            "seed_text_present": bool(resolved_seed),
-            "seed_source": seed_source,
-            "request_seed_text_present": bool(requested_seed),
-            "fallback_used": False,
-        }
+        try:
+            generated, trace = AIMaterialBundleGeneratorService(self.db).generate(
+                record=record,
+                scenario=scenario,  # type: ignore[arg-type]
+                seed_text=resolved_seed,
+                include_synthetic_user_turns=include_synthetic_user_turns,
+            )
+            return self._bundle_spec_from_generated_output(
+                scenario,
+                generated,
+            ), {
+                "source": "ai",
+                "mode": normalized_mode,
+                "seed_text_present": True,
+                "seed_source": seed_source,
+                "request_seed_text_present": bool(requested_seed),
+                "trace": trace,
+            }
+        except ModelRuntimeError as exc:
+            raise ModelRuntimeError(
+                detail=(
+                    "AI 材料生成失败，未写入任何演示占位材料。"
+                    f"请稍后重试或更换模型。原始错误：{exc.detail}"
+                ),
+                status_code=exc.status_code,
+                provider=exc.provider,
+                model=exc.model,
+                upstream_code=exc.upstream_code,
+                body=exc.body,
+                missing_env_vars=exc.missing_env_vars,
+            ) from exc
 
     def _resolve_generation_seed(
         self,
-        record,
         *,
         requested_seed: str,
     ) -> tuple[str, str | None]:
         if requested_seed:
             return requested_seed, "request"
-
-        user_turns: list[str] = []
-        for turn in self.turns.list_session_turns(record.session_id):
-            if turn.role != "user":
-                continue
-            metadata = dict(turn.metadata_json or {})
-            if turn.source.startswith("debug_") or metadata.get("synthetic"):
-                continue
-            content = str(turn.content or "").strip()
-            if content:
-                user_turns.append(content)
-
-        if user_turns:
-            return "\n\n".join(user_turns[-4:])[:4000], "session_transcript"
-
         return "", None
 
     def _bundle_spec_from_generated_output(
@@ -706,234 +487,6 @@ class DebugMaterialBundleService:
                 )
             ]
         return []
-
-    def _normal_documents(self) -> list[SyntheticDocumentSpec]:
-        return [
-            *self._identity_documents(),
-            *self._study_documents(),
-            self._normal_funding_document(),
-            self._relationship_document(),
-        ]
-
-    def _identity_documents(self) -> list[SyntheticDocumentSpec]:
-        return [self._ds160_document(), self._passport_document()]
-
-    def _study_documents(self) -> list[SyntheticDocumentSpec]:
-        return [self._i20_document(), self._admission_letter_document()]
-
-    def _ds160_document(
-        self,
-        *,
-        passport_number: str = SYNTHETIC_PASSPORT_NUMBER,
-    ) -> SyntheticDocumentSpec:
-        text = (
-            "U.S. Department of State\n"
-            "Online Nonimmigrant Visa Application (DS-160) Confirmation\n"
-            "Application ID: AA00EXAMPLE\n"
-            "Confirmation No.: EXM20260524001\n"
-            "Applicant Name Provided: TEST APPLICANT\n"
-            f"Passport/Travel Document Number: {passport_number}\n"
-            "Purpose of Trip to U.S.: STUDENT (F1)\n"
-            "Intended Date of Arrival: 15 AUG 2026\n"
-            "Application Location: U.S. Consulate Example Post\n"
-            "Barcode Area: [machine readable confirmation barcode omitted]\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="ds160",
-            filename="debug_ds160_confirmation.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
-                "/identity/passport_number": passport_number,
-                "/visa_intent/travel_purpose": "STUDENT (F1)",
-            },
-        )
-
-    def _passport_document(
-        self,
-        *,
-        passport_number: str = SYNTHETIC_PASSPORT_NUMBER,
-    ) -> SyntheticDocumentSpec:
-        text = (
-            "PASSPORT BIOGRAPHIC PAGE - OCR TEXT\n"
-            "Type: P\n"
-            f"Passport No.: {passport_number}\n"
-            "Surname: TEST\n"
-            "Given Names: APPLICANT\n"
-            f"Full Name: {SYNTHETIC_APPLICANT_NAME}\n"
-            f"Nationality: {SYNTHETIC_NATIONALITY}\n"
-            "Date of Birth: 15 JAN 2001\n"
-            "Place of Birth: EXAMPLE CITY\n"
-            "Issued On: 20 FEB 2023\n"
-            "Date of Expiry: 19 FEB 2033\n"
-            "MRZ: P<EXAMPLELAND<<TEST<<APPLICANT<<<<<<<<<<<<<<\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="passport_bio",
-            filename="debug_passport_bio.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
-                "/identity/passport_number": passport_number,
-                "/identity/nationality": SYNTHETIC_NATIONALITY,
-            },
-        )
-
-    def _i20_document(
-        self,
-        *,
-        school_name: str = SYNTHETIC_SCHOOL_NAME,
-        first_year_cost_usd: str = "68000",
-    ) -> SyntheticDocumentSpec:
-        text = (
-            "U.S. Department of Homeland Security\n"
-            "Certificate of Eligibility for Nonimmigrant Student Status (F-1)\n"
-            f"SEVIS ID: {SYNTHETIC_SEVIS_ID}\n"
-            f"Student Name: {SYNTHETIC_APPLICANT_NAME}\n"
-            "Country of Birth: EXAMPLELAND\n"
-            "School Information\n"
-            f"School Name: {school_name}\n"
-            "School Code: EXM214F00000000\n"
-            f"Program of Study: {SYNTHETIC_PROGRAM_NAME}\n"
-            "Education Level: Master's\n"
-            "Program Start Date: 26 AUG 2026\n"
-            "Program End Date: 20 MAY 2028\n"
-            "Financials - Estimated average costs for 9 months\n"
-            "Tuition and Fees: USD 42000\n"
-            "Living Expenses: USD 21000\n"
-            "Other Costs: USD 5000\n"
-            f"First Year Cost Total: USD {first_year_cost_usd}\n"
-            "Funding Listed by School: Family Funds\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="i20",
-            filename="debug_i20.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/education/sevis_id": SYNTHETIC_SEVIS_ID,
-                "/education/school_name": school_name,
-                "/education/program_name": SYNTHETIC_PROGRAM_NAME,
-                "/education/first_year_cost": first_year_cost_usd,
-            },
-        )
-
-    def _admission_letter_document(
-        self,
-        *,
-        school_name: str = SYNTHETIC_SCHOOL_NAME,
-    ) -> SyntheticDocumentSpec:
-        text = (
-            f"{school_name}\n"
-            "Office of Graduate Admission\n"
-            "Admission Notice\n"
-            "Date: 18 MAR 2026\n"
-            f"Student: {SYNTHETIC_APPLICANT_NAME}\n"
-            f"School Name: {school_name}\n"
-            f"Program: {SYNTHETIC_PROGRAM_NAME}\n"
-            "Term: Fall 2026\n"
-            "Enrollment Status: admitted as a full-time student\n"
-            "Campus: Main Campus\n"
-            "This notice confirms admission only; tuition billing is issued separately.\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="admission_letter",
-            filename="debug_admission_letter.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
-                "/education/school_name": school_name,
-                "/education/program_name": SYNTHETIC_PROGRAM_NAME,
-            },
-        )
-
-    def _normal_funding_document(self) -> SyntheticDocumentSpec:
-        return self._funding_document(available_funds_usd="82000")
-
-    def _funding_document(self, *, available_funds_usd: str) -> SyntheticDocumentSpec:
-        parent_a, parent_b = SYNTHETIC_PARENT_NAMES
-        text = (
-            "Example Commercial Bank\n"
-            "Certificate of Deposit Balance - OCR Extract\n"
-            "Certificate No.: ECB-2026-0510-0007\n"
-            "Issue Date: 10 MAY 2026\n"
-            f"Account Holder: {parent_a}; {parent_b}\n"
-            "Primary Source of Support: parents\n"
-            "Sponsor Relationship: parents\n"
-            f"Student Beneficiary: {SYNTHETIC_APPLICANT_NAME}\n"
-            "Currency: USD\n"
-            f"Available Balance: USD {available_funds_usd}\n"
-            "Account Type: savings deposit and time deposit\n"
-            "Funds Status: available without lien or hold as of issue date\n"
-            "Bank Officer: EXAMPLE BANK OFFICER\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="funding_proof",
-            filename="debug_parent_funding_certificate.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/funding/primary_source": "parents",
-                "/funding/available_funds": available_funds_usd,
-                "/funding/sponsor_relationship": "parents",
-            },
-        )
-
-    def _equity_funding_document(self) -> SyntheticDocumentSpec:
-        parent_a, parent_b = SYNTHETIC_PARENT_NAMES
-        text = (
-            "Example Commercial Bank\n"
-            "Incoming Remittance and Balance Summary - OCR Extract\n"
-            "Statement Ref.: ECB-IR-2026-0412-019\n"
-            "Issue Date: 10 MAY 2026\n"
-            f"Account Holder: {parent_a}; {parent_b}\n"
-            "Primary Source of Support: parents\n"
-            "Sponsor Relationship: parents\n"
-            f"Student Beneficiary: {SYNTHETIC_APPLICANT_NAME}\n"
-            "Available Balance: USD 82000\n"
-            "Recent Credit: USD 76500 received on 12 APR 2026\n"
-            "Remittance Memo: family company equity transfer proceeds\n"
-            f"Company Name on Memo: {SYNTHETIC_COMPANY_NAME}\n"
-            f"Equity Ownership Statement on Cover Sheet: {parent_a} holds 38% shares in "
-            f"{SYNTHETIC_COMPANY_NAME}\n"
-            "Account Type: savings deposit\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="funding_proof",
-            filename="debug_parent_equity_funding_certificate.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/funding/primary_source": "parents",
-                "/funding/available_funds": "82000",
-                "/funding/sponsor_relationship": "parents",
-                "/funding/source_detail": "family company equity transfer proceeds",
-                "/funding/equity_ownership": (
-                    f"{parent_a} holds 38% shares in {SYNTHETIC_COMPANY_NAME}."
-                ),
-            },
-        )
-
-    def _relationship_document(self) -> SyntheticDocumentSpec:
-        parent_a, parent_b = SYNTHETIC_PARENT_NAMES
-        text = (
-            "Household Register Extract / Notarial Birth Relationship OCR\n"
-            "Document No.: HR-EXAMPLE-2026-0321\n"
-            "Applicant: TEST APPLICANT\n"
-            f"Father: {parent_a}\n"
-            f"Mother: {parent_b}\n"
-            "Relationship: parents\n"
-            "Household Address: 100 Example Road, Example City\n"
-            "Notary Office: Example City Notary Office\n"
-            "Seal/Signature: visible on scanned copy\n"
-        )
-        return SyntheticDocumentSpec(
-            document_type="relationship_proof_between_applicant_and_sponsors",
-            filename="debug_relationship_proof.txt",
-            text=self._safe_material_text(text),
-            fields={
-                "/identity/full_name": SYNTHETIC_APPLICANT_NAME,
-                "/funding/sponsor_relationship": "parents",
-                "/family/parent_names": f"{parent_a}; {parent_b}",
-            },
-        )
 
     def _create_parsed_document(
         self,
@@ -1343,10 +896,9 @@ class DebugMaterialBundleService:
         return text[:240]
 
     def _safe_material_text(self, text: str) -> str:
-        normalized_text = text.casefold()
-        for marker in ORACLE_TEXT_MARKERS:
-            if marker.casefold() in normalized_text:
-                raise ValueError(f"synthetic material contains oracle marker: {marker}")
+        marker = find_oracle_text_marker(text)
+        if marker is not None:
+            raise ValueError(f"synthetic material contains oracle marker: {marker}")
         return text
 
     def _document_type_label(self, document_type: str) -> str:

@@ -55,7 +55,6 @@ interface TopBarProps {
     seedText?: string,
   ) => void
   isDebugBundleGenerating?: boolean
-  debugMaterialSeedText?: string
   onExportConversationImage?: () => void
 }
 
@@ -73,7 +72,6 @@ export function TopBar({
   onReset,
   onDebugMaterialBundleScenario,
   isDebugBundleGenerating = false,
-  debugMaterialSeedText = "",
   onExportConversationImage,
 }: TopBarProps) {
   const [debugBundleDialogOpen, setDebugBundleDialogOpen] = useState(false)
@@ -82,9 +80,7 @@ export function TopBar({
       DEBUG_MATERIAL_BUNDLE_OPTIONS[0].scenario,
     )
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
-  const materialSeedText = materialSeedOverride.trim()
-    ? materialSeedOverride
-    : debugMaterialSeedText
+  const materialSeedText = materialSeedOverride
   const selectedDebugBundleOption =
     DEBUG_MATERIAL_BUNDLE_OPTIONS.find(
       (option) => option.scenario === selectedDebugBundleScenario,
@@ -274,7 +270,7 @@ export function TopBar({
             <DialogHeader>
               <DialogTitle>生成材料包</DialogTitle>
               <DialogDescription>
-                根据当前会话事实生成材料，写入当前材料库。
+                根据你填写的材料生成依据生成材料，写入当前材料库。
               </DialogDescription>
             </DialogHeader>
             <RadioGroup
@@ -319,7 +315,7 @@ export function TopBar({
                 className="min-h-24 resize-y"
               />
               <p className="text-xs leading-5 text-muted-foreground">
-                默认取最近几条用户消息。这里的信息会用于让 I-20、录取信、资金证明彼此对得上。
+                这里是唯一生成依据，必填；生成失败不会写入材料。
               </p>
             </div>
             <DialogFooter>
@@ -337,7 +333,7 @@ export function TopBar({
                   )
                   setDebugBundleDialogOpen(false)
                 }}
-                disabled={isDebugBundleGenerating}
+                disabled={isDebugBundleGenerating || !materialSeedText.trim()}
               >
                 <FlaskConical
                   className={

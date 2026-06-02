@@ -80,19 +80,14 @@ TRUNCATE_TARGET=1
 ## Agent Runtime
 
 当前公开主流程默认由 native interviewer 接管；`graph` / `graph_canary` 是兼容标签，
-`graph_shadow` 只做 shadow/eval trace。legacy 只作为显式回滚路径：
+`graph_shadow` 也是兼容标签，不再在公开请求中旁路运行第二套 graph。legacy 只作为显式回滚路径：
 
 ```env
 AGENT_RUNTIME=native_interviewer
-AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY=false
 AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true
 ```
 
-如需观察 graph shadow，只运行 shadow，不把用户可见回复交给 graph：
-
-```bash
-AGENT_RUNTIME=graph_shadow docker compose up -d ds160-api ds160-worker
-```
+如需评估 LangGraph，只运行 replay/eval 或专门的 public promotion 分支；不要在生产公开请求里打开并发 shadow。
 
 切换前后先跑：
 

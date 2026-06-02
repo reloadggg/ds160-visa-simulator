@@ -1,9 +1,8 @@
 from collections.abc import Generator
 import json
+from types import SimpleNamespace
 
 import pytest
-from agents import AgentOutputSchema
-from agents.exceptions import UserError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -13,10 +12,12 @@ from app.db.models import SessionRecord, SessionTurnRecord
 from app.domain.runtime import build_initial_gate_status
 from app.services.ai_material_bundle_generator_service import (
     AIMaterialBundleGeneratorService,
+    GeneratedMaterialDocument,
     GeneratedMaterialBundleOutput,
-    OpenAIAgentsMaterialBundleRunner,
+    OpenAIChatCompletionsMaterialBundleRunner,
+    find_oracle_text_marker,
 )
-from app.services.runtime_errors import ProviderAPIError
+from app.services.runtime_errors import ModelRuntimeError
 
 
 class StubRunner:
@@ -165,7 +166,7 @@ def seed_session(db: Session) -> SessionRecord:
     return record
 
 
-def test_ai_material_generator_includes_seed_and_transcript_in_prompt(
+def test_ai_material_generator_uses_explicit_seed_without_transcript(
     db_session: Session,
 ) -> None:
     runner = StubRunner()
@@ -183,83 +184,87 @@ def test_ai_material_generator_includes_seed_and_transcript_in_prompt(
     )
 
     assert output.documents[2].fields["/education/school_name"] == "New York University"
-    assert trace["generator"] == "openai_agents_sdk"
+    assert trace["generator"] == "openai_chat_completions"
     prompt = json.loads(runner.prompts[0])
     assert prompt["seed_text"] == "我要去 New York University 读 MS Computer Science，父母资助。"
-    assert prompt["transcript"][0]["content"] == (
-        "我会去 New York University 读 MS Computer Science，父母资助。"
-    )
+    assert "transcript" not in prompt
 
 
-def test_openai_agents_runner_uses_non_strict_output_schema(
+def test_openai_chat_runner_uses_json_object_response_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
 
-    class FakeAgent:
-        def __init__(self, **kwargs) -> None:
-            captured.update(kwargs)
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["completion_kwargs"] = kwargs
+            content = json.dumps(
+                {
+                    "documents": [
+                        {
+                            "document_type": "ds160",
+                            "filename": "ai_ds160.txt",
+                            "raw_text": (
+                                "Online Nonimmigrant Visa Application\n"
+                                "Applicant: TEST APPLICANT\n"
+                            ),
+                            "fields": {"/identity/full_name": "TEST APPLICANT"},
+                        },
+                        {
+                            "document_type": "passport_bio",
+                            "filename": "ai_passport.txt",
+                            "raw_text": (
+                                "PASSPORT BIOGRAPHIC PAGE\n"
+                                "Full Name: TEST APPLICANT\n"
+                            ),
+                            "fields": {"/identity/full_name": "TEST APPLICANT"},
+                        },
+                        {
+                            "document_type": "i20",
+                            "filename": "ai_i20.txt",
+                            "raw_text": (
+                                "Certificate of Eligibility\n"
+                                "School Name: New York University\n"
+                            ),
+                            "fields": {
+                                "/education/school_name": "New York University"
+                            },
+                        },
+                        {
+                            "document_type": "admission_letter",
+                            "filename": "ai_admission.txt",
+                            "raw_text": (
+                                "New York University\n"
+                                "Office of Graduate Admission\n"
+                            ),
+                            "fields": {
+                                "/education/school_name": "New York University"
+                            },
+                        },
+                        {
+                            "document_type": "funding_proof",
+                            "filename": "ai_funding.txt",
+                            "raw_text": (
+                                "Bank Balance Certificate\n"
+                                "Available Balance: USD 90000\n"
+                            ),
+                            "fields": {"/funding/available_funds": "90000"},
+                        },
+                    ],
+                    "synthetic_turns": [],
+                    "generation_notes": [],
+                }
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
 
-    class FakeAsyncOpenAI:
+    class FakeOpenAI:
         def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
             captured["timeout"] = timeout
-
-    class FakeResult:
-        def final_output_as(self, output_type, raise_if_incorrect_type: bool = True):
-            captured["final_output_type"] = output_type
-            captured["raise_if_incorrect_type"] = raise_if_incorrect_type
-            return GeneratedMaterialBundleOutput(
-                documents=[
-                    {
-                        "document_type": "ds160",
-                        "filename": "ai_ds160.txt",
-                        "raw_text": (
-                            "Online Nonimmigrant Visa Application\n"
-                            "Applicant: TEST APPLICANT\n"
-                        ),
-                        "fields": {"/identity/full_name": "TEST APPLICANT"},
-                    },
-                    {
-                        "document_type": "passport_bio",
-                        "filename": "ai_passport.txt",
-                        "raw_text": (
-                            "PASSPORT BIOGRAPHIC PAGE\n"
-                            "Full Name: TEST APPLICANT\n"
-                        ),
-                        "fields": {"/identity/full_name": "TEST APPLICANT"},
-                    },
-                    {
-                        "document_type": "i20",
-                        "filename": "ai_i20.txt",
-                        "raw_text": "Certificate of Eligibility\nSchool Name: New York University\n",
-                        "fields": {"/education/school_name": "New York University"},
-                    },
-                    {
-                        "document_type": "admission_letter",
-                        "filename": "ai_admission.txt",
-                        "raw_text": "New York University\nOffice of Graduate Admission\n",
-                        "fields": {"/education/school_name": "New York University"},
-                    },
-                    {
-                        "document_type": "funding_proof",
-                        "filename": "ai_funding.txt",
-                        "raw_text": (
-                            "Bank Balance Certificate\n"
-                            "Available Balance: USD 90000\n"
-                        ),
-                        "fields": {"/funding/available_funds": "90000"},
-                    },
-                ],
-            )
-
-    def fake_run_sync(agent, prompt, *, max_turns: int, run_config):
-        captured["agent"] = agent
-        captured["prompt"] = prompt
-        captured["max_turns"] = max_turns
-        captured["workflow_name"] = run_config.workflow_name
-        return FakeResult()
+            self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
@@ -269,43 +274,158 @@ def test_openai_agents_runner_uses_non_strict_output_schema(
         240.0,
     )
     monkeypatch.setattr(
-        "app.services.ai_material_bundle_generator_service.Agent",
-        FakeAgent,
-    )
-    monkeypatch.setattr(
-        "app.services.ai_material_bundle_generator_service.AsyncOpenAI",
-        FakeAsyncOpenAI,
-    )
-    monkeypatch.setattr(
-        "app.services.ai_material_bundle_generator_service.Runner.run_sync",
-        fake_run_sync,
+        "app.services.ai_material_bundle_generator_service.OpenAI",
+        FakeOpenAI,
     )
 
-    output = OpenAIAgentsMaterialBundleRunner().run(
+    output = OpenAIChatCompletionsMaterialBundleRunner().run(
         prompt="{}",
         instructions="generate materials",
         output_type=GeneratedMaterialBundleOutput,
         runtime={"provider": "openai_compatible", "model": "gpt-5.4"},
     )
 
-    output_schema = captured["output_type"]
-    assert isinstance(output_schema, AgentOutputSchema)
-    assert output_schema.is_strict_json_schema() is False
+    completion_kwargs = captured["completion_kwargs"]
+    assert completion_kwargs["model"] == "gpt-5.4"
+    assert completion_kwargs["response_format"] == {"type": "json_object"}
+    assert completion_kwargs["messages"][0] == {
+        "role": "system",
+        "content": "generate materials",
+    }
     assert captured["timeout"] == 240.0
-    assert captured["final_output_type"] is GeneratedMaterialBundleOutput
     assert output.documents[2].fields["/education/school_name"] == "New York University"
 
 
-def test_ai_material_generator_agent_errors_include_detail(
+def test_openai_chat_runner_normalizes_common_model_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCompletions:
+        def create(self, **kwargs):
+            del kwargs
+            content = json.dumps(
+                {
+                    "materials": [
+                        {
+                            "document_type": "ds160",
+                            "body": "DS-160\nApplicant: TEST APPLICANT\n",
+                            "fields": {"/identity/full_name": "TEST APPLICANT"},
+                        },
+                        {
+                            "document_type": "passport_bio",
+                            "sections": [
+                                {
+                                    "heading": "Passport",
+                                    "lines": ["Applicant: TEST APPLICANT"],
+                                }
+                            ],
+                            "fields": {"/identity/full_name": "TEST APPLICANT"},
+                        },
+                        {
+                            "document_type": "i20",
+                            "plain_text": "I-20\nSchool Name: New York University\n",
+                            "fields": {
+                                "/education/school_name": "New York University"
+                            },
+                        },
+                        {
+                            "document_type": "admission_letter",
+                            "plain_text": "Admission\nNew York University\n",
+                            "fields": {
+                                "/education/school_name": "New York University"
+                            },
+                        },
+                        {
+                            "document_type": "funding_proof",
+                            "plain_text": "Bank\nAvailable Balance: USD 90000\n",
+                            "fields": {"/funding/available_funds": "90000"},
+                        },
+                    ],
+                    "synthetic_user_turns": ["I will study at New York University."],
+                    "generation_notes": "normalized from provider output",
+                }
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(
+        "app.services.ai_material_bundle_generator_service.OpenAI",
+        FakeOpenAI,
+    )
+
+    output = OpenAIChatCompletionsMaterialBundleRunner().run(
+        prompt="{}",
+        instructions="generate materials",
+        output_type=GeneratedMaterialBundleOutput,
+        runtime={"provider": "openai_compatible", "model": "gpt-5.4"},
+    )
+
+    assert output.documents[0].filename == "ai_ds160.txt"
+    assert output.documents[0].raw_text.startswith("DS-160")
+    assert output.synthetic_turns[0].content == (
+        "I will study at New York University."
+    )
+    assert output.generation_notes == ["normalized from provider output"]
+
+
+def test_generated_material_allows_real_issue_date_and_stringifies_fields() -> None:
+    document = GeneratedMaterialDocument.model_validate(
+        {
+            "document_type": "passport_bio",
+            "filename": "passport.txt",
+            "raw_text": "Passport\nDate of Issue: 01 JAN 2025\n",
+            "fields": {"/funding/available_funds": 90000},
+        }
+    )
+
+    assert find_oracle_text_marker(document.raw_text) is None
+    assert document.fields["/funding/available_funds"] == "90000"
+
+
+def test_generated_material_accepts_path_value_field_list() -> None:
+    document = GeneratedMaterialDocument.model_validate(
+        {
+            "document_type": "funding_proof",
+            "filename": "funding.txt",
+            "raw_text": "Bank\nAvailable Balance: USD 90000\n",
+            "fields": [
+                {"path": "/funding/primary_source", "value": "parents"},
+                {"field_path": "/funding/available_funds", "value": 90000},
+                {"pointer": "/education/program_name", "value": "MS Computer Science"},
+                {"json_pointer": "/education/school_name", "value": "NYU"},
+            ],
+        }
+    )
+
+    assert document.fields == {
+        "/funding/primary_source": "parents",
+        "/funding/available_funds": "90000",
+        "/education/program_name": "MS Computer Science",
+        "/education/school_name": "NYU",
+    }
+
+
+def test_generated_material_blocks_oracle_issue_line() -> None:
+    assert find_oracle_text_marker("Issue: funding evidence is missing") == "Issue:"
+
+
+def test_ai_material_generator_runner_errors_include_detail(
     db_session: Session,
 ) -> None:
     class FailingRunner:
         def run(self, **kwargs):
-            raise UserError("Strict JSON schema is enabled")
+            raise RuntimeError("provider returned malformed JSON")
 
     record = seed_session(db_session)
 
-    with pytest.raises(ProviderAPIError) as exc_info:
+    with pytest.raises(ModelRuntimeError) as exc_info:
         AIMaterialBundleGeneratorService(
             db_session,
             model_factory=StubFactory(),
@@ -317,4 +437,4 @@ def test_ai_material_generator_agent_errors_include_detail(
             include_synthetic_user_turns=True,
         )
 
-    assert "UserError: Strict JSON schema is enabled" in str(exc_info.value)
+    assert "RuntimeError: provider returned malformed JSON" in str(exc_info.value)

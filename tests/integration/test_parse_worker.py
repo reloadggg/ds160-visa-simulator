@@ -449,7 +449,6 @@ def test_parse_worker_keeps_completed_job_when_material_refresh_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
         lambda self, record, *, reason: (_ for _ in ()).throw(

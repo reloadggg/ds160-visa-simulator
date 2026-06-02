@@ -12,12 +12,16 @@ from app.services.debug_material_bundle_service import (
     DEBUG_MATERIAL_BUNDLE_SCENARIOS,
     DebugMaterialBundleService,
 )
-from app.services.ai_material_bundle_generator_service import GeneratedMaterialBundleOutput
+from app.services.ai_material_bundle_generator_service import (
+    GeneratedMaterialBundleOutput,
+    find_oracle_text_marker,
+)
 from app.services.runtime_errors import ModelRuntimeError
 from app.repositories.session_turn_repo import SessionTurnRepository
 
+SEED_TEXT = "我会去 New York University 读 MS Computer Science，父母资助。"
+
 ORACLE_TEXT_PHRASES = (
-    "issue:",
     "missing:",
     "expected:",
     "defect:",
@@ -32,6 +36,7 @@ ORACLE_TEXT_PHRASES = (
 
 def assert_no_oracle_text(value: str) -> None:
     normalized = value.casefold()
+    assert find_oracle_text_marker(value) is None
     assert not any(phrase in normalized for phrase in ORACLE_TEXT_PHRASES)
 
 
@@ -81,6 +86,167 @@ def seed_session(db: Session, suffix: str = "default") -> str:
     return session_id
 
 
+def generated_bundle_for_scenario(
+    scenario: str,
+    *,
+    include_synthetic_user_turns: bool = True,
+) -> GeneratedMaterialBundleOutput:
+    school_name = "New York University"
+    admission_school = (
+        "Columbia University"
+        if scenario == "school_mismatch_bundle"
+        else school_name
+    )
+    ds160_passport = "P12345678"
+    passport_number = (
+        "P87654321"
+        if scenario == "identity_mismatch_bundle"
+        else ds160_passport
+    )
+    first_year_cost = "68000"
+    available_funds = "9800" if scenario == "funding_shortfall_bundle" else "90000"
+    funding_fields = {
+        "/funding/primary_source": "parents",
+        "/funding/available_funds": available_funds,
+        "/funding/sponsor_relationship": "parents",
+    }
+    funding_text = (
+        "Incoming Remittance and Balance Summary - OCR Extract\n"
+        "Account Holder: Li Wei and Zhang Min\n"
+        "Primary Source of Support: parents\n"
+        f"Available Balance: USD {available_funds}\n"
+        "Recent Credit: USD 76000\n"
+        "Remittance Memo: family company equity transfer proceeds\n"
+        "Company Name on Memo: Horizon Robotics LLC\n"
+    )
+    if scenario == "sponsor_chain_gap_bundle":
+        funding_fields["/funding/source_detail"] = (
+            "family company equity transfer proceeds"
+        )
+    else:
+        funding_text = (
+            "Bank of China\n"
+            "Certificate of Deposit Balance - OCR Extract\n"
+            "Account Holder: Li Wei and Zhang Min\n"
+            "Primary Source of Support: parents\n"
+            f"Available Balance: USD {available_funds}\n"
+        )
+
+    synthetic_turns = []
+    if scenario == "claim_vs_document_bundle" and include_synthetic_user_turns:
+        synthetic_turns.append(
+            {
+                "role": "user",
+                "content": (
+                    "I am self-funded and will pay the tuition and living expenses "
+                    "with my own savings."
+                ),
+                "field_claims": {"/funding/primary_source": "self"},
+            }
+        )
+
+    return GeneratedMaterialBundleOutput(
+        documents=[
+            {
+                "document_type": "ds160",
+                "filename": "ai_ds160.txt",
+                "raw_text": (
+                    "Online Nonimmigrant Visa Application\n"
+                    "Applicant Name Provided: Morgan Lee\n"
+                    f"Passport/Travel Document Number: {ds160_passport}\n"
+                    "Purpose: STUDENT (F1)\n"
+                ),
+                "fields": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/identity/passport_number": ds160_passport,
+                    "/visa_intent/travel_purpose": "STUDENT (F1)",
+                },
+            },
+            {
+                "document_type": "passport_bio",
+                "filename": "ai_passport.txt",
+                "raw_text": (
+                    "PASSPORT BIOGRAPHIC PAGE - OCR TEXT\n"
+                    "Full Name: Morgan Lee\n"
+                    f"Passport No.: {passport_number}\n"
+                    "Nationality: China\n"
+                ),
+                "fields": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/identity/passport_number": passport_number,
+                    "/identity/nationality": "China",
+                },
+            },
+            {
+                "document_type": "i20",
+                "filename": "ai_i20.txt",
+                "raw_text": (
+                    "Certificate of Eligibility for Nonimmigrant Student Status\n"
+                    f"School Name: {school_name}\n"
+                    "Program of Study: MS Computer Science\n"
+                    "Financials - Estimated average costs\n"
+                    f"First Year Cost Total: USD {first_year_cost}\n"
+                ),
+                "fields": {
+                    "/education/school_name": school_name,
+                    "/education/program_name": "MS Computer Science",
+                    "/education/first_year_cost": first_year_cost,
+                },
+            },
+            {
+                "document_type": "admission_letter",
+                "filename": "ai_admission.txt",
+                "raw_text": (
+                    f"{admission_school}\n"
+                    "Office of Graduate Admission\n"
+                    "Program: MS Computer Science\n"
+                ),
+                "fields": {
+                    "/education/school_name": admission_school,
+                    "/education/program_name": "MS Computer Science",
+                },
+            },
+            {
+                "document_type": "funding_proof",
+                "filename": "ai_funding.txt",
+                "raw_text": funding_text,
+                "fields": funding_fields,
+            },
+            {
+                "document_type": "relationship_proof_between_applicant_and_sponsors",
+                "filename": "ai_relationship.txt",
+                "raw_text": (
+                    "Household Register Extract\n"
+                    "Applicant: Morgan Lee\n"
+                    "Father: Li Wei\n"
+                    "Mother: Zhang Min\n"
+                    "Relationship: parents\n"
+                ),
+                "fields": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/funding/sponsor_relationship": "parents",
+                    "/family/parent_names": "Li Wei; Zhang Min",
+                },
+            },
+        ],
+        synthetic_turns=synthetic_turns,
+    )
+
+
+def install_ai_generator_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
+        assert seed_text == SEED_TEXT
+        return generated_bundle_for_scenario(
+            scenario,
+            include_synthetic_user_turns=include_synthetic_user_turns,
+        ), {"generator": "stub"}
+
+    monkeypatch.setattr(
+        "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
+        fake_generate,
+    )
+
+
 def test_all_debug_material_bundle_scenarios_create_visible_documents(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -96,13 +262,19 @@ def test_all_debug_material_bundle_scenarios_create_visible_documents(
             "runtime_view_state": {},
         },
     )
+    install_ai_generator_stub(monkeypatch)
     service = DebugMaterialBundleService(db_session)
 
     for index, scenario in enumerate(DEBUG_MATERIAL_BUNDLE_SCENARIOS):
         session_id = seed_session(db_session, str(index))
-        payload = service.create_bundle(session_id, scenario=scenario)
+        payload = service.create_bundle(
+            session_id,
+            scenario=scenario,
+            seed_text=SEED_TEXT,
+        )
 
         assert payload["scenario"] == scenario
+        assert payload["generation"]["source"] == "ai"
         assert payload["documents"]
         assert len(payload["documents"]) >= 5
         assert payload["bundle_id"].startswith("dbg-bundle-")
@@ -123,11 +295,13 @@ def test_school_mismatch_bundle_uses_document_evidence_not_oracle_text(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
+    install_ai_generator_stub(monkeypatch)
     session_id = seed_session(db_session)
 
     payload = DebugMaterialBundleService(db_session).create_bundle(
         session_id,
         scenario="school_mismatch_bundle",
+        seed_text=SEED_TEXT,
     )
 
     school_documents = {
@@ -136,8 +310,8 @@ def test_school_mismatch_bundle_uses_document_evidence_not_oracle_text(
         if document["document_type"] in {"i20", "admission_letter"}
     }
     assert school_documents == {
-        "i20": "Example University",
-        "admission_letter": "Alternate Example University",
+        "i20": "New York University",
+        "admission_letter": "Columbia University",
     }
     assert payload["expected_findings"][0]["visible_to_model"] is False
 
@@ -168,11 +342,16 @@ def test_all_debug_material_bundle_persisted_text_keeps_oracle_out(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
+    install_ai_generator_stub(monkeypatch)
     service = DebugMaterialBundleService(db_session)
 
     for index, scenario in enumerate(DEBUG_MATERIAL_BUNDLE_SCENARIOS):
         session_id = seed_session(db_session, f"oracle-{index}")
-        payload = service.create_bundle(session_id, scenario=scenario)
+        payload = service.create_bundle(
+            session_id,
+            scenario=scenario,
+            seed_text=SEED_TEXT,
+        )
 
         persisted_documents = db_session.query(DocumentRecord).filter_by(
             session_id=session_id,
@@ -202,11 +381,13 @@ def test_debug_material_bundle_text_looks_like_real_documents(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
+    install_ai_generator_stub(monkeypatch)
     session_id = seed_session(db_session)
 
     payload = DebugMaterialBundleService(db_session).create_bundle(
         session_id,
         scenario="normal_f1_bundle",
+        seed_text=SEED_TEXT,
     )
     raw_text_by_type = {
         document["document_type"]: document["raw_text"]
@@ -233,11 +414,13 @@ def test_funding_shortfall_bundle_expresses_gap_through_amounts(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
+    install_ai_generator_stub(monkeypatch)
     session_id = seed_session(db_session)
 
     payload = DebugMaterialBundleService(db_session).create_bundle(
         session_id,
         scenario="funding_shortfall_bundle",
+        seed_text=SEED_TEXT,
     )
     documents = {document["document_type"]: document for document in payload["documents"]}
 
@@ -255,11 +438,13 @@ def test_sponsor_chain_gap_bundle_only_contains_partial_source_chain(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
+    install_ai_generator_stub(monkeypatch)
     session_id = seed_session(db_session)
 
     payload = DebugMaterialBundleService(db_session).create_bundle(
         session_id,
         scenario="sponsor_chain_gap_bundle",
+        seed_text=SEED_TEXT,
     )
     funding_document = next(
         document
@@ -271,7 +456,7 @@ def test_sponsor_chain_gap_bundle_only_contains_partial_source_chain(
         "family company equity transfer proceeds"
     )
     assert "Incoming Remittance and Balance Summary" in funding_document["raw_text"]
-    assert "Company Name on Memo: Example Family Business LLC" in funding_document["raw_text"]
+    assert "Company Name on Memo: Horizon Robotics LLC" in funding_document["raw_text"]
     assert "Missing" not in funding_document["raw_text"]
     persisted_filenames = {
         document["filename"].lower()
@@ -290,12 +475,14 @@ def test_claim_vs_document_bundle_records_synthetic_turn_claim(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
+    install_ai_generator_stub(monkeypatch)
     session_id = seed_session(db_session)
 
     payload = DebugMaterialBundleService(db_session).create_bundle(
         session_id,
         scenario="claim_vs_document_bundle",
         include_synthetic_user_turns=True,
+        seed_text=SEED_TEXT,
     )
 
     assert payload["synthetic_turns"][0]["field_claims"] == {
@@ -317,75 +504,10 @@ def test_seeded_material_bundle_uses_ai_generated_documents(
     )
 
     def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
-        assert seed_text == "我会去 New York University 读 MS Computer Science，父母资助。"
-        return GeneratedMaterialBundleOutput(
-            documents=[
-                {
-                    "document_type": "ds160",
-                    "filename": "ai_ds160.txt",
-                    "raw_text": (
-                        "Online Nonimmigrant Visa Application\n"
-                        "Applicant: TEST APPLICANT\n"
-                        "Purpose: STUDENT (F1)\n"
-                    ),
-                    "fields": {
-                        "/identity/full_name": "TEST APPLICANT",
-                        "/visa_intent/travel_purpose": "STUDENT (F1)",
-                    },
-                },
-                {
-                    "document_type": "passport_bio",
-                    "filename": "ai_passport.txt",
-                    "raw_text": (
-                        "PASSPORT BIOGRAPHIC PAGE\n"
-                        "Full Name: TEST APPLICANT\n"
-                        "Passport No.: X12345678\n"
-                    ),
-                    "fields": {
-                        "/identity/full_name": "TEST APPLICANT",
-                        "/identity/passport_number": "X12345678",
-                    },
-                },
-                {
-                    "document_type": "i20",
-                    "filename": "ai_i20.txt",
-                    "raw_text": (
-                        "Certificate of Eligibility for Nonimmigrant Student Status\n"
-                        "School Name: New York University\n"
-                        "Program of Study: MS Computer Science\n"
-                    ),
-                    "fields": {
-                        "/education/school_name": "New York University",
-                        "/education/program_name": "MS Computer Science",
-                    },
-                },
-                {
-                    "document_type": "admission_letter",
-                    "filename": "ai_admission.txt",
-                    "raw_text": (
-                        "New York University\n"
-                        "Office of Graduate Admission\n"
-                        "Program: MS Computer Science\n"
-                    ),
-                    "fields": {
-                        "/education/school_name": "New York University",
-                        "/education/program_name": "MS Computer Science",
-                    },
-                },
-                {
-                    "document_type": "funding_proof",
-                    "filename": "ai_funding.txt",
-                    "raw_text": (
-                        "Bank Balance Certificate\n"
-                        "Primary Source of Support: parents\n"
-                        "Available Balance: USD 90000\n"
-                    ),
-                    "fields": {
-                        "/funding/primary_source": "parents",
-                        "/funding/available_funds": "90000",
-                    },
-                },
-            ],
+        assert seed_text == SEED_TEXT
+        return generated_bundle_for_scenario(
+            scenario,
+            include_synthetic_user_turns=include_synthetic_user_turns,
         ), {"generator": "stub"}
 
     monkeypatch.setattr(
@@ -397,7 +519,7 @@ def test_seeded_material_bundle_uses_ai_generated_documents(
     payload = DebugMaterialBundleService(db_session).create_bundle(
         session_id,
         scenario="normal_f1_bundle",
-        seed_text="我会去 New York University 读 MS Computer Science，父母资助。",
+        seed_text=SEED_TEXT,
     )
 
     documents = {document["document_type"]: document for document in payload["documents"]}
@@ -408,7 +530,7 @@ def test_seeded_material_bundle_uses_ai_generated_documents(
     )
 
 
-def test_material_bundle_uses_session_transcript_seed_when_request_seed_missing(
+def test_material_bundle_without_request_seed_fails_without_writing_materials(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -416,65 +538,39 @@ def test_material_bundle_uses_session_transcript_seed_when_request_seed_missing(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},
     )
-    captured: dict[str, str] = {}
-
-    def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
-        captured["seed_text"] = seed_text
-        return GeneratedMaterialBundleOutput(
-            documents=[
-                {
-                    "document_type": "ds160",
-                    "filename": "ai_ds160.txt",
-                    "raw_text": "Online Nonimmigrant Visa Application\nApplicant: TEST APPLICANT\n",
-                    "fields": {"/identity/full_name": "TEST APPLICANT"},
-                },
-                {
-                    "document_type": "passport_bio",
-                    "filename": "ai_passport.txt",
-                    "raw_text": "PASSPORT BIOGRAPHIC PAGE\nFull Name: TEST APPLICANT\n",
-                    "fields": {"/identity/full_name": "TEST APPLICANT"},
-                },
-                {
-                    "document_type": "i20",
-                    "filename": "ai_i20.txt",
-                    "raw_text": "Certificate of Eligibility\nSchool Name: New York University\n",
-                    "fields": {"/education/school_name": "New York University"},
-                },
-                {
-                    "document_type": "admission_letter",
-                    "filename": "ai_admission.txt",
-                    "raw_text": "New York University\nOffice of Graduate Admission\n",
-                    "fields": {"/education/school_name": "New York University"},
-                },
-                {
-                    "document_type": "funding_proof",
-                    "filename": "ai_funding.txt",
-                    "raw_text": "Bank Balance Certificate\nAvailable Balance: USD 90000\n",
-                    "fields": {"/funding/available_funds": "90000"},
-                },
-            ],
-        ), {"generator": "stub"}
-
     monkeypatch.setattr(
         "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
-        fake_generate,
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("AI generation should only use explicit request seed text")
+        ),
     )
     session_id = seed_session(db_session)
     SessionTurnRepository(db_session).append_user_turn(
         session_id=session_id,
-        content="我会去 New York University 读 MS Computer Science，父母资助。",
+        content=SEED_TEXT,
         source="user_message",
     )
 
-    payload = DebugMaterialBundleService(db_session).create_bundle(
-        session_id,
-        scenario="normal_f1_bundle",
-    )
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        DebugMaterialBundleService(db_session).create_bundle(
+            session_id,
+            scenario="normal_f1_bundle",
+        )
 
-    assert "New York University" in captured["seed_text"]
-    assert payload["generation"]["source"] == "ai"
-    assert payload["generation"]["mode"] == "ai_if_available"
-    assert payload["generation"]["seed_source"] == "session_transcript"
+    assert exc_info.value.status_code == 422
+    assert "请先填写材料生成依据" in exc_info.value.detail
+    assert (
+        db_session.query(DocumentRecord).filter_by(session_id=session_id).count()
+        == 0
+    )
+    assert (
+        db_session.query(DocumentChunkRecord).filter_by(session_id=session_id).count()
+        == 0
+    )
+    assert (
+        db_session.query(EvidenceItemRecord).filter_by(session_id=session_id).count()
+        == 0
+    )
 
 
 def test_seeded_material_bundle_fails_without_writing_demo_materials(
@@ -499,7 +595,7 @@ def test_seeded_material_bundle_fails_without_writing_demo_materials(
         DebugMaterialBundleService(db_session).create_bundle(
             session_id,
             scenario="normal_f1_bundle",
-            seed_text="我会去 New York University 读 MS Computer Science，父母资助。",
+            seed_text=SEED_TEXT,
         )
 
     assert exc_info.value.status_code == 503

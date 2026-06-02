@@ -4,17 +4,7 @@ import json
 import os
 from typing import Any, Literal, Protocol, TypeVar
 
-from agents import (
-    Agent,
-    AgentOutputSchema,
-    ModelSettings,
-    OpenAIChatCompletionsModel,
-    RunConfig,
-    Runner,
-)
-from agents.exceptions import AgentsException
-from agents.model_settings import Reasoning
-from openai import APIStatusError, AsyncOpenAI
+from openai import APIStatusError, OpenAI
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
@@ -23,7 +13,6 @@ from app.agents.user_model_config import current_user_model_config
 from app.core.settings import settings
 from app.db.models import SessionRecord
 from app.domain.document_types import normalize_document_type
-from app.repositories.session_turn_repo import SessionTurnRepository
 from app.services.runtime_errors import (
     ModelRuntimeError,
     ModelUnavailableError,
@@ -49,12 +38,76 @@ ALLOWED_GENERATED_DOCUMENT_TYPES = {
     "relationship_proof_between_applicant_and_sponsors",
 }
 ORACLE_TEXT_MARKERS = (
-    "Issue:",
     "Missing:",
     "Expected:",
     "Defect:",
     "This conflicts with",
 )
+ORACLE_LINE_PREFIXES = ("Issue:",)
+DOCUMENT_TEXT_KEYS = (
+    "raw_text",
+    "plain_text",
+    "body",
+    "document_body",
+    "ocr_text",
+    "full_text",
+    "text",
+    "text_content",
+    "content_text",
+    "raw_content",
+    "material_text",
+    "text_excerpt",
+    "content",
+    "sections",
+    "lines",
+)
+
+
+def find_oracle_text_marker(text: str) -> str | None:
+    normalized = text.casefold()
+    for marker in ORACLE_TEXT_MARKERS:
+        if marker.casefold() in normalized:
+            return marker
+    for line in text.splitlines():
+        normalized_line = line.strip().casefold()
+        for prefix in ORACLE_LINE_PREFIXES:
+            if normalized_line.startswith(prefix.casefold()):
+                return prefix
+    return None
+
+
+def normalize_material_fields(value: Any) -> dict[str, str]:
+    if isinstance(value, list):
+        pairs: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            raw_key = (
+                item.get("path")
+                or item.get("field_path")
+                or item.get("pointer")
+                or item.get("json_pointer")
+                or item.get("key")
+            )
+            raw_value = item.get("value")
+            key = str(raw_key or "").strip()
+            if not key.startswith("/"):
+                continue
+            text_value = str(raw_value).strip()
+            if text_value:
+                pairs[key] = text_value
+        return pairs
+    if not isinstance(value, dict):
+        raise ValueError("fields must be a JSON object")
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        if not key.startswith("/"):
+            continue
+        text_value = str(raw_value).strip()
+        if key and text_value:
+            normalized[key] = text_value
+    return normalized
 
 
 class GeneratedMaterialDocument(BaseModel):
@@ -86,23 +139,15 @@ class GeneratedMaterialDocument(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("raw_text must not be empty")
-        lowered = normalized.casefold()
-        for marker in ORACLE_TEXT_MARKERS:
-            if marker.casefold() in lowered:
-                raise ValueError(f"generated material contains oracle marker: {marker}")
+        marker = find_oracle_text_marker(normalized)
+        if marker is not None:
+            raise ValueError(f"generated material contains oracle marker: {marker}")
         return normalized
 
-    @field_validator("fields")
+    @field_validator("fields", mode="before")
     @classmethod
-    def validate_fields(cls, value: dict[str, Any]) -> dict[str, str]:
-        normalized: dict[str, str] = {}
-        for raw_key, raw_value in value.items():
-            key = str(raw_key).strip()
-            if not key.startswith("/"):
-                continue
-            text_value = str(raw_value).strip()
-            if key and text_value:
-                normalized[key] = text_value
+    def validate_fields(cls, value: Any) -> dict[str, str]:
+        normalized = normalize_material_fields(value)
         if not normalized:
             raise ValueError("fields must include at least one JSON pointer field")
         return normalized
@@ -158,8 +203,8 @@ class AIMaterialBundleRunner(Protocol):
         """Run the material generator and return typed structured output."""
 
 
-class OpenAIAgentsMaterialBundleRunner:
-    """OpenAI Agents SDK adapter for AI-native material bundle generation."""
+class OpenAIChatCompletionsMaterialBundleRunner:
+    """OpenAI-compatible chat adapter for AI-native material bundle generation."""
 
     def run(
         self,
@@ -169,25 +214,52 @@ class OpenAIAgentsMaterialBundleRunner:
         output_type: type[TOutput],
         runtime: dict[str, Any],
     ) -> TOutput:
-        agent = Agent(
-            name="DS-160 Material Bundle Generator",
+        client = self._build_client(runtime)
+        completion = self._create_completion(
+            client=client,
+            runtime=runtime,
             instructions=instructions,
-            model=self._build_model(runtime),
-            model_settings=self._build_model_settings(runtime),
-            output_type=AgentOutputSchema(output_type, strict_json_schema=False),
+            prompt=prompt,
         )
-        result = Runner.run_sync(
-            agent,
-            prompt,
-            max_turns=1,
-            run_config=RunConfig(
-                workflow_name="ds160_ai_material_bundle_generator",
-                tracing_disabled=True,
-            ),
-        )
-        return result.final_output_as(output_type, raise_if_incorrect_type=True)
+        content = completion.choices[0].message.content
+        if not content:
+            raise ModelRuntimeError(
+                detail="材料生成模型返回了空内容。",
+                status_code=503,
+                provider=runtime.get("provider"),
+                model=runtime.get("model"),
+            )
+        payload = self._parse_json_content(content)
+        normalized = self._normalize_material_payload(payload)
+        return output_type.model_validate(normalized)
 
-    def _build_model(self, runtime: dict[str, Any]) -> OpenAIChatCompletionsModel:
+    def _create_completion(
+        self,
+        *,
+        client: OpenAI,
+        runtime: dict[str, Any],
+        instructions: str,
+        prompt: str,
+    ):
+        model_name = self._string_or_none(runtime.get("model"))
+        if model_name is None:
+            raise ModelUnavailableError(
+                detail=runtime.get("model_unavailable_detail")
+                or "当前后端未配置可用的材料生成模型。",
+                provider=runtime.get("provider"),
+                model=model_name,
+                missing_env_vars=runtime.get("model_unavailable_missing_env_vars"),
+            )
+        return client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+    def _build_client(self, runtime: dict[str, Any]) -> OpenAI:
         user_config = current_user_model_config()
         api_key = (
             user_config.api_key
@@ -208,26 +280,126 @@ class OpenAIAgentsMaterialBundleRunner:
                 model=model_name,
                 missing_env_vars=runtime.get("model_unavailable_missing_env_vars"),
             )
-        return OpenAIChatCompletionsModel(
-            model=model_name,
-            openai_client=AsyncOpenAI(
-                api_key=api_key,
-                base_url=base_url,
-                timeout=settings.ai_material_bundle_timeout_seconds,
-            ),
+        return OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=settings.ai_material_bundle_timeout_seconds,
         )
 
-    def _build_model_settings(self, runtime: dict[str, Any]) -> ModelSettings:
-        reasoning_effort = self._string_or_none(runtime.get("reasoning_effort"))
-        reasoning = (
-            Reasoning(effort=reasoning_effort)
-            if reasoning_effort in {"none", "minimal", "low", "medium", "high", "xhigh"}
-            else None
-        )
-        return ModelSettings(
-            reasoning=reasoning,
-            verbosity="medium",
-        )
+    def _parse_json_content(self, content: str) -> dict[str, Any]:
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            stripped = "\n".join(lines).strip()
+        payload = json.loads(stripped)
+        if not isinstance(payload, dict):
+            raise ValueError("material generator output must be a JSON object")
+        return payload
+
+    def _normalize_material_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_documents = payload.get("documents")
+        if raw_documents is None:
+            raw_documents = payload.get("materials")
+        if not isinstance(raw_documents, list):
+            return payload
+
+        documents = [
+            self._normalize_document_payload(document)
+            for document in raw_documents
+            if isinstance(document, dict)
+        ]
+        return {
+            "documents": documents,
+            "synthetic_turns": self._normalize_synthetic_turns(
+                payload.get("synthetic_turns")
+                or payload.get("synthetic_user_turns")
+                or []
+            ),
+            "generation_notes": self._normalize_generation_notes(
+                payload.get("generation_notes") or []
+            ),
+        }
+
+    def _normalize_synthetic_turns(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        turns: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                content = item.strip()
+                if content:
+                    turns.append(
+                        {"role": "user", "content": content, "field_claims": {}}
+                    )
+                continue
+            if isinstance(item, dict):
+                content = str(item.get("content") or item.get("text") or "").strip()
+                if content:
+                    turns.append(
+                        {
+                            "role": item.get("role") or "user",
+                            "content": content,
+                            "field_claims": item.get("field_claims") or {},
+                        }
+                    )
+        return turns
+
+    def _normalize_generation_notes(self, value: Any) -> list[str]:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return [stripped] if stripped else []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    def _normalize_document_payload(self, document: dict[str, Any]) -> dict[str, Any]:
+        document_type = document.get("document_type") or document.get("type")
+        filename = document.get("filename") or document.get("file_name")
+        if not filename and document_type:
+            filename = f"ai_{str(document_type).strip().lower()}.txt"
+        return {
+            "document_type": document_type,
+            "filename": filename,
+            "raw_text": self._document_text(document),
+            "fields": document.get("fields") or document.get("extracted_fields") or {},
+            "counts_toward_gate": document.get("counts_toward_gate", True),
+        }
+
+    def _document_text(self, document: dict[str, Any]) -> str | None:
+        for key in DOCUMENT_TEXT_KEYS:
+            text = self._coerce_text(document.get(key))
+            if text:
+                return text
+        return None
+
+    def _coerce_text(self, value: Any) -> str | None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        if isinstance(value, list):
+            parts = [
+                part
+                for item in value
+                if (part := self._coerce_text(item))
+            ]
+            return "\n".join(parts) if parts else None
+        if isinstance(value, dict):
+            for key in DOCUMENT_TEXT_KEYS:
+                text = self._coerce_text(value.get(key))
+                if text:
+                    return text
+            parts = [
+                part
+                for key, item in value.items()
+                if key not in {"fields", "extracted_fields"}
+                if (part := self._coerce_text(item))
+            ]
+            return "\n".join(parts) if parts else None
+        return None
 
     def _string_or_none(self, value: Any) -> str | None:
         if not isinstance(value, str):
@@ -237,9 +409,6 @@ class OpenAIAgentsMaterialBundleRunner:
 
 
 class AIMaterialBundleGeneratorService:
-    MAX_TRANSCRIPT_TURNS = 12
-    MAX_TRANSCRIPT_CHARS = 6_000
-
     def __init__(
         self,
         db: Session,
@@ -249,8 +418,7 @@ class AIMaterialBundleGeneratorService:
     ) -> None:
         self.db = db
         self.model_factory = model_factory or AgentModelFactory()
-        self.runner = runner or OpenAIAgentsMaterialBundleRunner()
-        self.turns = SessionTurnRepository(db)
+        self.runner = runner or OpenAIChatCompletionsMaterialBundleRunner()
 
     def generate(
         self,
@@ -293,7 +461,7 @@ class AIMaterialBundleGeneratorService:
             raise self._normalize_model_error(exc, runtime=runtime) from exc
 
         trace = {
-            "generator": "openai_agents_sdk",
+            "generator": "openai_chat_completions",
             "provider": runtime.get("provider"),
             "model": runtime.get("model"),
             "reasoning_effort": runtime.get("reasoning_effort"),
@@ -334,7 +502,6 @@ class AIMaterialBundleGeneratorService:
             },
             "scenario": scenario,
             "seed_text": seed_text,
-            "transcript": self._transcript_window(record.session_id),
             "existing_profile_json": dict(record.profile_json or {}),
             "include_synthetic_user_turns": include_synthetic_user_turns,
             "required_documents": [
@@ -346,9 +513,27 @@ class AIMaterialBundleGeneratorService:
                 "relationship_proof_between_applicant_and_sponsors",
             ],
             "scenario_rules": self._scenario_rules(scenario),
+            "output_contract": {
+                "top_level_keys": [
+                    "documents",
+                    "synthetic_turns",
+                    "generation_notes",
+                ],
+                "document_keys": [
+                    "document_type",
+                    "filename",
+                    "raw_text",
+                    "fields",
+                    "counts_toward_gate",
+                ],
+                "fields_shape": {
+                    "/identity/full_name": "Morgan Lee",
+                    "/education/school_name": "New York University",
+                },
+            },
             "task": (
                 "Generate realistic synthetic plain-text visa materials that match "
-                "the seed_text and transcript. These are user-visible practice "
+                "the seed_text. These are user-visible practice "
                 "documents, not oracle answers. Return only structured output."
             ),
         }
@@ -357,17 +542,20 @@ class AIMaterialBundleGeneratorService:
     def _build_instructions(self, declared_family: str | None) -> str:
         family = declared_family or "unknown"
         return (
-            "你是 DS-160 模拟器里的 AI 材料生成器，必须使用 OpenAI Agents SDK 的结构化输出。\n"
+            "你是 DS-160 模拟器里的 AI 材料生成器，必须返回可解析 JSON。\n"
             f"当前签证类别：{family}。\n"
             "核心规则：\n"
-            "1. seed_text 和 transcript 是材料事实的最高优先级来源；学校、项目、资金来源、资助人、金额必须与用户说法一致。\n"
+            "1. seed_text 是材料事实的唯一来源；学校、项目、资金来源、资助人、金额必须与 seed_text 一致。\n"
             "2. 生成的是看起来像真实 OCR/文本摘录的练习材料正文，不是总结、分析或风险报告。\n"
             "3. 正常场景必须生成 DS-160、护照首页、I-20、录取信、资金证明，最好也生成亲属关系证明。\n"
             "4. 字段必须用 JSON pointer，例如 /education/school_name、/education/program_name、/funding/primary_source。\n"
             "5. 不得在材料正文里写 Issue、Missing、Expected、Defect、This conflicts with 等答案提示。\n"
             "6. 如果场景要求制造冲突，只能通过材料字段值不同或用户声明与材料不同表达，不要解释冲突。\n"
             "7. 不要把内部 scenario、oracle、expected_findings、prompt、trace 写进材料正文。\n"
-            "8. 输出必须符合 GeneratedMaterialBundleOutput。"
+            "8. 输出必须符合 GeneratedMaterialBundleOutput。\n"
+            "9. 顶层只能使用 documents、synthetic_turns、generation_notes。\n"
+            "10. 每个 document 必须使用 document_type、filename、raw_text、fields、counts_toward_gate。\n"
+            "11. raw_text 必须是完整材料正文字符串；fields 必须是 JSON object，不要用数组。"
         )
 
     def _scenario_rules(self, scenario: str) -> dict[str, str]:
@@ -416,28 +604,6 @@ class AIMaterialBundleGeneratorService:
             "instruction": "Keep all generated materials internally consistent with the seed.",
         }
 
-    def _transcript_window(self, session_id: str) -> list[dict[str, Any]]:
-        turns = self.turns.list_session_turns(session_id)[-self.MAX_TRANSCRIPT_TURNS :]
-        payload: list[dict[str, Any]] = []
-        remaining_chars = self.MAX_TRANSCRIPT_CHARS
-        for turn in turns:
-            content = str(turn.content or "").strip()
-            if not content:
-                continue
-            content = content[:remaining_chars]
-            remaining_chars -= len(content)
-            payload.append(
-                {
-                    "role": turn.role,
-                    "content": content,
-                    "turn_index": turn.turn_index,
-                    "source": turn.source,
-                }
-            )
-            if remaining_chars <= 0:
-                break
-        return payload
-
     def _normalize_model_error(
         self,
         exc: Exception,
@@ -452,18 +618,6 @@ class AIMaterialBundleGeneratorService:
                 provider=runtime.get("provider"),
                 model=runtime.get("model"),
                 status_code=exc.status_code,
-            )
-        if isinstance(exc, AgentsException):
-            detail = str(exc).strip()
-            return ProviderAPIError(
-                detail=(
-                    f"材料生成 Agent 运行失败：{exc.__class__.__name__}: {detail}"
-                    if detail
-                    else f"材料生成 Agent 运行失败：{exc.__class__.__name__}"
-                ),
-                provider=runtime.get("provider"),
-                model=runtime.get("model"),
-                status_code=503,
             )
         return ModelRuntimeError(
             detail=f"材料生成失败：{exc.__class__.__name__}: {exc}",

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from app.core import settings as settings_module
@@ -14,6 +16,9 @@ def disable_multimodal_extraction_by_default(
     if not is_live_llm_test:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        for key in list(os.environ):
+            if key.startswith("RUNTIME_"):
+                monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr(settings_module.settings, "openai_api_key", None)
         monkeypatch.setattr(settings_module.settings, "openai_base_url", None)
     monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
@@ -25,7 +30,10 @@ def disable_multimodal_extraction_by_default(
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "legacy")
     monkeypatch.setattr(settings_module.settings, "agent_runtime_canary_percent", 0)
     monkeypatch.setattr(settings_module.settings, "agent_runtime_trace_enabled", True)
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_fail_open_to_legacy", False)
-    monkeypatch.setattr(settings_module.settings, "agent_runtime_typed_adjudication_enabled", False)
+    monkeypatch.setattr(
+        settings_module.settings,
+        "agent_runtime_typed_adjudication_enabled",
+        False,
+    )
     monkeypatch.setattr(settings_module.settings, "rag_enabled", False)
     monkeypatch.setattr(settings_module.settings, "siliconflow_api_key", None)

@@ -11,7 +11,7 @@ Make DS-160 runtime failures diagnosable from the frontend without SSH or manual
 3. Debug console: add an in-app debug page for runtime selection, material generation, fallback errors, live events, and raw JSON.
 4. Live progress: stream structured `debug_event` messages alongside existing message/material SSE events.
 5. Export: copy one compact debug package containing frontend version, backend snapshot, recent live events, and latest material bundle result.
-6. Follow-up diagnosis: use the console to distinguish missing seed, model failure, deterministic fallback, and material-refresh errors.
+6. Follow-up diagnosis: use the console to distinguish missing seed, model failure, and material-refresh errors.
 
 ## Guardrails
 
