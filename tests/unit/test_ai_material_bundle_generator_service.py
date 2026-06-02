@@ -93,6 +93,19 @@ class StubRunner:
                         "/funding/available_funds": "90000",
                     },
                 },
+                {
+                    "document_type": "relationship_proof_between_applicant_and_sponsors",
+                    "filename": "ai_relationship.txt",
+                    "raw_text": (
+                        "Household Register Extract\n"
+                        "Applicant: TEST APPLICANT\n"
+                        "Relationship to sponsors: child\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "TEST APPLICANT",
+                        "/funding/sponsor_relationship": "parents",
+                    },
+                },
             ],
             synthetic_turns=[
                 {
@@ -188,6 +201,164 @@ def test_ai_material_generator_uses_explicit_seed_without_transcript(
     prompt = json.loads(runner.prompts[0])
     assert prompt["seed_text"] == "我要去 New York University 读 MS Computer Science，父母资助。"
     assert "transcript" not in prompt
+    assert prompt["required_documents"] == [
+        "ds160",
+        "passport_bio",
+        "i20",
+        "admission_letter",
+        "funding_proof",
+        "relationship_proof_between_applicant_and_sponsors",
+    ]
+
+
+def test_ai_material_generator_uses_j1_template_documents(
+    db_session: Session,
+) -> None:
+    class J1Runner(StubRunner):
+        def run(self, **kwargs):
+            self.prompts.append(kwargs["prompt"])
+            return GeneratedMaterialBundleOutput(
+                documents=[
+                    {
+                        "document_type": "ds160",
+                        "filename": "j1_ds160.txt",
+                        "raw_text": "DS-160\nPurpose: EXCHANGE VISITOR (J1)\n",
+                        "fields": {"/visa_intent/travel_purpose": "J1"},
+                    },
+                    {
+                        "document_type": "passport_bio",
+                        "filename": "j1_passport.txt",
+                        "raw_text": "Passport\nFull Name: Morgan Lee\n",
+                        "fields": {"/identity/full_name": "Morgan Lee"},
+                    },
+                    {
+                        "document_type": "ds2019",
+                        "filename": "j1_ds2019.txt",
+                        "raw_text": "Form DS-2019\nProgram Sponsor: Example Exchange\n",
+                        "fields": {"/exchange/program_sponsor": "Example Exchange"},
+                    },
+                    {
+                        "document_type": "funding_proof",
+                        "filename": "j1_funding.txt",
+                        "raw_text": "Funding Letter\nSupport Amount: USD 42000\n",
+                        "fields": {"/funding/available_funds": "42000"},
+                    },
+                    {
+                        "document_type": "program_invitation",
+                        "filename": "j1_invitation.txt",
+                        "raw_text": "Exchange Program Invitation\nHost: Example Lab\n",
+                        "fields": {"/exchange/host": "Example Lab"},
+                    },
+                    {
+                        "document_type": "sevis_fee_receipt",
+                        "filename": "j1_sevis.txt",
+                        "raw_text": "SEVIS I-901 Fee Receipt\nStatus: Paid\n",
+                        "fields": {"/sevis/status": "paid"},
+                    },
+                ],
+                synthetic_turns=[],
+            )
+
+    runner = J1Runner()
+    record = seed_session(db_session)
+    record.declared_family = "j1"
+
+    output, trace = AIMaterialBundleGeneratorService(
+        db_session,
+        model_factory=StubFactory(),
+        runner=runner,
+    ).generate(
+        record=record,
+        scenario="normal_j1_bundle",
+        seed_text="我要去 Example Lab 做 J-1 exchange visitor，项目资助。",
+        include_synthetic_user_turns=False,
+    )
+
+    prompt = json.loads(runner.prompts[0])
+    assert prompt["target_family"] == "j1"
+    assert prompt["required_documents"] == [
+        "ds160",
+        "passport_bio",
+        "ds2019",
+        "funding_proof",
+        "program_invitation",
+        "sevis_fee_receipt",
+    ]
+    assert prompt["family_material_guidance"]["avoid_documents"] == [
+        "i20",
+        "admission_letter",
+    ]
+    assert trace["target_family"] == "j1"
+    assert {document.document_type for document in output.documents} >= {
+        "ds2019",
+        "program_invitation",
+        "sevis_fee_receipt",
+    }
+
+
+def test_ai_material_generator_rejects_family_template_missing_required_document(
+    db_session: Session,
+) -> None:
+    class IncompleteH1BRunner(StubRunner):
+        def run(self, **kwargs):
+            self.prompts.append(kwargs["prompt"])
+            return GeneratedMaterialBundleOutput(
+                documents=[
+                    {
+                        "document_type": "ds160",
+                        "filename": "h1b_ds160.txt",
+                        "raw_text": "DS-160\nPurpose: H1B\n",
+                        "fields": {"/visa_intent/travel_purpose": "H1B"},
+                    },
+                    {
+                        "document_type": "passport_bio",
+                        "filename": "h1b_passport.txt",
+                        "raw_text": "Passport\nFull Name: Morgan Lee\n",
+                        "fields": {"/identity/full_name": "Morgan Lee"},
+                    },
+                    {
+                        "document_type": "i797",
+                        "filename": "h1b_i797.txt",
+                        "raw_text": "I-797 Approval Notice\nEmployer: Example Inc\n",
+                        "fields": {"/employment/employer_name": "Example Inc"},
+                    },
+                    {
+                        "document_type": "employer_letter",
+                        "filename": "h1b_employer.txt",
+                        "raw_text": "Employer Support Letter\nRole: Software Engineer\n",
+                        "fields": {"/employment/role": "Software Engineer"},
+                    },
+                    {
+                        "document_type": "lca",
+                        "filename": "h1b_lca.txt",
+                        "raw_text": "Labor Condition Application\nSOC: Software Developers\n",
+                        "fields": {"/employment/soc": "Software Developers"},
+                    },
+                ],
+                synthetic_turns=[],
+            )
+
+    record = seed_session(db_session)
+    record.declared_family = "h1b"
+
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        AIMaterialBundleGeneratorService(
+            db_session,
+            model_factory=StubFactory(),
+            runner=IncompleteH1BRunner(),
+        ).generate(
+            record=record,
+            scenario="normal_h1b_bundle",
+            seed_text="我会去 Example Inc 做 H-1B 软件工程师。",
+            include_synthetic_user_turns=False,
+        )
+
+    assert "degree_certificate" in exc_info.value.detail
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.error_category == "model_output_invalid"
+    assert exc_info.value.upstream_code == "model_output_invalid"
+    assert exc_info.value.provider == "openai_compatible"
+    assert exc_info.value.model == "gpt-5.4"
 
 
 def test_openai_chat_runner_uses_json_object_response_format(
@@ -260,10 +431,18 @@ def test_openai_chat_runner_uses_json_object_response_format(
             )
 
     class FakeOpenAI:
-        def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str,
+            timeout: float,
+            default_headers: dict[str, str],
+        ) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
             captured["timeout"] = timeout
+            captured["default_headers"] = default_headers
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -293,6 +472,7 @@ def test_openai_chat_runner_uses_json_object_response_format(
         "content": "generate materials",
     }
     assert captured["timeout"] == 240.0
+    assert captured["default_headers"] == {"User-Agent": "curl/8.5.0"}
     assert output.documents[2].fields["/education/school_name"] == "New York University"
 
 
@@ -438,3 +618,33 @@ def test_ai_material_generator_runner_errors_include_detail(
         )
 
     assert "RuntimeError: provider returned malformed JSON" in str(exc_info.value)
+    assert exc_info.value.status_code == 503
+
+
+def test_ai_material_generator_json_parse_errors_are_model_output_invalid(
+    db_session: Session,
+) -> None:
+    class InvalidJsonRunner:
+        def run(self, **kwargs):
+            raise json.JSONDecodeError("Expecting value", "not-json", 0)
+
+    record = seed_session(db_session)
+
+    with pytest.raises(ModelRuntimeError) as exc_info:
+        AIMaterialBundleGeneratorService(
+            db_session,
+            model_factory=StubFactory(),
+            runner=InvalidJsonRunner(),
+        ).generate(
+            record=record,
+            scenario="normal_f1_bundle",
+            seed_text="我要去 New York University 读 MS Computer Science，父母资助。",
+            include_synthetic_user_turns=True,
+        )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.error_category == "model_output_invalid"
+    assert exc_info.value.upstream_code == "model_output_invalid"
+    assert exc_info.value.provider == "openai_compatible"
+    assert exc_info.value.model == "gpt-5.4"
+    assert "材料生成模型输出结构不合格" in exc_info.value.detail

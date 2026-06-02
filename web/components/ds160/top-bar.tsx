@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -24,7 +24,11 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Textarea } from "@/components/ui/textarea"
 import { APP_VERSION_LABEL } from "@/lib/app-version"
-import { DEBUG_MATERIAL_BUNDLE_OPTIONS } from "@/lib/debug-material-bundles"
+import {
+  getDebugMaterialBundleOption,
+  getDebugMaterialBundleOptionsForVisaFamily,
+  getDefaultDebugMaterialBundleScenarioForVisaFamily,
+} from "@/lib/debug-material-bundles"
 import {
   Pause,
   StopCircle,
@@ -36,10 +40,10 @@ import {
   MoreHorizontal,
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import type { DebugMaterialBundleScenario } from "@/lib/api/types"
+import type { DebugMaterialBundleScenario, VisaFamily } from "@/lib/api/types"
 
 interface TopBarProps {
-  visaType: string
+  visaType: VisaFamily
   sessionTime: string
   isPaused: boolean
   activeTab: string
@@ -77,14 +81,22 @@ export function TopBar({
   const [debugBundleDialogOpen, setDebugBundleDialogOpen] = useState(false)
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
     useState<DebugMaterialBundleScenario>(
-      DEBUG_MATERIAL_BUNDLE_OPTIONS[0].scenario,
+      getDefaultDebugMaterialBundleScenarioForVisaFamily(visaType),
     )
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
   const materialSeedText = materialSeedOverride
-  const selectedDebugBundleOption =
-    DEBUG_MATERIAL_BUNDLE_OPTIONS.find(
-      (option) => option.scenario === selectedDebugBundleScenario,
-    ) ?? DEBUG_MATERIAL_BUNDLE_OPTIONS[0]
+  const debugBundleOptions = useMemo(
+    () => getDebugMaterialBundleOptionsForVisaFamily(visaType),
+    [visaType],
+  )
+  const activeDebugBundleScenario = debugBundleOptions.some(
+    (option) => option.scenario === selectedDebugBundleScenario,
+  )
+    ? selectedDebugBundleScenario
+    : getDefaultDebugMaterialBundleScenarioForVisaFamily(visaType)
+  const selectedDebugBundleOption = getDebugMaterialBundleOption(
+    activeDebugBundleScenario,
+  )
   const displayName = userName.trim() || "User"
   const fallbackInitials =
     displayName
@@ -274,7 +286,7 @@ export function TopBar({
               </DialogDescription>
             </DialogHeader>
             <RadioGroup
-              value={selectedDebugBundleScenario}
+              value={activeDebugBundleScenario}
               onValueChange={(value) =>
                 setSelectedDebugBundleScenario(
                   value as DebugMaterialBundleScenario,
@@ -282,12 +294,12 @@ export function TopBar({
               }
               className="gap-2"
             >
-              {DEBUG_MATERIAL_BUNDLE_OPTIONS.map((option) => (
+              {debugBundleOptions.map((option) => (
                 <label
                   key={option.scenario}
                   className={cn(
                     "flex cursor-pointer items-start gap-3 rounded-xl border border-border px-3 py-3 transition-colors hover:bg-muted/40",
-                    selectedDebugBundleScenario === option.scenario &&
+                    activeDebugBundleScenario === option.scenario &&
                       "border-primary/50 bg-primary/5",
                   )}
                 >

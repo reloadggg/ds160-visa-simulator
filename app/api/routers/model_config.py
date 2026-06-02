@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from app.agents.user_model_config import normalize_openai_base_url
 from app.core.settings import settings
+from app.integrations.openai_compat_headers import openai_compat_default_headers
 from app.services.user_model_config_service import ensure_user_model_config_enabled
 
 
@@ -46,6 +47,7 @@ def list_user_models(payload: ModelListRequest) -> ModelListResponse:
             base_url=payload.base_url,
             timeout=settings.openai_timeout_seconds,
             max_retries=0,
+            default_headers=openai_compat_default_headers(),
         ).models.list()
     except APIStatusError as exc:
         status_code = exc.status_code

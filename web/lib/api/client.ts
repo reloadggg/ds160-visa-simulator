@@ -16,6 +16,7 @@ import type {
   BackendMessageResponse,
   BackendRequiredPackage,
   BackendSession,
+  BackendSessionMessagesResponse,
   BackendUserReport,
   DebugMaterialBundleResponse,
   DebugMaterialBundleScenario,
@@ -24,7 +25,10 @@ import type {
   FileUploadResponse,
   InternalReport,
   InterviewReviewResponse,
+  MaterialPackageImportResponse,
+  MaterialPackageListResponse,
   MessageResponse,
+  MessageStreamErrorPayload,
   MessageStreamEvent,
   ModelListResponse,
   RagUploadMetadata,
@@ -59,6 +63,19 @@ function extractErrorMessage(data: unknown, fallback: string): string {
     typeof (data as { detail?: unknown }).detail === "string"
   ) {
     return (data as { detail: string }).detail
+  }
+
+  if (
+    typeof data === "object" &&
+    data !== null &&
+    "detail" in data &&
+    typeof (data as { detail?: unknown }).detail === "object" &&
+    (data as { detail?: unknown }).detail !== null
+  ) {
+    const detail = (data as { detail: Record<string, unknown> }).detail
+    if (typeof detail.detail === "string" && detail.detail.trim()) {
+      return detail.detail
+    }
   }
 
   if (typeof data === "string" && data.trim()) {
@@ -186,6 +203,15 @@ export async function sendMessage(
   return mapMessageResponse(await handleResponse<BackendMessageResponse>(response))
 }
 
+export async function fetchSessionMessages(
+  sessionId: string,
+): Promise<BackendSessionMessagesResponse> {
+  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<BackendSessionMessagesResponse>(response)
+}
+
 export async function sendMessageStream(
   sessionId: string,
   content: string,
@@ -281,7 +307,7 @@ function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
     return { event, data: data as BackendMessageResponse }
   }
   if (event === "error") {
-    return { event, data: data as { status?: number; detail?: string } }
+    return { event, data: data as MessageStreamErrorPayload }
   }
   return null
 }
@@ -511,6 +537,27 @@ export async function createDebugMaterialBundleStream(
     throw new ApiError("流式材料包响应没有返回最终结果。", 502)
   }
   return finalPayload
+}
+
+export async function listMaterialPackages(): Promise<MaterialPackageListResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/material-packages"), {
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<MaterialPackageListResponse>(response)
+}
+
+export async function importMaterialPackage(
+  sessionId: string,
+  packageId: string,
+): Promise<MaterialPackageImportResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/material-packages/${packageId}/import`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+    },
+  )
+  return handleResponse<MaterialPackageImportResponse>(response)
 }
 
 export async function uploadFile(

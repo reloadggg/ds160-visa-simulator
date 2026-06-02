@@ -5,6 +5,7 @@ from typing import Any
 from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from app.core.settings import settings
+from app.integrations.openai_compat_headers import openai_compat_default_headers
 from app.services.runtime_policies import RuntimePolicyRegistry
 
 
@@ -193,4 +194,5 @@ class LLMClient:
             base_url=settings.openai_base_url,
             timeout=settings.openai_timeout_seconds,
             max_retries=0,
+            default_headers=openai_compat_default_headers(),
         )

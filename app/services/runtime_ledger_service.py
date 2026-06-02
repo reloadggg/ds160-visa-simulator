@@ -118,6 +118,7 @@ class RuntimeLedgerService:
         if latest_turn is None:
             return RuntimeViewState(
                 source_turn_id=None,
+                source_turn_content=None,
                 decision=governor_decision,
                 governor_decision=governor_decision,
                 current_focus=dict(ledger.current_focus or {}),
@@ -127,6 +128,7 @@ class RuntimeLedgerService:
         metadata_view_state = self._runtime_view_state_from_metadata(
             latest_turn.metadata,
             latest_turn.turn_id,
+            latest_turn.content,
             fallback_governor_decision=governor_decision,
         )
         if metadata_view_state is not None:
@@ -174,6 +176,7 @@ class RuntimeLedgerService:
         )
         return RuntimeViewState(
             source_turn_id=latest_turn.turn_id if latest_turn else None,
+            source_turn_content=latest_turn.content if latest_turn else None,
             decision=decision,
             governor_decision=governor_decision,
             public_status=public_status,
@@ -377,6 +380,7 @@ class RuntimeLedgerService:
         self,
         metadata: dict[str, Any],
         turn_id: str,
+        turn_content: str | None,
         *,
         fallback_governor_decision: str,
     ) -> RuntimeViewState | None:
@@ -386,6 +390,12 @@ class RuntimeLedgerService:
         if payload.get("source_turn_id") != turn_id:
             return None
         candidate = dict(payload)
+        if "source_turn_content" not in candidate:
+            candidate["source_turn_content"] = self._string_or_none(
+                metadata.get("assistant_message")
+            )
+        if not candidate.get("source_turn_content"):
+            candidate["source_turn_content"] = turn_content
         candidate["decision"] = (
             self._string_or_none(candidate.get("decision"))
             or fallback_governor_decision

@@ -11,6 +11,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.domain.evidence import DocumentSourceType
+from app.integrations.openai_compat_headers import openai_compat_default_headers
 
 SUPPORTED_MULTIMODAL_DOCUMENT_TYPES = {
     "passport_bio": [
@@ -383,6 +384,7 @@ class MultimodalExtractionService:
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=90.0,
+            default_headers=openai_compat_default_headers(),
         ).chat.completions.create(
             **payload,
         )

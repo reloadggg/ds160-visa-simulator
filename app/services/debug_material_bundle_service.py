@@ -42,6 +42,9 @@ from app.services.runtime_errors import ModelRuntimeError
 
 DebugMaterialBundleScenario = Literal[
     "normal_f1_bundle",
+    "normal_j1_bundle",
+    "normal_b1_b2_bundle",
+    "normal_h1b_bundle",
     "school_mismatch_bundle",
     "identity_mismatch_bundle",
     "funding_shortfall_bundle",
@@ -93,6 +96,9 @@ class DebugMaterialBundleEvent:
 
 DEBUG_MATERIAL_BUNDLE_SCENARIOS: dict[str, str] = {
     "normal_f1_bundle": "自洽 F-1 基准材料包",
+    "normal_j1_bundle": "自洽 J-1 交流访问材料包",
+    "normal_b1_b2_bundle": "自洽 B-1/B-2 访问材料包",
+    "normal_h1b_bundle": "自洽 H-1B 工作材料包",
     "school_mismatch_bundle": "学校材料冲突包",
     "identity_mismatch_bundle": "身份号码冲突包",
     "funding_shortfall_bundle": "资金金额不足包",
@@ -107,6 +113,24 @@ DOCUMENT_TYPE_LABELS: dict[str, str] = {
     "admission_letter": "录取信",
     "funding_proof": "资金证明",
     "relationship_proof_between_applicant_and_sponsors": "亲属关系证明",
+    "ds2019": "DS-2019",
+    "program_invitation": "项目邀请信",
+    "sevis_fee_receipt": "SEVIS 缴费收据",
+    "training_plan_ds7002": "DS-7002 培训计划",
+    "insurance_proof": "保险证明",
+    "itinerary_or_trip_purpose": "行程或访问目的说明",
+    "invitation_letter": "邀请信",
+    "employment_proof": "在职证明",
+    "travel_history": "出入境记录",
+    "family_ties_proof": "国内约束证明",
+    "i797": "I-797 批准通知",
+    "i129_petition": "I-129 申请材料",
+    "employer_letter": "雇主证明信",
+    "offer_letter": "Offer Letter",
+    "lca": "LCA",
+    "degree_certificate": "学历证明",
+    "resume": "简历",
+    "client_letter": "客户项目说明信",
 }
 
 _CLAIM_FIELD_BINDINGS: dict[str, tuple[str, str]] = {
@@ -373,6 +397,7 @@ class DebugMaterialBundleService:
                 provider=exc.provider,
                 model=exc.model,
                 upstream_code=exc.upstream_code,
+                error_category=exc.error_category,
                 body=exc.body,
                 missing_env_vars=exc.missing_env_vars,
             ) from exc

@@ -31,6 +31,29 @@ const riskLevelConfig = {
   high: { label: "高风险", color: "bg-red-500", textColor: "text-red-600" },
 }
 
+const interviewResultConfig: Record<string, { color: string; textColor: string; bgColor: string }> = {
+  passed: {
+    color: "bg-emerald-500",
+    textColor: "text-emerald-700",
+    bgColor: "bg-emerald-50 border-emerald-200",
+  },
+  refused: {
+    color: "bg-red-500",
+    textColor: "text-red-700",
+    bgColor: "bg-red-50 border-red-200",
+  },
+  not_passed: {
+    color: "bg-amber-500",
+    textColor: "text-amber-700",
+    bgColor: "bg-amber-50 border-amber-200",
+  },
+  in_progress: {
+    color: "bg-sky-500",
+    textColor: "text-sky-700",
+    bgColor: "bg-sky-50 border-sky-200",
+  },
+}
+
 export function AnalysisPanel({
   report,
   isLoading = false,
@@ -43,6 +66,9 @@ export function AnalysisPanel({
   className,
 }: AnalysisPanelProps) {
   const riskConfig = report ? riskLevelConfig[report.risk_level] : null
+  const resultConfig = report
+    ? interviewResultConfig[report.interview_result] ?? interviewResultConfig.in_progress
+    : null
   const containerWidth = mode === "coach" ? "w-80 2xl:w-96" : "w-72 2xl:w-80"
   const primaryAction = report?.allowed_next_actions[0] ?? null
   const caseUnderstanding = selectCaseUnderstandingPresentation(
@@ -96,6 +122,18 @@ export function AnalysisPanel({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 px-4">
+          <div className={cn("rounded-xl border px-3 py-2", resultConfig?.bgColor)}>
+            <div className="mb-1 text-xs text-muted-foreground">面签结论</div>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className={cn("h-2.5 w-2.5 shrink-0 rounded-full", resultConfig?.color)} />
+              <span className={cn("min-w-0 break-words text-base font-semibold", resultConfig?.textColor)}>
+                {report.interview_result_label}
+              </span>
+            </div>
+            <p className="mt-1 line-clamp-3 break-words text-xs leading-relaxed text-muted-foreground">
+              {report.interview_result_reason}
+            </p>
+          </div>
           <div className="flex min-w-0 items-center justify-between gap-3">
             <span className="text-sm text-muted-foreground">风险等级：</span>
             <div className="flex items-center gap-2">

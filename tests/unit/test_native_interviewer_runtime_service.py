@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from agents.exceptions import AgentsException, ModelBehaviorError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.core.settings import settings
 from app.db.base import Base
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.services.native_interviewer_runtime_service import (
     NativeInterviewerOutput,
     NativeInterviewerRuntimeService,
+    OpenAIAgentsInterviewerRunner,
 )
 from app.services.runtime_errors import ModelRuntimeError
 
@@ -41,6 +44,283 @@ class QueueRunner:
         if not self.outputs:
             raise AssertionError("no queued output")
         return self.outputs.pop(0)
+
+
+def test_native_interviewer_output_accepts_visible_message_aliases() -> None:
+    for key in (
+        "response_text",
+        "user_facing_message",
+        "question",
+        "interviewer_message",
+        "text",
+        "content",
+    ):
+        output = NativeInterviewerOutput.model_validate(
+            {
+                "schema_version": "native_interviewer.v0",
+                key: "Which NYU courses support your return plan?",
+            }
+        )
+
+        assert output.assistant_message == "Which NYU courses support your return plan?"
+
+
+def test_native_interviewer_output_accepts_nested_output_content_alias() -> None:
+    output = NativeInterviewerOutput.model_validate(
+        {
+            "schema_version": "native_interviewer.v0",
+            "output": {
+                "role": "visa_officer",
+                "content": "What do your parents do in China to fund your studies?",
+            },
+        }
+    )
+
+    assert output.assistant_message == (
+        "What do your parents do in China to fund your studies?"
+    )
+
+
+def test_native_interviewer_model_behavior_error_is_structured(
+    db_session,
+) -> None:
+    service = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+    )
+
+    error = service._normalize_model_error(
+        ModelBehaviorError("invalid json"),
+        runtime={"provider": "openai_compatible", "model": "gpt-5.4"},
+    )
+
+    assert error.status_code == 502
+    assert error.error_category == "model_output_invalid"
+    assert error.upstream_code == "model_output_invalid"
+    assert "结构化输出" in error.detail
+    assert error.to_public_payload() == {
+        "status": 502,
+        "detail": error.detail,
+        "error_category": "model_output_invalid",
+        "upstream_code": "model_output_invalid",
+        "provider": "openai_compatible",
+        "model": "gpt-5.4",
+    }
+
+
+def test_native_interviewer_model_behavior_error_with_cause_keeps_output_category(
+    db_session,
+) -> None:
+    service = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+    )
+    try:
+        raise ModelBehaviorError("invalid json") from ValueError(
+            "pydantic validation failed",
+        )
+    except ModelBehaviorError as exc:
+        model_error = exc
+
+    error = service._normalize_model_error(
+        model_error,
+        runtime={"provider": "openai_compatible", "model": "claude-sonnet-4-6"},
+    )
+
+    assert error.status_code == 502
+    assert error.error_category == "model_output_invalid"
+    assert error.upstream_code == "model_output_invalid"
+    assert error.model == "claude-sonnet-4-6"
+
+
+def test_openai_compatible_runner_uses_json_chat_without_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["completion_kwargs"] = kwargs
+
+            class FakeMessage:
+                content = (
+                    "```json\n"
+                    '{"assistant_message":"Your materials contain a key mismatch.",'
+                    '"decision":"high_risk_review"}\n'
+                    "```"
+                )
+
+            class FakeChoice:
+                message = FakeMessage()
+
+            class FakeCompletion:
+                choices = [FakeChoice()]
+
+            return FakeCompletion()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = type(
+                "FakeChat",
+                (),
+                {"completions": FakeCompletions()},
+            )()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.Runner.run_sync",
+        lambda *args, **kwargs: pytest.fail("Agents SDK should not run"),
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAI",
+        FakeOpenAI,
+    )
+
+    output = OpenAIAgentsInterviewerRunner().run(
+        prompt="{}",
+        instructions="Return JSON.",
+        output_type=NativeInterviewerOutput,
+        runtime={"provider": "openai_compatible", "model": "claude-sonnet-4-6"},
+    )
+
+    assert output.assistant_message == "Your materials contain a key mismatch."
+    assert output.decision == "high_risk_review"
+    assert captured["client_kwargs"] == {
+        "api_key": "test-key",
+        "base_url": "https://example.test/v1",
+        "timeout": settings.openai_timeout_seconds,
+        "default_headers": {"User-Agent": "curl/8.5.0"},
+    }
+    assert captured["completion_kwargs"]["model"] == "claude-sonnet-4-6"
+    assert captured["completion_kwargs"]["response_format"] == {"type": "json_object"}
+
+
+def test_openai_agents_runner_falls_back_to_json_chat_for_invalid_agent_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeRunResult:
+        def final_output_as(self, output_type, *, raise_if_incorrect_type: bool):
+            del output_type, raise_if_incorrect_type
+            raise ModelBehaviorError("invalid json")
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["completion_kwargs"] = kwargs
+
+            class FakeMessage:
+                content = (
+                    '{"assistant_message":"Fallback question?",'
+                    '"decision":"continue_interview"}'
+                )
+
+            class FakeChoice:
+                message = FakeMessage()
+
+            class FakeCompletion:
+                choices = [FakeChoice()]
+
+            return FakeCompletion()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = type(
+                "FakeChat",
+                (),
+                {"completions": FakeCompletions()},
+            )()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.Runner.run_sync",
+        lambda *args, **kwargs: FakeRunResult(),
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAI",
+        FakeOpenAI,
+    )
+
+    output = OpenAIAgentsInterviewerRunner().run(
+        prompt="{}",
+        instructions="Return JSON.",
+        output_type=NativeInterviewerOutput,
+        runtime={"provider": "openai", "model": "gpt-5.4"},
+    )
+
+    assert output.assistant_message == "Fallback question?"
+    assert output.decision == "continue_interview"
+    assert captured["completion_kwargs"]["model"] == "gpt-5.4"
+    assert captured["completion_kwargs"]["response_format"] == {"type": "json_object"}
+
+
+def test_native_interviewer_agent_error_is_structured(
+    db_session,
+) -> None:
+    service = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+    )
+
+    error = service._normalize_model_error(
+        AgentsException("runner failed"),
+        runtime={"provider": "openai_compatible", "model": "gpt-5.4"},
+    )
+
+    assert error.status_code == 503
+    assert error.error_category == "agent_runtime_error"
+    assert error.upstream_code == "agent_runtime_error"
+    assert "模型代理运行失败" in error.detail
+
+
+def test_native_interviewer_context_compacts_consecutive_assistant_questions(
+    db_session,
+) -> None:
+    service = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+    )
+
+    context = service._build_interviewer_context(
+        {
+            "full_transcript": [
+                {
+                    "turn_index": 1,
+                    "role": "assistant",
+                    "content": "Which engineering skill do you need most?",
+                },
+                {
+                    "turn_index": 2,
+                    "role": "assistant",
+                    "content": "Did you apply right after undergraduate study?",
+                },
+                {
+                    "turn_index": 3,
+                    "role": "user",
+                    "content": "I applied directly after undergraduate study.",
+                },
+            ]
+        }
+    )
+
+    transcript = context["full_transcript"]
+    assert transcript["policy"]["active_question"] == "latest_assistant_turn_only"
+    assert transcript["turns"] == [
+        {
+            "turn_index": 2,
+            "role": "assistant",
+            "content": "Did you apply right after undergraduate study?",
+        },
+        {
+            "turn_index": 3,
+            "role": "user",
+            "content": "I applied directly after undergraduate study.",
+        },
+    ]
 
 
 @pytest.fixture()

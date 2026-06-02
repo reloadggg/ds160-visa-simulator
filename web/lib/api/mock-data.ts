@@ -157,6 +157,9 @@ export const MOCK_USER_REPORT: UserReport = {
   governor_decision: "continue_interview",
   interview_status: "continue_interview",
   interview_status_label: "继续面签问答",
+  interview_result: "in_progress",
+  interview_result_label: "继续面谈",
+  interview_result_reason: "当前没有形成拒签或通过结论，仍处于正式问答过程中。",
   outcome_label: "可继续追问资金安排",
   summary:
     "案例已理解到申请人、学校、项目和入学时间；当前不是材料阻断，下一轮应自然追问资金承担人与毕业计划。",

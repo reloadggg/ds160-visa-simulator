@@ -71,6 +71,7 @@ def test_model_list_proxies_openai_compatible_models(
         "base_url": "https://models.example.test/v1",
         "timeout": settings_module.settings.openai_timeout_seconds,
         "max_retries": 0,
+        "default_headers": {"User-Agent": "curl/8.5.0"},
     }
     assert response.json() == {
         "models": [

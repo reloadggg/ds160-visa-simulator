@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Iterator
 from queue import Empty, Queue
 from threading import Thread
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.user_model_config import user_model_runtime
 from app.core.settings import settings
+from app.db.models import SessionRecord
 from app.db.session import get_db, session_factory_from_session
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.message_service import (
@@ -19,12 +21,14 @@ from app.services.message_service import (
     SessionClosedError,
     SessionNotFoundError,
 )
+from app.services.session_transcript_service import SessionTranscriptService
 from app.services.user_model_config_service import (
     UserModelConfigPayload,
     to_runtime_config,
 )
 
 router = APIRouter(prefix="/v1/sessions/{session_id}/messages", tags=["messages"])
+logger = logging.getLogger(__name__)
 
 
 class MessageRequest(BaseModel):
@@ -42,6 +46,20 @@ class MessageRequest(BaseModel):
                 "user_model_config": data.get("model_config"),
             }
         return data
+
+
+@router.get("")
+def get_messages(
+    session_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    if db.get(SessionRecord, session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    transcript = SessionTranscriptService(db).build_public_transcript(session_id)
+    return {
+        "session_id": session_id,
+        "messages": transcript,
+    }
 
 
 @router.post("")
@@ -70,11 +88,40 @@ def post_message(
             detail="这条消息正在处理中，请等待上一轮结果返回。",
         ) from exc
     except ModelRuntimeError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        _log_model_runtime_error(exc, session_id=session_id, endpoint="post_message")
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=_model_runtime_error_payload(exc),
+        ) from exc
 
 
 def _sse_event(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _model_runtime_error_payload(exc: ModelRuntimeError) -> dict:
+    return exc.to_public_payload()
+
+
+def _log_model_runtime_error(
+    exc: ModelRuntimeError,
+    *,
+    session_id: str,
+    endpoint: str,
+) -> None:
+    logger.warning(
+        "message model runtime failed",
+        extra={
+            "session_id": session_id,
+            "endpoint": endpoint,
+            "status_code": exc.status_code,
+            "error_category": exc.error_category,
+            "upstream_code": exc.upstream_code,
+            "provider": exc.provider,
+            "model": exc.model,
+        },
+        exc_info=True,
+    )
 
 
 @router.post("/stream")
@@ -170,16 +217,26 @@ def stream_message(
                     )
                 )
             except ModelRuntimeError as exc:
+                _log_model_runtime_error(
+                    exc,
+                    session_id=session_id,
+                    endpoint="stream_message",
+                )
                 result_queue.put(
-                    ("error", {"status": exc.status_code, "detail": exc.detail})
+                    ("error", _model_runtime_error_payload(exc))
                 )
             except Exception as exc:
+                logger.exception(
+                    "message stream internal failure",
+                    extra={"session_id": session_id, "endpoint": "stream_message"},
+                )
                 result_queue.put(
                     (
                         "error",
                         {
                             "status": 500,
-                            "detail": f"message stream failed: {exc}",
+                            "detail": f"消息流内部错误：{exc.__class__.__name__}",
+                            "error_category": "internal_error",
                         },
                     )
                 )

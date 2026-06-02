@@ -858,6 +858,55 @@ def test_messages_stream_allows_default_model_without_user_streaming_switch(
     assert events[-1][1]["assistant_message"] == "What will you study?"
 
 
+def test_messages_stream_model_error_exposes_public_cause(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
+            ModelRuntimeError(
+                detail="上游模型请求超时，本轮面谈回复未生成。",
+                status_code=504,
+                provider="openai_compatible",
+                model="gpt-5.4",
+                upstream_code="upstream_timeout",
+                error_category="upstream_timeout",
+            )
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    with caplog.at_level("WARNING"):
+        with client.stream(
+            "POST",
+            f"/v1/sessions/{session_id}/messages/stream",
+            json={"role": "user", "content": "My parents live in Shanghai."},
+        ) as response:
+            body = response.read().decode()
+
+    assert response.status_code == 200
+    events = parse_sse_events(body)
+    assert events[-1][0] == "error"
+    assert events[-1][1] == {
+        "status": 504,
+        "detail": "上游模型请求超时，本轮面谈回复未生成。",
+        "error_category": "upstream_timeout",
+        "upstream_code": "upstream_timeout",
+        "provider": "openai_compatible",
+        "model": "gpt-5.4",
+    }
+    assert any(
+        record.message == "message model runtime failed"
+        and getattr(record, "error_category", None) == "upstream_timeout"
+        and getattr(record, "session_id", None) == session_id
+        for record in caplog.records
+    )
+
+
 def test_messages_stream_requires_switch_for_user_model_config(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1531,8 +1580,10 @@ def test_message_turn_graph_native_missing_model_returns_503_without_canned_fall
     )
 
     assert response.status_code == 503
-    assert "OPENAI_API_KEY" in response.json()["detail"]
-    assert "OPENAI_BASE_URL" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["error_category"] == "model_config"
+    assert "OPENAI_API_KEY" in detail["detail"]
+    assert "OPENAI_BASE_URL" in detail["detail"]
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1542,6 +1593,124 @@ def test_message_turn_graph_native_missing_model_returns_503_without_canned_fall
         ).all()
 
     assert turns == []
+
+
+def test_message_turn_keeps_user_turn_when_native_quality_guard_blocks_output(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
+            ModelRuntimeError(
+                detail="模型输出未通过连续面谈质量检查，已阻止发送重复或失真的面试问题。",
+                status_code=503,
+                upstream_code="native_quality_guard_failed",
+            )
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "I chose NYU because the program strengthens my AI engineering skills before I return to China.",
+            "client_message_id": "client-quality-guard-1",
+        },
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["upstream_code"] == "native_quality_guard_failed"
+    assert "质量检查" in detail["detail"]
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [(turn.role, turn.source) for turn in turns] == [
+        ("user", "user_message")
+    ]
+    assert turns[0].client_message_id == "client-quality-guard-1"
+    assert "NYU" in turns[0].content
+
+
+def test_get_messages_returns_public_transcript(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    with db_session_factory() as db:
+        db.add(
+            SessionTurnRecord(
+                turn_id="turn-public-user-1",
+                turn_index=1,
+                session_id=session_id,
+                role="user",
+                content="I will study computer science at NYU.",
+                source="user_message",
+                client_message_id="client-public-user-1",
+                metadata_json={"phase_state": "interview"},
+            )
+        )
+        db.add(
+            SessionTurnRecord(
+                turn_id="turn-public-assistant-2",
+                turn_index=2,
+                session_id=session_id,
+                role="assistant",
+                content="Why is this NYU program useful for your plan?",
+                source="native_interviewer_runtime",
+                metadata_json={
+                    "phase_state": "interview",
+                    "public_reasoning": {
+                        "basis": "continue_interview",
+                    },
+                },
+            )
+        )
+        db.add(
+            SessionTurnRecord(
+                turn_id="turn-private-system-3",
+                turn_index=3,
+                session_id=session_id,
+                role="system",
+                content="internal note",
+                source="internal",
+                metadata_json={},
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/messages")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == session_id
+    assert [
+        (message["turn_id"], message["role"], message["content"])
+        for message in payload["messages"]
+    ] == [
+        (
+            "turn-public-user-1",
+            "user",
+            "I will study computer science at NYU.",
+        ),
+        (
+            "turn-public-assistant-2",
+            "assistant",
+            "Why is this NYU program useful for your plan?",
+        ),
+    ]
+    assert payload["messages"][0]["client_message_id"] == "client-public-user-1"
+    assert payload["messages"][1]["client_message_id"] is None
 
 
 def test_messages_stream_graph_mode_keeps_sse_contract(
@@ -1591,8 +1760,10 @@ def test_message_turn_returns_503_when_adjudication_agent_config_missing_for_int
         json={"role": "user", "content": "I want to study in the U.S."},
     )
     assert response.status_code == 503
-    assert "OPENAI_API_KEY" in response.json()["detail"]
-    assert "OPENAI_BASE_URL" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["error_category"] == "model_config"
+    assert "OPENAI_API_KEY" in detail["detail"]
+    assert "OPENAI_BASE_URL" in detail["detail"]
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1722,7 +1893,10 @@ def test_message_turn_returns_429_when_adjudication_agent_quota_is_exhausted(
     )
 
     assert response.status_code == 429
-    assert "额度已耗尽" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["status"] == 429
+    assert detail["upstream_code"] == "API_KEY_QUOTA_EXHAUSTED"
+    assert "额度已耗尽" in detail["detail"]
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -1767,7 +1941,9 @@ def test_message_turn_returns_503_when_adjudication_agent_output_is_invalid(
     )
 
     assert response.status_code == 503
-    assert "模型运行失败" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["status"] == 503
+    assert "模型运行失败" in detail["detail"]
 
 
 def test_message_turn_rejects_non_user_role(client: TestClient) -> None:

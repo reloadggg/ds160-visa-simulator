@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import settings as settings_module
 from app.db.base import Base
-from app.db.evidence_models import EvidenceItemRecord
+from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import (
     CaseMemorySnapshotRecord,
     DocumentRecord,
@@ -28,6 +28,21 @@ from app.services.runtime_errors import ModelRuntimeError
 
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "fixtures"
 SEED_TEXT = "我会去 New York University 读 MS Computer Science，父母资助。"
+
+
+def parse_sse_events(body: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    for raw_event in body.strip().split("\n\n"):
+        event_name = ""
+        data: dict = {}
+        for line in raw_event.splitlines():
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            if line.startswith("data:"):
+                data = json.loads(line.removeprefix("data:").strip())
+        if event_name:
+            events.append((event_name, data))
+    return events
 
 
 @pytest.fixture()
@@ -275,6 +290,97 @@ def test_debug_material_bundle_api_persists_documents_and_evidence(
     assert record.gate_status_json["status"] == "ready_for_interview"
 
 
+def test_material_package_archive_lists_and_imports_generated_bundle(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_calls = install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
+    source_session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    source_session_id = source_session_resp.json()["session_id"]
+
+    bundle_response = client.post(
+        f"/v1/sessions/{source_session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
+    )
+
+    assert bundle_response.status_code == 200
+    bundle_payload = bundle_response.json()
+    package_id = bundle_payload["bundle_id"]
+
+    list_response = client.get("/v1/material-packages")
+    assert list_response.status_code == 200
+    packages = list_response.json()["packages"]
+    package = next(item for item in packages if item["package_id"] == package_id)
+    assert package["status"] == "ready"
+    assert package["status_label"] == "可导入"
+    assert package["document_count"] == len(bundle_payload["documents"])
+    assert package["source_session_id"] == source_session_id
+
+    target_session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    target_session_id = target_session_resp.json()["session_id"]
+    import_response = client.post(
+        f"/v1/sessions/{target_session_id}/material-packages/{package_id}/import"
+    )
+
+    assert import_response.status_code == 200
+    import_payload = import_response.json()
+    assert import_payload["session_id"] == target_session_id
+    assert import_payload["package_id"] == package_id
+    assert import_payload["import_status"] == "imported"
+    assert import_payload["imported_bundle_id"] != package_id
+    assert len(import_payload["documents"]) == len(bundle_payload["documents"])
+    assert refresh_calls == [
+        "debug_material_bundle:normal_f1_bundle",
+        f"material_package_import:{package_id}",
+    ]
+
+    source_document_ids = {
+        document["document_id"] for document in bundle_payload["documents"]
+    }
+    imported_document_ids = {
+        document["document_id"] for document in import_payload["documents"]
+    }
+    assert imported_document_ids.isdisjoint(source_document_ids)
+
+    with db_session_factory() as db:
+        imported_documents = db.query(DocumentRecord).filter_by(
+            session_id=target_session_id
+        ).all()
+        imported_chunks = db.query(DocumentChunkRecord).filter_by(
+            session_id=target_session_id
+        ).all()
+        imported_evidence = db.query(EvidenceItemRecord).filter_by(
+            session_id=target_session_id
+        ).all()
+
+    assert len(imported_documents) == len(bundle_payload["documents"])
+    assert len(imported_chunks) == len(bundle_payload["documents"])
+    assert len(imported_evidence) >= len(bundle_payload["documents"])
+    assert all(
+        document.artifact_json["metadata"]["material_package_import"]
+        for document in imported_documents
+    )
+    assert all(
+        document.artifact_json["metadata"]["archived_package_id"] == package_id
+        for document in imported_documents
+    )
+    assert all(
+        document.artifact_json["metadata"]["synthetic_bundle_id"]
+        == import_payload["imported_bundle_id"]
+        for document in imported_documents
+    )
+
+    list_after_import_response = client.get("/v1/material-packages")
+    assert list_after_import_response.status_code == 200
+    listed_package_ids = {
+        item["package_id"] for item in list_after_import_response.json()["packages"]
+    }
+    assert package_id in listed_package_ids
+    assert import_payload["imported_bundle_id"] not in listed_package_ids
+
+
 def test_debug_material_bundle_api_rejects_missing_seed_without_writing_materials(
     client: TestClient,
     db_session_factory,
@@ -296,7 +402,9 @@ def test_debug_material_bundle_api_rejects_missing_seed_without_writing_material
     )
 
     assert response.status_code == 422
-    assert "请先填写材料生成依据" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["status"] == 422
+    assert "请先填写材料生成依据" in detail["detail"]
     with db_session_factory() as db:
         assert db.query(DocumentRecord).filter_by(session_id=session_id).count() == 0
         assert (
@@ -602,7 +710,14 @@ def test_debug_material_bundle_api_returns_error_when_seeded_ai_generation_fails
     install_material_refresh_stub(monkeypatch)
 
     def fail_generate(self, **kwargs):
-        raise ModelRuntimeError(detail="stub provider returned 504", status_code=503)
+        raise ModelRuntimeError(
+            detail="stub provider returned malformed JSON",
+            status_code=502,
+            provider="openai_compatible",
+            model="claude-sonnet-4-6",
+            upstream_code="model_output_invalid",
+            error_category="model_output_invalid",
+        )
 
     monkeypatch.setattr(
         "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
@@ -619,9 +734,15 @@ def test_debug_material_bundle_api_returns_error_when_seeded_ai_generation_fails
         },
     )
 
-    assert response.status_code == 503
-    assert "AI 材料生成失败，未写入任何演示占位材料" in response.json()["detail"]
-    assert "stub provider returned 504" in response.json()["detail"]
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["status"] == 502
+    assert detail["error_category"] == "model_output_invalid"
+    assert detail["upstream_code"] == "model_output_invalid"
+    assert detail["provider"] == "openai_compatible"
+    assert detail["model"] == "claude-sonnet-4-6"
+    assert "AI 材料生成失败，未写入任何演示占位材料" in detail["detail"]
+    assert "stub provider returned malformed JSON" in detail["detail"]
 
     with db_session_factory() as db:
         assert db.query(DocumentRecord).filter_by(session_id=session_id).count() == 0
@@ -643,7 +764,14 @@ def test_debug_material_bundle_stream_returns_error_when_seeded_ai_generation_fa
     install_material_refresh_stub(monkeypatch)
 
     def fail_generate(self, **kwargs):
-        raise ModelRuntimeError(detail="stub provider returned 504", status_code=503)
+        raise ModelRuntimeError(
+            detail="stub provider returned malformed JSON",
+            status_code=502,
+            provider="openai_compatible",
+            model="claude-sonnet-4-6",
+            upstream_code="model_output_invalid",
+            error_category="model_output_invalid",
+        )
 
     monkeypatch.setattr(
         "app.services.debug_material_bundle_service.AIMaterialBundleGeneratorService.generate",
@@ -666,9 +794,26 @@ def test_debug_material_bundle_stream_returns_error_when_seeded_ai_generation_fa
     assert "event: accepted" in body
     assert "event: error" in body
     assert "AI 材料生成失败，未写入任何演示占位材料" in body
-    assert "stub provider returned 504" in body
+    assert "stub provider returned malformed JSON" in body
     assert "event: final" not in body
     assert "event: document_created" not in body
+    error_events = [
+        data for event, data in parse_sse_events(body) if event == "error"
+    ]
+    assert error_events == [
+        {
+            "status": 502,
+            "detail": (
+                "AI 材料生成失败，未写入任何演示占位材料。"
+                "请稍后重试或更换模型。原始错误："
+                "stub provider returned malformed JSON"
+            ),
+            "error_category": "model_output_invalid",
+            "upstream_code": "model_output_invalid",
+            "provider": "openai_compatible",
+            "model": "claude-sonnet-4-6",
+        }
+    ]
 
     with db_session_factory() as db:
         assert db.query(DocumentRecord).filter_by(session_id=session_id).count() == 0
@@ -1009,3 +1154,27 @@ def test_debug_material_bundle_respects_debug_switch(
 
     assert response.status_code == 403
     assert response.json() == {"detail": "debug fill is disabled"}
+
+
+def test_material_package_archive_respects_debug_switch(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "allow_debug_fill", False)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    list_response = client.get("/v1/material-packages")
+    import_response = client.post(
+        f"/v1/sessions/{session_id}/material-packages/pkg-test/import"
+    )
+
+    expected = {
+        "detail": (
+            "material package archive is disabled because debug fill is disabled"
+        )
+    }
+    assert list_response.status_code == 403
+    assert list_response.json() == expected
+    assert import_response.status_code == 403
+    assert import_response.json() == expected

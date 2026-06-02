@@ -161,13 +161,18 @@ Gate primary document、`score.missing_evidence`、document review 建议和 gov
 
 ### 🧪 调试材料包
 
-本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端从“材料包”菜单基于显式提示词生成 F-1 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
+本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端从“材料包”菜单基于显式提示词生成 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
 
-材料正文会模拟 DS-160 确认页、护照 OCR、I-20、录取信、银行证明和亲属关系证明的真实文本形态；提示词为空或 AI 生成失败时不会写入演示占位材料。
+材料正文会按签证类别模拟真实文件/OCR 文本形态；提示词为空或 AI 生成失败时不会写入演示占位材料。AI 返回空内容、JSON 无法解析、schema 不合格或缺少当前签证类别必需材料时，后端会返回结构化 `502 model_output_invalid`，前端应显示具体原因，而不是把它归为泛化 503。
+
+生成成功的 debug 材料包会成为可导入的“材料包存档”。存档菜单和导入接口同样受 `ALLOW_DEBUG_FILL=true` 保护；公开生产环境关闭该开关时不会列出或导入历史 synthetic 包。
 
 当前支持：
 
 - `normal_f1_bundle`：自洽基准材料
+- `normal_j1_bundle`：J-1 自洽基准材料
+- `normal_b1_b2_bundle`：B1/B2 自洽基准材料
+- `normal_h1b_bundle`：H-1B 自洽基准材料
 - `school_mismatch_bundle`：I-20 与录取信学校不一致
 - `identity_mismatch_bundle`：DS-160 与护照号码不一致
 - `funding_shortfall_bundle`：资金证明低于 I-20 第一年度费用

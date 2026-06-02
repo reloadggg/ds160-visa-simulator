@@ -62,6 +62,7 @@ def test_user_report_returns_summary_shape(client: TestClient) -> None:
     assert response.status_code == 200
     assert "outcome_label" in response.json()
     assert "interview_status" in response.json()
+    assert "interview_result" in response.json()
 
 
 def test_session_export_returns_json_without_document_bytes(
@@ -614,6 +615,7 @@ def test_user_report_can_derive_runtime_view_state_from_ledger_when_state_is_emp
     assert response.status_code == 200
     payload = response.json()
     assert payload["interview_status"] == "continue_interview"
+    assert payload["interview_result"] == "in_progress"
     assert payload["current_key_question"] == "What is the purpose of your travel?"
     assert payload["allowed_next_actions"] == [
         "answer_question",
@@ -631,6 +633,85 @@ def test_user_report_can_derive_runtime_view_state_from_ledger_when_state_is_emp
     assert internal_response.json()["runtime_view_state"]["current_key_question"] == (
         "What is the purpose of your travel?"
     )
+    assert internal_response.json()["runtime_view_state"]["source_turn_content"] == (
+        "What is the purpose of your travel?"
+    )
+
+
+def test_reports_api_projects_passed_result_from_final_assistant_closure(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        record.phase_state = "interview"
+        record.current_governor_decision = "continue_interview"
+        record.profile_json = {"funding": {"primary_source": "parents"}}
+        record.interviewer_state_json = {}
+        record.current_focus_json = {}
+        record.score_history_json = [
+            {
+                "scoring_stage": "interview_turn",
+                "category_fit": 90,
+                "document_readiness": 88,
+                "narrative_consistency": 92,
+                "confidence": 86,
+                "missing_evidence": [],
+                "risk_flags": [],
+                "summary": "missing=0 risk_flags=0",
+            }
+        ]
+        record.governor_history_json = [
+            {
+                "decision": "continue_interview",
+                "summary": "decision=continue_interview",
+            }
+        ]
+        repo = SessionTurnRepository(db)
+        repo.append_user_turn(
+            session_id=session_id,
+            content="My parents will sponsor my study, and I plan to return to China after graduation.",
+            source="user_message",
+            commit=False,
+        )
+        repo.append_assistant_turn(
+            session_id=session_id,
+            content=(
+                "All right, Mr. Lee. Your study plan, funding, and intention "
+                "to return to China are clear; that will be all for now."
+            ),
+            source="interviewer_runtime_service",
+            metadata_json={
+                "turn_record": {
+                    "decision": "continue_interview",
+                    "requested_documents": [],
+                    "focus": {},
+                    "advisory_summary": {
+                        "risk_codes": [],
+                        "missing_evidence": [],
+                        "risk_level": "none",
+                    },
+                }
+            },
+            commit=False,
+        )
+        db.add(record)
+        db.commit()
+
+    response = client.get(f"/v1/sessions/{session_id}/reports/user")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["interview_result"] == "passed"
+    assert payload["interview_result_label"] == "本轮模拟通过"
+    assert payload["outcome_label"] == "本轮模拟通过"
+    assert payload["risk_level"] == "none"
+    assert payload["missing_evidence"] == []
 
 
 def test_reports_api_distinguishes_high_risk_review_from_simulated_refusal(
@@ -664,8 +745,12 @@ def test_reports_api_distinguishes_high_risk_review_from_simulated_refusal(
     assert high_risk_response.status_code == 200
     assert refusal_response.status_code == 200
     assert high_risk_response.json()["interview_status"] == "high_risk_review"
+    assert high_risk_response.json()["interview_result"] == "not_passed"
+    assert high_risk_response.json()["interview_result_label"] == "未通过：高风险待复核"
     assert high_risk_response.json()["outcome_label"] == "高风险待复核"
     assert refusal_response.json()["interview_status"] == "simulated_refusal"
+    assert refusal_response.json()["interview_result"] == "refused"
+    assert refusal_response.json()["interview_result_label"] == "模拟拒签"
     assert refusal_response.json()["outcome_label"] == "模拟拒签结果"
 
 

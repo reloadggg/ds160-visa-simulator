@@ -91,6 +91,167 @@ def generated_bundle_for_scenario(
     *,
     include_synthetic_user_turns: bool = True,
 ) -> GeneratedMaterialBundleOutput:
+    if scenario == "normal_j1_bundle":
+        return GeneratedMaterialBundleOutput(
+            documents=[
+                {
+                    "document_type": "ds160",
+                    "filename": "ai_j1_ds160.txt",
+                    "raw_text": (
+                        "Online Nonimmigrant Visa Application\n"
+                        "Applicant Name Provided: Morgan Lee\n"
+                        "Purpose: EXCHANGE VISITOR (J1)\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "Morgan Lee",
+                        "/visa_intent/travel_purpose": "EXCHANGE VISITOR (J1)",
+                    },
+                },
+                {
+                    "document_type": "passport_bio",
+                    "filename": "ai_j1_passport.txt",
+                    "raw_text": "PASSPORT BIOGRAPHIC PAGE\nFull Name: Morgan Lee\n",
+                    "fields": {"/identity/full_name": "Morgan Lee"},
+                },
+                {
+                    "document_type": "ds2019",
+                    "filename": "ai_ds2019.txt",
+                    "raw_text": (
+                        "Form DS-2019\n"
+                        "Program Sponsor: Example Exchange Institute\n"
+                        "Category: Research Scholar\n"
+                    ),
+                    "fields": {
+                        "/exchange/program_sponsor": "Example Exchange Institute",
+                        "/exchange/category": "Research Scholar",
+                    },
+                },
+                {
+                    "document_type": "funding_proof",
+                    "filename": "ai_j1_funding.txt",
+                    "raw_text": "Program Funding Letter\nSupport Amount: USD 42000\n",
+                    "fields": {"/funding/available_funds": "42000"},
+                },
+                {
+                    "document_type": "program_invitation",
+                    "filename": "ai_j1_program_invitation.txt",
+                    "raw_text": "Exchange Program Invitation\nHost Department: Example Lab\n",
+                    "fields": {"/exchange/host_department": "Example Lab"},
+                },
+                {
+                    "document_type": "sevis_fee_receipt",
+                    "filename": "ai_j1_sevis.txt",
+                    "raw_text": "SEVIS I-901 Fee Receipt\nPayment Status: Paid\n",
+                    "fields": {"/sevis/payment_status": "paid"},
+                },
+            ],
+            synthetic_turns=[],
+        )
+    if scenario == "normal_b1_b2_bundle":
+        return GeneratedMaterialBundleOutput(
+            documents=[
+                {
+                    "document_type": "ds160",
+                    "filename": "ai_b_ds160.txt",
+                    "raw_text": (
+                        "Online Nonimmigrant Visa Application\n"
+                        "Applicant Name Provided: Morgan Lee\n"
+                        "Purpose: TEMPORARY BUSINESS VISITOR\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "Morgan Lee",
+                        "/visa_intent/travel_purpose": "temporary business visitor",
+                    },
+                },
+                {
+                    "document_type": "passport_bio",
+                    "filename": "ai_b_passport.txt",
+                    "raw_text": "PASSPORT BIOGRAPHIC PAGE\nFull Name: Morgan Lee\n",
+                    "fields": {"/identity/full_name": "Morgan Lee"},
+                },
+                {
+                    "document_type": "itinerary_or_trip_purpose",
+                    "filename": "ai_b_itinerary.txt",
+                    "raw_text": (
+                        "Business Trip Itinerary\n"
+                        "Purpose: attend supplier meetings and industry conference\n"
+                        "Duration: 10 days\n"
+                    ),
+                    "fields": {
+                        "/travel/purpose": "supplier meetings and industry conference",
+                        "/travel/duration": "10 days",
+                    },
+                },
+                {
+                    "document_type": "funding_proof",
+                    "filename": "ai_b_funding.txt",
+                    "raw_text": "Bank Balance Certificate\nAvailable Balance: USD 36000\n",
+                    "fields": {"/funding/available_funds": "36000"},
+                },
+                {
+                    "document_type": "employment_proof",
+                    "filename": "ai_b_employment.txt",
+                    "raw_text": "Employment and Leave Certificate\nEmployer: Example Trading Co.\n",
+                    "fields": {"/employment/employer_name": "Example Trading Co."},
+                },
+                {
+                    "document_type": "invitation_letter",
+                    "filename": "ai_b_invitation.txt",
+                    "raw_text": "Invitation Letter\nInviter: Example Supplier Inc.\n",
+                    "fields": {"/travel/inviter": "Example Supplier Inc."},
+                },
+            ],
+            synthetic_turns=[],
+        )
+    if scenario == "normal_h1b_bundle":
+        return GeneratedMaterialBundleOutput(
+            documents=[
+                {
+                    "document_type": "ds160",
+                    "filename": "ai_h1b_ds160.txt",
+                    "raw_text": (
+                        "Online Nonimmigrant Visa Application\n"
+                        "Applicant Name Provided: Morgan Lee\n"
+                        "Purpose: TEMPORARY WORKER H1B\n"
+                    ),
+                    "fields": {
+                        "/identity/full_name": "Morgan Lee",
+                        "/visa_intent/travel_purpose": "TEMPORARY WORKER H1B",
+                    },
+                },
+                {
+                    "document_type": "passport_bio",
+                    "filename": "ai_h1b_passport.txt",
+                    "raw_text": "PASSPORT BIOGRAPHIC PAGE\nFull Name: Morgan Lee\n",
+                    "fields": {"/identity/full_name": "Morgan Lee"},
+                },
+                {
+                    "document_type": "i797",
+                    "filename": "ai_i797.txt",
+                    "raw_text": "I-797 Approval Notice\nPetitioner: Example Tech Inc.\n",
+                    "fields": {"/employment/employer_name": "Example Tech Inc."},
+                },
+                {
+                    "document_type": "employer_letter",
+                    "filename": "ai_h1b_employer.txt",
+                    "raw_text": "Employer Support Letter\nRole: Software Engineer\n",
+                    "fields": {"/employment/role": "Software Engineer"},
+                },
+                {
+                    "document_type": "lca",
+                    "filename": "ai_lca.txt",
+                    "raw_text": "Labor Condition Application\nSOC: Software Developers\n",
+                    "fields": {"/employment/soc": "Software Developers"},
+                },
+                {
+                    "document_type": "degree_certificate",
+                    "filename": "ai_degree.txt",
+                    "raw_text": "Degree Certificate\nDegree: Bachelor of Computer Science\n",
+                    "fields": {"/education/highest_degree": "Bachelor of Computer Science"},
+                },
+            ],
+            synthetic_turns=[],
+        )
     school_name = "New York University"
     admission_school = (
         "Columbia University"
@@ -404,6 +565,69 @@ def test_debug_material_bundle_text_looks_like_real_documents(
     assert "Household Register Extract" in raw_text_by_type[
         "relationship_proof_between_applicant_and_sponsors"
     ]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_document_types"),
+    [
+        (
+            "normal_j1_bundle",
+            {
+                "ds160",
+                "passport_bio",
+                "ds2019",
+                "funding_proof",
+                "program_invitation",
+                "sevis_fee_receipt",
+            },
+        ),
+        (
+            "normal_b1_b2_bundle",
+            {
+                "ds160",
+                "passport_bio",
+                "itinerary_or_trip_purpose",
+                "funding_proof",
+                "employment_proof",
+                "invitation_letter",
+            },
+        ),
+        (
+            "normal_h1b_bundle",
+            {
+                "ds160",
+                "passport_bio",
+                "i797",
+                "employer_letter",
+                "lca",
+                "degree_certificate",
+            },
+        ),
+    ],
+)
+def test_non_f1_normal_bundle_templates_use_family_specific_documents(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    expected_document_types: set[str],
+) -> None:
+    monkeypatch.setattr(
+        "app.services.message_service.MessageService.refresh_after_material_change",
+        lambda self, session_id, *, reason: {},
+    )
+    install_ai_generator_stub(monkeypatch)
+    session_id = seed_session(db_session, scenario)
+
+    payload = DebugMaterialBundleService(db_session).create_bundle(
+        session_id,
+        scenario=scenario,
+        seed_text=SEED_TEXT,
+    )
+
+    assert {document["document_type"] for document in payload["documents"]} == (
+        expected_document_types
+    )
+    assert payload["scenario_label"].startswith("自洽")
 
 
 def test_funding_shortfall_bundle_expresses_gap_through_amounts(

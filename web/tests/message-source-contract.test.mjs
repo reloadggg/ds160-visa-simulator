@@ -91,6 +91,40 @@ test("workbench final SSE branch is activity-only", () => {
   )
 })
 
+test("message stream errors surface backend cause fields", () => {
+  const typesSource = readFileSync(resolve(rootDir, "lib/api/types.ts"), "utf8")
+  assert.match(typesSource, /interface MessageStreamErrorPayload/)
+  assert.match(typesSource, /error_category\?: string/)
+  assert.match(typesSource, /upstream_code\?: string \| null/)
+
+  const hookSource = readFileSync(
+    resolve(rootDir, "hooks/use-session-workbench.ts"),
+    "utf8",
+  )
+  assert.match(hookSource, /function describeMessageStreamError/)
+  assert.match(hookSource, /describeMessageStreamError\(event\.data\)/)
+  assert.match(hookSource, /messageStreamErrorFromUnknown\(error\.data\)/)
+  assert.match(hookSource, /上游模型请求超时/)
+  assert.match(hookSource, /模型输出格式不符合要求/)
+})
+
+test("workbench can hydrate a backend session transcript by session id", () => {
+  const clientSource = readFileSync(resolve(rootDir, "lib/api/client.ts"), "utf8")
+  assert.match(clientSource, /function fetchSessionMessages/)
+  assert.ok(
+    clientSource.includes("`/v1/sessions/${sessionId}/messages`"),
+  )
+
+  const hookSource = readFileSync(
+    resolve(rootDir, "hooks/use-session-workbench.ts"),
+    "utf8",
+  )
+  assert.match(hookSource, /function chatMessageFromBackendTurn/)
+  assert.match(hookSource, /handleLoadBackendSession/)
+  assert.match(hookSource, /URLSearchParams\(window\.location\.search\)/)
+  assert.match(hookSource, /params\.get\("session_id"\)/)
+})
+
 test("frontend transcript role uses assistant instead of officer", () => {
   const files = [
     "lib/api/types.ts",

@@ -66,6 +66,29 @@ const riskLevelConfig = {
   high: { label: "高风险", color: "bg-red-500", textColor: "text-red-600" },
 }
 
+const interviewResultConfig: Record<string, { color: string; textColor: string; bgColor: string }> = {
+  passed: {
+    color: "bg-emerald-500",
+    textColor: "text-emerald-700",
+    bgColor: "bg-emerald-50 border-emerald-200",
+  },
+  refused: {
+    color: "bg-red-500",
+    textColor: "text-red-700",
+    bgColor: "bg-red-50 border-red-200",
+  },
+  not_passed: {
+    color: "bg-amber-500",
+    textColor: "text-amber-700",
+    bgColor: "bg-amber-50 border-amber-200",
+  },
+  in_progress: {
+    color: "bg-sky-500",
+    textColor: "text-sky-700",
+    bgColor: "bg-sky-50 border-sky-200",
+  },
+}
+
 export function ReportModal({
   open,
   onOpenChange,
@@ -79,6 +102,9 @@ export function ReportModal({
   onExportReviewImage,
 }: ReportModalProps) {
   const riskConfig = userReport ? riskLevelConfig[userReport.risk_level] : null
+  const resultConfig = userReport
+    ? interviewResultConfig[userReport.interview_result] ?? interviewResultConfig.in_progress
+    : null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -155,6 +181,18 @@ export function ReportModal({
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2">
+                      <div className={cn("rounded-xl border px-3 py-2", resultConfig?.bgColor)}>
+                        <div className="mb-1 text-xs text-muted-foreground">面签结论</div>
+                        <div className="flex items-center gap-2">
+                          <div className={cn("h-2.5 w-2.5 shrink-0 rounded-full", resultConfig?.color)} />
+                          <span className={cn("text-base font-semibold", resultConfig?.textColor)}>
+                            {userReport.interview_result_label}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          {userReport.interview_result_reason}
+                        </p>
+                      </div>
                       <div className="flex items-center justify-between">
                         <span className="text-sm text-muted-foreground">风险等级</span>
                         <div className="flex items-center gap-2">

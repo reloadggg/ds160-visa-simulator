@@ -90,7 +90,17 @@ export type MessageStreamEvent =
   | { event: "analyzing"; data: Record<string, unknown> }
   | { event: "debug_event"; data: RuntimeDebugEvent }
   | { event: "final"; data: BackendMessageResponse }
-  | { event: "error"; data: { status?: number; detail?: string } }
+  | { event: "error"; data: MessageStreamErrorPayload }
+
+export interface MessageStreamErrorPayload {
+  status?: number
+  detail?: string
+  error_category?: string
+  upstream_code?: string | null
+  provider?: string | null
+  model?: string | null
+  missing_env_vars?: string[]
+}
 
 export interface RuntimeDebugEvent {
   request_id?: string
@@ -138,6 +148,9 @@ export interface RuntimeDebugSnapshot {
 
 export type DebugMaterialBundleScenario =
   | "normal_f1_bundle"
+  | "normal_j1_bundle"
+  | "normal_b1_b2_bundle"
+  | "normal_h1b_bundle"
   | "school_mismatch_bundle"
   | "identity_mismatch_bundle"
   | "funding_shortfall_bundle"
@@ -196,6 +209,64 @@ export interface DebugMaterialBundleResponse {
     request_seed_text_present?: boolean
     trace?: Record<string, unknown>
   }
+}
+
+export type MaterialPackageStatus = "ready" | "partial" | "failed" | (string & {})
+export type MaterialPackageImportStatus =
+  | "imported"
+  | "partial"
+  | "failed"
+  | (string & {})
+
+export interface MaterialPackageDocument {
+  document_id: string
+  filename: string
+  document_type?: string | null
+  document_type_label?: string | null
+  content_url?: string | null
+  status?: string | null
+  understanding_status?: string | null
+  raw_text?: string | null
+  fields?: Record<string, string>
+}
+
+export interface MaterialPackageArchiveItem {
+  package_id: string
+  label: string
+  scenario?: string | null
+  scenario_label?: string | null
+  source_session_id?: string | null
+  created_at?: string | null
+  status: MaterialPackageStatus
+  status_label: string
+  warning?: string | null
+  document_count: number
+  document_types: string[]
+  documents: MaterialPackageDocument[]
+}
+
+export interface MaterialPackageListResponse {
+  packages: MaterialPackageArchiveItem[]
+}
+
+export interface MaterialPackageImportResponse {
+  session_id: string
+  package_id: string
+  imported_bundle_id: string
+  import_status: MaterialPackageImportStatus
+  status_label: string
+  documents: MaterialPackageDocument[]
+  assistant_message?: string | null
+  governor_decision?: string | null
+  requested_documents?: string[]
+  remaining_required_documents?: string[]
+  turn_decision?: Record<string, unknown>
+  document_review?: Record<string, unknown>
+  runtime_view_state?: Record<string, unknown>
+  material_refresh?: Record<string, unknown>
+  phase_state?: string
+  gate_status?: BackendSessionGateStatus | null
+  main_flow_refresh_error?: string | null
 }
 
 export type DebugMaterialBundleStreamEvent =
@@ -365,6 +436,9 @@ export interface UserReport {
   governor_decision?: string | null
   interview_status: string
   interview_status_label: string
+  interview_result: string
+  interview_result_label: string
+  interview_result_reason: string
   outcome_label: string
   summary: string
   strengths: string[]
@@ -728,6 +802,21 @@ export interface BackendMessageResponse {
   runtime_view_state?: Record<string, unknown>
 }
 
+export interface BackendSessionMessage {
+  turn_id: string
+  turn_index: number
+  role: "assistant" | "user" | "system" | string
+  content: string
+  source?: string | null
+  client_message_id?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface BackendSessionMessagesResponse {
+  session_id: string
+  messages: BackendSessionMessage[]
+}
+
 export interface BackendGateProgress {
   overall_status: string
   ready_count?: number
@@ -741,6 +830,9 @@ export interface BackendUserReport {
   visa_family?: string
   governor_decision?: string | null
   interview_status?: string
+  interview_result?: string
+  interview_result_label?: string
+  interview_result_reason?: string
   outcome_label?: string
   summary?: string
   strengths?: string[]

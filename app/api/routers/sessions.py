@@ -104,7 +104,10 @@ def debug_fill_current_gap(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ModelRuntimeError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.to_public_payload(),
+        ) from exc
 
 
 @router.post("/{session_id}/debug/material-bundles")
@@ -128,7 +131,10 @@ def debug_create_material_bundle(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ModelRuntimeError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.to_public_payload(),
+        ) from exc
 
 
 def _sse_event(event: str, payload: dict) -> str:
@@ -168,7 +174,7 @@ def debug_create_material_bundle_stream(
             except ValueError as exc:
                 event_queue.put(("error", {"status": 422, "detail": str(exc)}))
             except ModelRuntimeError as exc:
-                event_queue.put(("error", {"status": exc.status_code, "detail": exc.detail}))
+                event_queue.put(("error", exc.to_public_payload()))
             except Exception as exc:
                 event_queue.put(
                     (

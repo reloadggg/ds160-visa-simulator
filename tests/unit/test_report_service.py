@@ -55,6 +55,8 @@ def test_user_report_does_not_block_on_gate_review_without_turn_focus() -> None:
     )
 
     assert payload["interview_status"] == "verify_key_issue"
+    assert payload["interview_result"] == "not_passed"
+    assert payload["interview_result_label"] == "未通过：关键事实待核实"
     assert payload["outcome_label"] == "需核验关键问题"
     assert "关键问题" in payload["summary"]
 
@@ -83,6 +85,8 @@ def test_user_report_prefers_interviewer_state_when_gate_still_needs_documents()
     )
 
     assert payload["interview_status"] == "continue_interview"
+    assert payload["interview_result"] == "in_progress"
+    assert payload["interview_result_label"] == "继续面谈"
     assert payload["outcome_label"] == "正式问答进行中"
     assert payload["current_key_proof"] is None
     assert (
@@ -221,6 +225,7 @@ def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -
     )
 
     assert payload["interview_status"] == "continue_interview"
+    assert payload["interview_result"] == "in_progress"
     assert payload["current_key_question"] == "What is the purpose of your travel?"
     assert payload["current_key_proof"] is None
     assert payload["allowed_next_actions"] == ["answer_question", "continue_interview"]
@@ -418,6 +423,52 @@ def test_user_report_high_risk_summary_uses_document_conflict_detail() -> None:
         "Example University / Master of Example Analytics。"
     )
     assert "record_conflict" not in payload["summary"]
+    assert payload["interview_result"] == "not_passed"
+    assert payload["interview_result_label"] == "未通过：高风险待复核"
+
+
+def test_user_report_marks_passed_only_after_natural_low_risk_closure() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-pass-closure",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={"funding": {"primary_source": "parents"}},
+        phase_state="interview",
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-pass",
+            "source_turn_content": (
+                "All right, Mr. Lee. Your study plan, funding, and intention "
+                "to return to China are clear; that will be all for now."
+            ),
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "public_status": "continue_interview",
+            "risk_level": "none",
+            "current_focus": {},
+            "current_key_question": None,
+            "current_key_proof": None,
+            "current_risk_code": None,
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "allowed_next_actions": ["continue_interview"],
+            "advisory_context": {
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+        },
+    )
+
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["interview_result"] == "passed"
+    assert payload["interview_result_label"] == "本轮模拟通过"
+    assert payload["outcome_label"] == "本轮模拟通过"
+    assert "没有明显风险" in payload["summary"]
+    assert payload["recommended_improvements"] == [
+        "本轮回答已形成清晰、低风险的面签闭环，可进入复盘或开始新一轮练习。"
+    ]
 
 
 def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:

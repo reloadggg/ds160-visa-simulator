@@ -4,10 +4,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from openai import AsyncOpenAI
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.agents.user_model_config import current_user_model_config
+from app.integrations.openai_compat_headers import openai_compat_default_headers
 from app.services.interviewer_prompt_registry import InterviewerPromptRegistry
 from app.services.runtime_policies import RuntimePolicyRegistry
 
@@ -61,7 +63,13 @@ class AgentModelFactory:
         user_config = current_user_model_config()
         api_key = user_config.api_key if user_config is not None else os.getenv("OPENAI_API_KEY")
         base_url = user_config.base_url if user_config is not None else os.getenv("OPENAI_BASE_URL")
-        provider = OpenAIProvider(base_url=base_url, api_key=api_key)
+        provider = OpenAIProvider(
+            openai_client=AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=openai_compat_default_headers(),
+            ),
+        )
         model = OpenAIChatModel(runtime["model"], provider=provider)
         return model, runtime
 

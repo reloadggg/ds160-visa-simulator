@@ -218,6 +218,13 @@ class InterviewAllowedNextAction(str, Enum):
     REVIEW_REFUSAL_RESULT = "review_refusal_result"
 
 
+class InterviewResult(str, Enum):
+    IN_PROGRESS = "in_progress"
+    PASSED = "passed"
+    NOT_PASSED = "not_passed"
+    REFUSED = "refused"
+
+
 class InterviewStateSnapshot(BaseModel):
     owner: str = "interviewer_runtime_service"
     status: InterviewStateStatus

@@ -1,6 +1,6 @@
 "use client"
 
-import { type ChangeEvent, useRef, useState } from "react"
+import { type ChangeEvent, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,8 +20,9 @@ import { Switch } from "@/components/ui/switch"
 import { PROJECT_INFO } from "@/lib/project-info"
 import { appVersionDetailLabel } from "@/lib/app-version"
 import {
-  DEBUG_MATERIAL_BUNDLE_OPTIONS,
   DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO,
+  getDebugMaterialBundleOptionsForVisaFamily,
+  getDefaultDebugMaterialBundleScenarioForVisaFamily,
   getDebugMaterialBundleOption,
 } from "@/lib/debug-material-bundles"
 import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw, Upload, Github, ExternalLink } from "lucide-react"
@@ -38,10 +39,12 @@ import {
 } from "@/components/ui/alert-dialog"
 import type {
   DebugMaterialBundleScenario,
+  MaterialPackageArchiveItem,
   ModelListItem,
   RagStatus,
   RagUploadMetadata,
   UserModelConfig,
+  VisaFamily,
 } from "@/lib/api/types"
 
 const VISA_FAMILY_OPTIONS = [
@@ -64,10 +67,14 @@ interface SettingsPanelProps {
   mockMode: boolean
   apiBaseUrl: string
   sessionId: string | null
+  visaType: VisaFamily | null
   historyCount: number
   feedback?: string | null
   isDebugBundleGenerating?: boolean
   debugBundleProgress?: string[]
+  materialPackages?: MaterialPackageArchiveItem[]
+  isLoadingMaterialPackages?: boolean
+  isImportingMaterialPackage?: boolean
   userModelConfig: UserModelConfig
   availableModels: ModelListItem[]
   isLoadingModels: boolean
@@ -87,6 +94,8 @@ interface SettingsPanelProps {
     scenario: DebugMaterialBundleScenario,
     seedText?: string,
   ) => void
+  onRefreshMaterialPackages: () => void
+  onImportMaterialPackage: (packageId: string) => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
 }
@@ -95,10 +104,14 @@ export function SettingsPanel({
   mockMode,
   apiBaseUrl,
   sessionId,
+  visaType,
   historyCount,
   feedback,
   isDebugBundleGenerating = false,
   debugBundleProgress = [],
+  materialPackages = [],
+  isLoadingMaterialPackages = false,
+  isImportingMaterialPackage = false,
   userModelConfig,
   availableModels,
   isLoadingModels,
@@ -115,6 +128,8 @@ export function SettingsPanel({
   onExportSession,
   onExportConversationImage,
   onDebugMaterialBundleScenario,
+  onRefreshMaterialPackages,
+  onImportMaterialPackage,
   onResetCurrentSession,
   onClearHistory,
 }: SettingsPanelProps) {
@@ -125,7 +140,18 @@ export function SettingsPanel({
     useState<DebugMaterialBundleScenario>(DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO)
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
   const materialSeedText = materialSeedOverride
-  const selectedDebugBundleOption = getDebugMaterialBundleOption(selectedDebugBundleScenario)
+  const debugBundleOptions = useMemo(
+    () => getDebugMaterialBundleOptionsForVisaFamily(visaType),
+    [visaType],
+  )
+  const activeDebugBundleScenario = debugBundleOptions.some(
+    (option) => option.scenario === selectedDebugBundleScenario,
+  )
+    ? selectedDebugBundleScenario
+    : getDefaultDebugMaterialBundleScenarioForVisaFamily(visaType)
+  const selectedDebugBundleOption = getDebugMaterialBundleOption(
+    activeDebugBundleScenario,
+  )
   const updateModelConfig = (patch: Partial<UserModelConfig>) => {
     onUserModelConfigChange({
       ...userModelConfig,
@@ -162,7 +188,13 @@ export function SettingsPanel({
     setRagUploadForm(EMPTY_RAG_UPLOAD_FORM)
   }
   const handleDebugBundleSubmit = () => {
-    onDebugMaterialBundleScenario(selectedDebugBundleScenario, materialSeedText)
+    onDebugMaterialBundleScenario(activeDebugBundleScenario, materialSeedText)
+  }
+  const handleImportPackage = (packageId: string) => {
+    if (!packageId) {
+      return
+    }
+    onImportMaterialPackage(packageId)
   }
 
   const ragStatusLabel = (() => {
@@ -569,7 +601,7 @@ export function SettingsPanel({
               <div className="grid gap-2">
                 <Label htmlFor="debug-material-bundle-scenario">场景</Label>
                 <Select
-                  value={selectedDebugBundleScenario}
+                  value={activeDebugBundleScenario}
                   onValueChange={(value) =>
                     setSelectedDebugBundleScenario(value as DebugMaterialBundleScenario)
                   }
@@ -578,7 +610,7 @@ export function SettingsPanel({
                     <SelectValue placeholder="选择材料包场景" />
                   </SelectTrigger>
                   <SelectContent>
-                    {DEBUG_MATERIAL_BUNDLE_OPTIONS.map((option) => (
+                    {debugBundleOptions.map((option) => (
                       <SelectItem key={option.scenario} value={option.scenario}>
                         {option.label}
                       </SelectItem>
@@ -625,6 +657,88 @@ export function SettingsPanel({
                   ))}
                 </div>
               ) : null}
+
+              <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">存档</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      已生成且写入后端的材料包可直接导入当前会话。
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={onRefreshMaterialPackages}
+                    disabled={isLoadingMaterialPackages}
+                  >
+                    <RefreshCw className={isLoadingMaterialPackages ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                    刷新
+                  </Button>
+                </div>
+
+                {materialPackages.length ? (
+                  <Select
+                    onValueChange={handleImportPackage}
+                    disabled={
+                      !sessionId ||
+                      isLoadingMaterialPackages ||
+                      isImportingMaterialPackage
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue
+                        placeholder={
+                          isImportingMaterialPackage
+                            ? "正在导入材料包"
+                            : "选择存档材料包导入"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {materialPackages.map((item) => (
+                        <SelectItem
+                          key={item.package_id}
+                          value={item.package_id}
+                          disabled={item.status === "failed"}
+                        >
+                          {item.label} · {item.document_count} 份 · {item.status_label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                    {isLoadingMaterialPackages ? "正在读取材料包存档..." : "暂无可导入的材料包存档。"}
+                  </div>
+                )}
+
+                {materialPackages.slice(0, 3).map((item) => (
+                  <div
+                    key={`${item.package_id}-summary`}
+                    className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-foreground">
+                        {item.label}
+                      </div>
+                      <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                        {item.document_count} 份材料
+                        {item.source_session_id ? ` / ${item.source_session_id}` : ""}
+                      </div>
+                      {item.warning ? (
+                        <div className="mt-1 text-[11px] leading-4 text-amber-700">
+                          {item.warning}
+                        </div>
+                      ) : null}
+                    </div>
+                    <Badge variant={item.status === "ready" ? "secondary" : "outline"}>
+                      {item.status_label}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
             </div>
             <Button
               variant="outline"

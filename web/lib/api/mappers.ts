@@ -66,9 +66,23 @@ const DOCUMENT_LABELS: Record<string, string> = {
   admission_letter: "录取信",
   funding_proof: "资金证明",
   ds2019: "DS-2019 表格",
+  program_invitation: "项目邀请信",
+  sevis_fee_receipt: "SEVIS 缴费收据",
+  training_plan_ds7002: "DS-7002 培训计划",
+  insurance_proof: "保险证明",
   employer_letter: "雇主证明信",
   i797: "I-797 批准通知",
+  i129_petition: "I-129 申请材料",
+  offer_letter: "Offer Letter",
+  lca: "LCA",
+  degree_certificate: "学历证明",
+  resume: "简历",
+  client_letter: "客户项目说明信",
   itinerary_or_trip_purpose: "行程或出行目的说明",
+  invitation_letter: "邀请信",
+  employment_proof: "在职证明",
+  travel_history: "出入境记录",
+  family_ties_proof: "国内约束证明",
   school_letter: "学校证明信",
   evidence_of_achievement: "成果证明材料",
   bank_statement: "银行流水",
@@ -87,6 +101,13 @@ const INTERVIEW_STATUS_LABELS: Record<string, string> = {
   status_pending: "状态待确认",
 }
 
+const INTERVIEW_RESULT_LABELS: Record<string, string> = {
+  passed: "本轮模拟通过",
+  refused: "模拟拒签",
+  not_passed: "未通过",
+  in_progress: "继续面谈",
+}
+
 const BACKEND_TEXT_LABELS: Record<string, string> = {
   continue_interview: "继续面签问答",
   need_more_evidence: "建议补强证据链",
@@ -95,6 +116,10 @@ const BACKEND_TEXT_LABELS: Record<string, string> = {
   waiting_key_proof: "待核实关键事实",
   high_risk_review: "高风险复核建议",
   simulated_refusal: "模拟结果：建议拒签",
+  passed: "本轮模拟通过",
+  refused: "模拟拒签",
+  not_passed: "未通过",
+  in_progress: "继续面谈",
   high_risk: "高风险",
   medium_risk: "中等风险",
   low_risk: "低风险",
@@ -697,6 +722,8 @@ export function mapUserReport(payload: BackendUserReport): UserReport {
   )
   const riskLevel = normalizeRiskLevel(payload.risk_level)
   const interviewStatus = payload.interview_status ?? "status_pending"
+  const interviewResult =
+    payload.interview_result ?? fallbackInterviewResult(interviewStatus)
 
   return {
     session_id: payload.session_id,
@@ -706,6 +733,14 @@ export function mapUserReport(payload: BackendUserReport): UserReport {
     interview_status: interviewStatus,
     interview_status_label:
       INTERVIEW_STATUS_LABELS[interviewStatus] ?? "状态待确认",
+    interview_result: interviewResult,
+    interview_result_label:
+      humanizeBackendText(payload.interview_result_label) ||
+      INTERVIEW_RESULT_LABELS[interviewResult] ||
+      "状态待确认",
+    interview_result_reason:
+      humanizeBackendText(payload.interview_result_reason) ||
+      "当前报告尚未形成明确结论说明。",
     outcome_label:
       humanizeBackendText(payload.outcome_label) || "当前状态待确认",
     summary: humanizeBackendText(payload.summary) || "系统尚未生成摘要。",
@@ -857,11 +892,28 @@ export function getMockRequiredDocuments(visaFamily: VisaFamily): string[] {
 export function sanitizeVisibleReport(report: UserReport): UserReport {
   return {
     ...report,
+    interview_result_label: humanizeBackendText(report.interview_result_label),
+    interview_result_reason: humanizeBackendText(report.interview_result_reason),
+    outcome_label: humanizeBackendText(report.outcome_label),
     summary: humanizeBackendText(report.summary),
     current_key_question: humanizeBackendText(report.current_key_question),
     recommended_improvements:
       report.recommended_improvements.map(humanizeBackendText),
   }
+}
+
+function fallbackInterviewResult(interviewStatus: string): string {
+  if (interviewStatus === "simulated_refusal") {
+    return "refused"
+  }
+  if (
+    interviewStatus === "high_risk_review" ||
+    interviewStatus === "verify_key_issue" ||
+    interviewStatus === "waiting_key_proof"
+  ) {
+    return "not_passed"
+  }
+  return "in_progress"
 }
 
 export function getKnownDocumentCodes(): string[] {

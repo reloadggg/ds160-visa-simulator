@@ -50,6 +50,7 @@ class SessionLedger(BaseModel):
 
 class RuntimeViewState(BaseModel):
     source_turn_id: str | None = None
+    source_turn_content: str | None = None
     decision: str
     governor_decision: str
     public_status: str | None = None

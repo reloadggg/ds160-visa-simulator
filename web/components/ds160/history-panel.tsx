@@ -49,10 +49,15 @@ function resolveHistoryBadge(entry: SessionHistoryEntry): {
   className: string
 } {
   const interviewStatus = entry.report?.interview_status
+  const interviewResult = entry.report?.interview_result
   let state: HistoryBadgeState = entry.status
 
-  if (interviewStatus === "simulated_refusal") {
+  if (interviewResult === "refused" || interviewStatus === "simulated_refusal") {
     state = "refusal"
+  } else if (interviewResult === "passed") {
+    state = "pass"
+  } else if (interviewResult === "not_passed") {
+    state = "evidence"
   } else if (interviewStatus === "high_risk_review") {
     state = "review"
   } else if (
@@ -202,15 +207,15 @@ export function HistoryPanel({ entries, onRestore }: HistoryPanelProps) {
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="rounded-xl border border-border bg-background p-4">
-                      <div className="text-xs text-muted-foreground">风险等级</div>
+                      <div className="text-xs text-muted-foreground">面签结论</div>
                       <div className="mt-2 text-sm font-medium text-foreground">
-                        {selectedEntry.report?.risk_level_label ?? "暂无"}
+                        {selectedEntry.report?.interview_result_label ?? "暂无"}
                       </div>
                     </div>
                     <div className="rounded-xl border border-border bg-background p-4">
-                      <div className="text-xs text-muted-foreground">当前结论</div>
+                      <div className="text-xs text-muted-foreground">风险等级</div>
                       <div className="mt-2 text-sm font-medium text-foreground">
-                        {selectedEntry.report?.outcome_label ?? "暂无"}
+                        {selectedEntry.report?.risk_level_label ?? "暂无"}
                       </div>
                     </div>
                   </div>

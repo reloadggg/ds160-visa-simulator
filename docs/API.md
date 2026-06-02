@@ -261,13 +261,20 @@ Request:
 ```json
 {
   "scenario": "school_mismatch_bundle",
-  "include_synthetic_user_turns": true
+  "include_synthetic_user_turns": true,
+  "seed_text": "申请人计划去 New York University 读 MS Computer Science，由父母资助。",
+  "generation_mode": "ai_if_available"
 }
 ```
+
+`seed_text` 是 AI 生成材料的事实来源，不能为空；系统不会在 seed 缺失或模型失败时写入演示占位材料。`generation_mode` 目前只接受 AI 生成相关模式：`ai`、`ai_if_seeded`、`ai_if_available`。
 
 支持的 `scenario`：
 
 - `normal_f1_bundle`
+- `normal_j1_bundle`
+- `normal_b1_b2_bundle`
+- `normal_h1b_bundle`
 - `school_mismatch_bundle`
 - `identity_mismatch_bundle`
 - `funding_shortfall_bundle`
@@ -326,6 +333,28 @@ Response shape:
 - `DocumentRecord.raw_text`、`DocumentChunk.text`、`EvidenceItem.excerpt` 不应包含 `Issue:`、`Missing:`、`Expected:`、`Defect:` 或 `This conflicts with` 这类答案提示。
 - document review 必须基于材料字段、材料正文和用户 claim 自行识别缺陷。
 
+错误响应：
+
+```json
+{
+  "detail": {
+    "status": 502,
+    "detail": "AI 材料生成失败，未写入任何演示占位材料。请稍后重试或更换模型。原始错误：材料生成模型输出结构不合格：...",
+    "error_category": "model_output_invalid",
+    "upstream_code": "model_output_invalid",
+    "provider": "openai_compatible",
+    "model": "gpt-compatible-model"
+  }
+}
+```
+
+错误分类：
+
+- `422`：缺少 `seed_text`、不支持的生成模式或不支持的场景。
+- `502 model_output_invalid`：模型返回空内容、JSON 无法解析、schema 不合格，或缺少当前签证类别必需材料。
+- `503 model_config`：材料生成模型未配置。
+- 上游 HTTP/超时/连接错误沿用消息接口的模型运行错误合同。
+
 ### `POST /v1/sessions/{session_id}/debug/material-bundles/stream`
 
 材料包生成的事件式 SSE 入口。前端应在收到首个事件后立即显示 pending/进度状态，并在 `final` 后写入材料库。
@@ -343,7 +372,7 @@ Request 与非流式接口相同。
 - `document_review_started`：开始触发材料变更后的主流程刷新
 - `governor_decided`：主流程刷新已产出 governor/turn decision 摘要
 - `final`：完整 `DebugMaterialBundleResponse`
-- `error`：`{"status": 404|422|500, "detail": "..."}`，流内错误事件
+- `error`：结构化模型运行错误，例如 `{"status": 502, "detail": "...", "error_category": "model_output_invalid", "upstream_code": "model_output_invalid", "provider": "openai_compatible", "model": "gpt-compatible-model"}`；非模型错误仍可能只有 `status/detail`
 
 SSE 响应头包含：
 
@@ -354,6 +383,53 @@ X-Accel-Buffering: no
 ```
 
 线上 Nginx/反向代理还需要关闭 `/api/` 的响应缓冲，否则浏览器可能无法逐事件更新 UI。
+
+### `GET /v1/material-packages`
+
+列出由 debug material bundle 生成并可复用的材料包存档。默认关闭，需要 `ALLOW_DEBUG_FILL=true`。该入口用于本地和受控测试环境，公开生产环境不要开启。
+
+Response:
+
+```json
+{
+  "packages": [
+    {
+      "package_id": "dbg-bundle-abc123",
+      "label": "F-1 自洽基准材料包",
+      "scenario": "normal_f1_bundle",
+      "source_session_id": "sess-source",
+      "status": "ready",
+      "status_label": "可导入",
+      "document_count": 6,
+      "document_types": ["ds160", "passport_bio", "i20"],
+      "documents": []
+    }
+  ]
+}
+```
+
+`material_package_import=true` 的二次导入材料不会再次出现在列表里，避免导入包套导入包。
+
+### `POST /v1/sessions/{session_id}/material-packages/{package_id}/import`
+
+把一个存档材料包复制到当前会话，复制 `DocumentRecord`、chunk 和 evidence，并在导入后触发材料变更刷新。默认关闭，需要 `ALLOW_DEBUG_FILL=true`。
+
+Response:
+
+```json
+{
+  "session_id": "sess-target",
+  "package_id": "dbg-bundle-abc123",
+  "imported_bundle_id": "pkg-import-abc123",
+  "import_status": "imported",
+  "status_label": "已导入",
+  "documents": [],
+  "assistant_message": "string",
+  "main_flow_refresh_error": null
+}
+```
+
+如果导入后的主流程刷新失败，接口仍返回已复制的材料，`import_status` 为 `partial`，并在 `main_flow_refresh_error` 里说明刷新失败原因。
 
 ## Messages API
 

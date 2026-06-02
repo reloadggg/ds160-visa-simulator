@@ -24,6 +24,7 @@ from app.services.native_interviewer_runtime_service import (
     NativeInterviewerRuntimeService,
 )
 from app.services.runtime_view_contract_service import RuntimeViewContractService
+from app.services.runtime_errors import ModelRuntimeError
 from app.services.session_read_model_service import SessionReadModelService
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,15 @@ class MessageService:
             )
             if duplicate_response is not None:
                 return duplicate_response
+        in_progress_turn = self._latest_unanswered_user_turn(record.session_id)
+        if in_progress_turn is not None and (
+            not client_message_id
+            or in_progress_turn.client_message_id != client_message_id
+        ):
+            raise DuplicateTurnInProgressError(
+                record.session_id,
+                in_progress_turn.client_message_id or client_message_id or "",
+            )
 
         try:
             try:
@@ -155,9 +165,11 @@ class MessageService:
             self._strip_internal_runtime_fields(response)
             self.session_repo.save(record)
             return response
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
-            if committed_user_turn is not None:
+            if committed_user_turn is not None and not self._should_keep_user_turn_on_error(
+                exc
+            ):
                 self._cleanup_incomplete_committed_user_turn(committed_user_turn)
             raise
 
@@ -221,6 +233,21 @@ class MessageService:
                     "turn_id": user_turn.turn_id,
                 },
             )
+
+    def _should_keep_user_turn_on_error(self, exc: Exception) -> bool:
+        return (
+            isinstance(exc, ModelRuntimeError)
+            and exc.upstream_code == "native_quality_guard_failed"
+        )
+
+    def _latest_unanswered_user_turn(
+        self,
+        session_id: str,
+    ) -> SessionTurnRecord | None:
+        turns = self.session_turn_repo.list_session_turns(session_id)
+        if not turns or turns[-1].role != "user":
+            return None
+        return turns[-1]
 
     def _response_from_assistant_turn(
         self,

@@ -254,6 +254,7 @@ class CaseMemoryService:
             for evidence in result.evidence_cards:
                 evidence_by_id[evidence.evidence_id] = evidence
             for claim in result.extracted_claims:
+                claim = self._canonicalize_claim(claim)
                 claims_by_id[claim.claim_id] = self._merge_claim(
                     claims_by_id.get(claim.claim_id),
                     claim,
@@ -268,6 +269,7 @@ class CaseMemoryService:
             for evidence in self._user_evidence_from_turn(turn):
                 evidence_by_id[evidence.evidence_id] = evidence
             for claim in self._user_claims_from_turn(turn):
+                claim = self._canonicalize_claim(claim)
                 claims_by_id[claim.claim_id] = self._merge_claim(
                     claims_by_id.get(claim.claim_id),
                     claim,
@@ -579,10 +581,13 @@ class CaseMemoryService:
 
     def _user_claims_from_turn(self, turn: SessionTurnRecord) -> list[CaseClaim]:
         metadata = dict(turn.metadata_json or {})
-        return [
-            CaseClaim.model_validate(item)
-            for item in _list_payload(metadata.get(CASE_MEMORY_USER_CLAIMS_KEY))
-        ]
+        claims: list[CaseClaim] = []
+        for item in _list_payload(metadata.get(CASE_MEMORY_USER_CLAIMS_KEY)):
+            claim = CaseClaim.model_validate(item)
+            if self._is_stale_user_funding_claim(turn, claim):
+                continue
+            claims.append(claim)
+        return claims
 
     def _user_evidence_from_turn(self, turn: SessionTurnRecord) -> list[EvidenceCard]:
         metadata = dict(turn.metadata_json or {})
@@ -668,7 +673,10 @@ class CaseMemoryService:
             for claim in claims:
                 if claim.value is None:
                     continue
-                normalized_value = self._normalize_claim_value(claim.value)
+                normalized_value = self._normalize_claim_value(
+                    field_path=field_path,
+                    value=claim.value,
+                )
                 if normalized_value:
                     values_by_normalized[normalized_value] = claim.value
             if len(values_by_normalized) <= 1:
@@ -745,24 +753,97 @@ class CaseMemoryService:
         normalized = field_path.strip("/").replace("/", "-").replace("_", "-")
         return f"conflict-{normalized or 'unknown'}"
 
-    def _normalize_claim_value(self, value: str) -> str:
+    def _canonicalize_claim(self, claim: CaseClaim) -> CaseClaim:
+        if claim.field_path != "/funding/primary_source":
+            return claim
+        if not isinstance(claim.value, str):
+            return claim
+        canonical_value = self._canonical_funding_source_value(claim.value)
+        if canonical_value is None or canonical_value == claim.value:
+            return claim
+        return claim.model_copy(update={"value": canonical_value})
+
+    def _normalize_claim_value(self, *, field_path: str, value: str) -> str:
+        if field_path == "/funding/primary_source":
+            canonical_value = self._canonical_funding_source_value(value)
+            if canonical_value:
+                return canonical_value
         return " ".join(value.strip().casefold().split())
 
     def _user_turn_evidence_id(self, turn_id: str, claim_id: str) -> str:
         return f"ev-{turn_id}-{claim_id}"
 
+    def _is_stale_user_funding_claim(
+        self,
+        turn: SessionTurnRecord,
+        claim: CaseClaim,
+    ) -> bool:
+        if claim.field_path != "/funding/primary_source":
+            return False
+        if claim.metadata.get("source") != "explicit_user_turn":
+            return False
+        expected_source = self._explicit_funding_source(turn.content)
+        if expected_source is None:
+            return True
+        canonical_value = (
+            self._canonical_funding_source_value(claim.value)
+            if isinstance(claim.value, str)
+            else None
+        )
+        return canonical_value != expected_source
+
     def _explicit_funding_source(self, message_text: str) -> str | None:
         normalized = message_text.casefold()
-        parent_markers = ("parents", "parent", "mother", "father", "父母", "爸爸", "妈妈")
-        sponsor_markers = (
+        parent_markers = (
+            "parents",
+            "parent",
+            "family",
+            "mother",
+            "father",
+            "父母",
+            "家里",
+            "家庭",
+            "爸爸",
+            "妈妈",
+            "父亲",
+            "母亲",
+        )
+        funding_action_markers = (
             "pay",
             "fund",
             "sponsor",
             "support",
+            "cover",
+            "finance",
             "资助",
             "支付",
-            "承担",
             "出钱",
+            "付款",
+        )
+        funding_context_markers = (
+            "tuition",
+            "living expense",
+            "living expenses",
+            "fee",
+            "fees",
+            "cost",
+            "costs",
+            "expense",
+            "expenses",
+            "bank",
+            "funding",
+            "financial",
+            "study",
+            "program",
+            "学费",
+            "生活费",
+            "费用",
+            "资金",
+            "存款",
+            "银行",
+            "留学",
+            "学业",
+            "学费和生活费",
         )
         self_markers = (
             "self-funded",
@@ -773,14 +854,56 @@ class CaseMemoryService:
             "自费",
             "自己支付",
             "自己承担",
-            "我自己",
         )
-        if any(marker in normalized for marker in self_markers):
+        has_funding_action = any(
+            marker in normalized for marker in funding_action_markers
+        )
+        has_funding_context = any(
+            marker in normalized for marker in funding_context_markers
+        )
+        if any(marker in normalized for marker in self_markers) and (
+            has_funding_action or has_funding_context
+        ):
             return "self"
         if any(marker in normalized for marker in parent_markers) and any(
-            marker in normalized for marker in sponsor_markers
+            marker in normalized
+            for marker in (*funding_action_markers, *funding_context_markers)
         ):
             return "parents"
+        return None
+
+    def _canonical_funding_source_value(self, value: str) -> str | None:
+        normalized = " ".join(value.strip().casefold().replace("-", " ").split())
+        if not normalized:
+            return None
+        if normalized in {
+            "parents",
+            "parent",
+            "family",
+            "father",
+            "mother",
+            "father and mother",
+            "mother and father",
+            "父母",
+            "家庭",
+            "家里",
+            "爸爸",
+            "妈妈",
+            "父亲",
+            "母亲",
+        }:
+            return "parents"
+        if normalized in {
+            "self",
+            "self funded",
+            "self funding",
+            "self pay",
+            "self financed",
+            "自费",
+            "自己支付",
+            "自己承担",
+        }:
+            return "self"
         return None
 
     def _case_board_delta(

@@ -63,6 +63,9 @@ function Workbench() {
     settingsFeedback,
     isDebugBundleGenerating,
     debugBundleProgress,
+    materialPackages,
+    isLoadingMaterialPackages,
+    isImportingMaterialPackage,
     runtimeDebugSnapshot,
     runtimeDebugEvents,
     latestDebugMaterialBundle,
@@ -95,6 +98,8 @@ function Workbench() {
     refreshRuntimeDebugSnapshot,
     handleCopyRuntimeDebugPackage,
     handleDebugMaterialBundleScenario,
+    refreshMaterialPackages,
+    handleImportMaterialPackage,
     handleClearHistory,
     handleRestoreSession,
   } = useSessionWorkbench()
@@ -249,10 +254,14 @@ function Workbench() {
                 mockMode={mockMode}
                 apiBaseUrl={apiBaseUrl}
                 sessionId={sessionId}
+                visaType={visaType}
                 historyCount={sessionHistory.length}
                 feedback={settingsFeedback}
                 isDebugBundleGenerating={isDebugBundleGenerating}
                 debugBundleProgress={debugBundleProgress}
+                materialPackages={materialPackages}
+                isLoadingMaterialPackages={isLoadingMaterialPackages}
+                isImportingMaterialPackage={isImportingMaterialPackage}
                 userModelConfig={userModelConfig}
                 availableModels={availableModels}
                 isLoadingModels={isLoadingModels}
@@ -269,6 +278,8 @@ function Workbench() {
                 onExportSession={handleExportSession}
                 onExportConversationImage={handleExportConversationImage}
                 onDebugMaterialBundleScenario={handleDebugMaterialBundleScenario}
+                onRefreshMaterialPackages={refreshMaterialPackages}
+                onImportMaterialPackage={handleImportMaterialPackage}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
               />

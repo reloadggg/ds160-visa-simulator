@@ -195,6 +195,7 @@ class SessionTranscriptService:
             "role": turn.role,
             "content": turn.content,
             "source": turn.source,
+            "client_message_id": turn.client_message_id,
             "metadata": dict(turn.metadata_json or {}),
         }
 

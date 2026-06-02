@@ -15,6 +15,7 @@ import {
   createSession,
   createDebugMaterialBundleStream,
   exportSession,
+  fetchSessionMessages,
   generateInterviewReview,
   getFileContentUrl,
   getInternalReport,
@@ -22,6 +23,8 @@ import {
   getRagStatus,
   getRuntimeDebugSnapshot,
   getUserReport,
+  importMaterialPackage,
+  listMaterialPackages,
   listUserModels,
   sendMessage,
   sendMessageStream,
@@ -56,6 +59,7 @@ import {
 import type {
   AllowedAction,
   AttachmentKind,
+  BackendSessionMessage,
   ChatAttachment,
   ChatMessage,
   ComposerCommand,
@@ -66,6 +70,10 @@ import type {
   FileUploadResponse,
   InternalReport,
   InterviewReviewResponse,
+  MaterialPackageArchiveItem,
+  MaterialPackageDocument,
+  MaterialPackageImportResponse,
+  MessageStreamErrorPayload,
   ModelListItem,
   PublicReasoning,
   RagUploadMetadata,
@@ -310,6 +318,42 @@ function debugBundleDocumentToMaterial(
   }
 }
 
+function materialPackageDocumentToMaterial(
+  sessionId: string,
+  document: MaterialPackageDocument,
+  result: MaterialPackageImportResponse,
+): UploadedMaterial {
+  const rawText = document.raw_text ?? ""
+  return {
+    id: document.document_id,
+    session_id: sessionId,
+    name: document.filename,
+    mime_type: "text/plain",
+    kind: "file",
+    size: new TextEncoder().encode(rawText).length,
+    preview_url: getFileContentUrl(sessionId, document.document_id),
+    content_url: getFileContentUrl(sessionId, document.document_id),
+    uploaded_at: getIsoTimestamp(),
+    status_label: "已导入",
+    document_id: document.document_id,
+    document_status: document.status ?? "parsed",
+    understanding_status: document.understanding_status ?? null,
+    document_type: document.document_type ?? null,
+    document_type_label:
+      document.document_type_label ??
+      (document.document_type ? toDocumentLabel(document.document_type) : null),
+    relevance: "high",
+    feedback_message: `存档材料包 / ${result.package_id}`,
+    requested_document_labels: [],
+    current_focus_document_label: null,
+    counts_toward_gate: true,
+    raw_text: rawText,
+    fields: document.fields ?? {},
+    synthetic_bundle_id: result.imported_bundle_id,
+    debug_bundle_scenario: "material_package_import",
+  }
+}
+
 function buildDebugBundleFinalMessage(
   bundle: DebugMaterialBundleResponse,
 ): string {
@@ -368,6 +412,55 @@ function sanitizeHistoryMessage(
     role: normalizeChatMessageRole(message.role),
     attachments: message.attachments?.map(sanitizeHistoryAttachment),
   }
+}
+
+function visaFamilyFromReport(report: UserReport | null): VisaFamily {
+  const label = report?.visa_family_label
+  if (
+    label === "F-1" ||
+    label === "J-1" ||
+    label === "B-1/B-2" ||
+    label === "H-1B"
+  ) {
+    return label
+  }
+  switch (report?.visa_family) {
+    case "j1":
+      return "J-1"
+    case "b1_b2":
+      return "B-1/B-2"
+    case "h1b":
+      return "H-1B"
+    case "f1":
+    default:
+      return "F-1"
+  }
+}
+
+function chatMessageFromBackendTurn(turn: BackendSessionMessage): ChatMessage | null {
+  const role = normalizeChatMessageRole(turn.role)
+  if (role !== "assistant" && role !== "user") {
+    return null
+  }
+  const metadata = turn.metadata ?? {}
+  return {
+    id: turn.turn_id || `turn-${turn.turn_index}`,
+    role,
+    content: humanizeBackendText(turn.content),
+    timestamp: getTimestamp(),
+    status: "sent",
+    public_reasoning: isPublicReasoning(metadata.public_reasoning)
+      ? metadata.public_reasoning
+      : null,
+  }
+}
+
+function chatMessagesFromBackendTurns(
+  turns: BackendSessionMessage[],
+): ChatMessage[] {
+  return turns
+    .map(chatMessageFromBackendTurn)
+    .filter((message): message is ChatMessage => Boolean(message))
 }
 
 function resolvePersistentMaterialPreview(
@@ -630,6 +723,42 @@ function humanizeUploadStatus(
     default:
       return fallback
   }
+}
+
+function describeMessageStreamError(error: MessageStreamErrorPayload): string {
+  const detail = error.detail?.trim() || "流式消息处理失败。"
+  const categoryLabels: Record<string, string> = {
+    model_config: "模型配置缺失",
+    upstream_model: "上游模型服务错误",
+    upstream_timeout: "上游模型请求超时",
+    upstream_connection_error: "上游模型连接失败",
+    model_output_invalid: "模型输出格式不符合要求",
+    agent_runtime_error: "模型代理运行错误",
+    internal_error: "后端内部错误",
+    model_runtime: "模型运行错误",
+  }
+  const category = error.error_category
+    ? categoryLabels[error.error_category] ?? error.error_category
+    : null
+  const modelContext = [error.provider, error.model].filter(Boolean).join("/")
+  const suffixParts = [
+    category,
+    error.upstream_code ? `上游码：${error.upstream_code}` : null,
+    modelContext ? `模型：${modelContext}` : null,
+  ].filter(Boolean)
+  return suffixParts.length ? `${detail}（${suffixParts.join("；")}）` : detail
+}
+
+function messageStreamErrorFromUnknown(
+  value: unknown,
+): MessageStreamErrorPayload | null {
+  if (typeof value !== "object" || value === null) {
+    return null
+  }
+  if (!("detail" in value) && !("error_category" in value) && !("status" in value)) {
+    return null
+  }
+  return value as MessageStreamErrorPayload
 }
 
 function humanizeUnderstandingStatus(status?: string | null): string {
@@ -1388,6 +1517,7 @@ export function useSessionWorkbench() {
   const [isUploading, setIsUploading] = useState(false)
   const sendingRef = useRef(false)
   const streamProgressEventIdRef = useRef<string | null>(null)
+  const loadedSessionIdFromQueryRef = useRef<string | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
 
   const [userReport, setUserReport] = useState<UserReport | null>(null)
@@ -1439,6 +1569,13 @@ export function useSessionWorkbench() {
   >([])
   const [latestDebugMaterialBundle, setLatestDebugMaterialBundle] =
     useState<DebugMaterialBundleResponse | null>(null)
+  const [materialPackages, setMaterialPackages] = useState<
+    MaterialPackageArchiveItem[]
+  >([])
+  const [isLoadingMaterialPackages, setIsLoadingMaterialPackages] =
+    useState(false)
+  const [isImportingMaterialPackage, setIsImportingMaterialPackage] =
+    useState(false)
   const [isLoadingRuntimeDebug, setIsLoadingRuntimeDebug] = useState(false)
   const [runtimeDebugError, setRuntimeDebugError] = useState<string | null>(null)
   const [userModelConfig, setUserModelConfig] = useState<UserModelConfig>(() =>
@@ -1550,6 +1687,10 @@ export function useSessionWorkbench() {
     [],
   )
 
+  const removeMessage = useCallback((id: string) => {
+    setMessages((prev) => prev.filter((msg) => msg.id !== id))
+  }, [])
+
   const updateMessageAttachment = useCallback(
     (
       messageId: string,
@@ -1598,6 +1739,33 @@ export function useSessionWorkbench() {
     }
     return fallback
   }, [])
+
+  const refreshMaterialPackages = useCallback(async () => {
+    if (mockMode) {
+      setMaterialPackages([])
+      return
+    }
+
+    setIsLoadingMaterialPackages(true)
+    try {
+      const response = await listMaterialPackages()
+      setMaterialPackages(response.packages)
+    } catch (error) {
+      setSettingsFeedback(getErrorMessage(error, "获取材料包存档失败。"))
+    } finally {
+      setIsLoadingMaterialPackages(false)
+    }
+  }, [getErrorMessage, mockMode])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshMaterialPackages()
+    }, 0)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [refreshMaterialPackages])
 
   const refreshRagStatus = useCallback(async () => {
     if (mockMode) {
@@ -2072,6 +2240,105 @@ export function useSessionWorkbench() {
     setPendingResetAfterSummary(false)
   }, [])
 
+  const handleLoadBackendSession = useCallback(
+    async (targetSessionId: string) => {
+      const normalizedSessionId = targetSessionId.trim()
+      if (!normalizedSessionId || mockMode) {
+        return
+      }
+
+      setIsInitializing(true)
+      setInitError(null)
+      setChatError(null)
+      setReportError(null)
+      setModalError(null)
+      const loadActivityId = createClientId("activity-session-load")
+      setActivityEvents([
+        {
+          id: loadActivityId,
+          kind: "session",
+          content: `正在从后端恢复会话 ${normalizedSessionId}。`,
+          timestamp: getTimestamp(),
+          status: "sending",
+        },
+      ])
+
+      try {
+        const [transcript, report, nextRequiredPackage] = await Promise.all([
+          fetchSessionMessages(normalizedSessionId),
+          fetchUserReport(normalizedSessionId),
+          getRequiredPackage(normalizedSessionId).catch(() => null),
+        ])
+        const restoredVisaType = visaFamilyFromReport(report)
+        setSession({
+          session_id: transcript.session_id,
+          phase_state:
+            report?.interview_status === "simulated_refusal"
+              ? "completed"
+              : "interview",
+          current_governor_decision: report?.governor_decision ?? null,
+          gate_status: null,
+        })
+        setVisaType(restoredVisaType)
+        setRequiredPackage(
+          nextRequiredPackage ?? getMockRequiredPackage(restoredVisaType),
+        )
+        setMessages(chatMessagesFromBackendTurns(transcript.messages))
+        setUploadedMaterials([])
+        setInternalReport(null)
+        setInterviewReview(null)
+        setDebugBundleProgress([])
+        setRuntimeDebugEvents([])
+        setLatestDebugMaterialBundle(null)
+        setRuntimeDebugError(null)
+        setIsReportModalOpen(false)
+        setPendingResetAfterSummary(false)
+        setSessionTime(0)
+        setIsPaused(false)
+        appendActivityEvent({
+          kind: "session",
+          content: `已从后端恢复 ${transcript.messages.length} 条会话消息。`,
+          status: "sent",
+        })
+        void refreshRuntimeDebugSnapshot(transcript.session_id)
+      } catch (error) {
+        setInitError(getErrorMessage(error, "无法恢复这个后端会话。"))
+        setActivityEvents((prev) =>
+          prev.map((event) =>
+            event.id === loadActivityId
+              ? { ...event, status: "error" }
+              : event,
+          ),
+        )
+      } finally {
+        setIsInitializing(false)
+      }
+    },
+    [
+      appendActivityEvent,
+      fetchUserReport,
+      getErrorMessage,
+      mockMode,
+      refreshRuntimeDebugSnapshot,
+    ],
+  )
+
+  useEffect(() => {
+    if (typeof window === "undefined" || mockMode) {
+      return
+    }
+    const params = new URLSearchParams(window.location.search)
+    const querySessionId = params.get("session_id")?.trim()
+    if (
+      !querySessionId ||
+      loadedSessionIdFromQueryRef.current === querySessionId
+    ) {
+      return
+    }
+    loadedSessionIdFromQueryRef.current = querySessionId
+    void handleLoadBackendSession(querySessionId)
+  }, [handleLoadBackendSession, mockMode])
+
   const handleVisaSelect = useCallback(
     async (visaFamily: VisaFamily) => {
       setIsInitializing(true)
@@ -2386,7 +2653,7 @@ export function useSessionWorkbench() {
                     }
                     if (event.event === "error") {
                       upsertStreamProgress(
-                        `处理失败：${event.data.detail ?? "未知错误"}`,
+                        `处理失败：${describeMessageStreamError(event.data)}`,
                         "error",
                       )
                     }
@@ -2430,17 +2697,31 @@ export function useSessionWorkbench() {
           }
         }
       } catch (error) {
+        const streamError =
+          error instanceof ApiError
+            ? messageStreamErrorFromUnknown(error.data)
+            : null
         if (userMsgId) {
-          updateMessageStatus(userMsgId, streamAccepted ? "sent" : "error")
+          if (streamAccepted && streamError) {
+            removeMessage(userMsgId)
+          } else {
+            updateMessageStatus(userMsgId, streamAccepted ? "sent" : "error")
+          }
         }
         if (streamAccepted && sessionId) {
           upsertStreamProgress(
-            "连接中断，但服务器已收到消息；已尝试刷新当前分析状态。",
+            streamError
+              ? `处理失败：${describeMessageStreamError(streamError)}`
+              : "连接中断，但服务器已收到消息；已尝试刷新当前分析状态。",
             "error",
           )
           await refreshReports(sessionId).catch(() => undefined)
         }
-        setChatError(getErrorMessage(error, "发送失败，请重试。"))
+        setChatError(
+          streamError
+            ? describeMessageStreamError(streamError)
+            : getErrorMessage(error, "发送失败，请重试。"),
+        )
       } finally {
         sendingRef.current = false
         setIsSending(false)
@@ -2460,6 +2741,7 @@ export function useSessionWorkbench() {
       refreshReports,
       refreshRuntimeDebugSnapshot,
       recordRuntimeDebugEvent,
+      removeMessage,
       sessionId,
       updateActivityEventContent,
       updateActivityEventStatus,
@@ -2825,6 +3107,98 @@ export function useSessionWorkbench() {
     }
   }, [interviewReview, sessionId, visaType])
 
+  const handleImportMaterialPackage = useCallback(
+    async (packageId: string) => {
+      if (!sessionId || isImportingMaterialPackage) {
+        setSettingsFeedback(
+          !sessionId ? "当前没有可导入材料包的会话。" : "材料包正在导入中。",
+        )
+        return
+      }
+      if (mockMode) {
+        setSettingsFeedback("Mock 模式不导入后端材料包。")
+        return
+      }
+
+      setIsImportingMaterialPackage(true)
+      const progressMessageId = appendActivityEvent({
+        kind: "debug",
+        content: "正在导入存档材料包...",
+        status: "sending",
+      })
+      try {
+        const result = await importMaterialPackage(sessionId, packageId)
+        updateActivityEventStatus(progressMessageId, "sent")
+        setUploadedMaterials((prev) => {
+          const nextMaterials = result.documents.map((document) =>
+            materialPackageDocumentToMaterial(sessionId, document, result),
+          )
+          const importedIds = new Set(
+            nextMaterials.map((material) => material.id),
+          )
+          return [
+            ...nextMaterials,
+            ...prev.filter((material) => !importedIds.has(material.id)),
+          ]
+        })
+        setSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                phase_state: result.phase_state,
+                current_governor_decision:
+                  result.governor_decision ?? prev.current_governor_decision,
+                gate_status:
+                  mapSessionGateStatus(result.gate_status) ?? prev.gate_status,
+              }
+            : prev,
+        )
+        appendActivityEvent({
+          kind: "debug",
+          content: `已导入存档材料包：${result.documents.length} 份材料。`,
+        })
+        if (result.assistant_message) {
+          appendMessage({
+            role: "assistant",
+            content: humanizeBackendText(result.assistant_message),
+            public_reasoning: isPublicReasoning(
+              result.runtime_view_state?.public_reasoning,
+            )
+              ? result.runtime_view_state.public_reasoning
+              : null,
+          })
+        }
+        await refreshReports(sessionId)
+        await refreshRuntimeDebugSnapshot(sessionId)
+        await refreshMaterialPackages()
+        if (result.main_flow_refresh_error) {
+          setSettingsFeedback(
+            `材料包已导入，但下一步刷新失败：${result.main_flow_refresh_error}`,
+          )
+        } else {
+          setSettingsFeedback("存档材料包已导入当前会话。")
+        }
+      } catch (error) {
+        updateActivityEventStatus(progressMessageId, "error")
+        setSettingsFeedback(getErrorMessage(error, "导入材料包失败。"))
+      } finally {
+        setIsImportingMaterialPackage(false)
+      }
+    },
+    [
+      appendActivityEvent,
+      appendMessage,
+      getErrorMessage,
+      isImportingMaterialPackage,
+      mockMode,
+      refreshMaterialPackages,
+      refreshReports,
+      refreshRuntimeDebugSnapshot,
+      sessionId,
+      updateActivityEventStatus,
+    ],
+  )
+
   const runDebugMaterialBundle = useCallback(
     async (scenario: DebugMaterialBundleScenario, seedText?: string) => {
       if (!sessionId || isDebugBundleGenerating) {
@@ -2926,6 +3300,7 @@ export function useSessionWorkbench() {
         }
         await refreshReports(sessionId)
         await refreshRuntimeDebugSnapshot(sessionId)
+        await refreshMaterialPackages()
         if (result.main_flow_refresh_error) {
           setSettingsFeedback(
             `材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
@@ -2952,6 +3327,7 @@ export function useSessionWorkbench() {
       isDebugBundleGenerating,
       mockMode,
       refreshReports,
+      refreshMaterialPackages,
       refreshRuntimeDebugSnapshot,
       recordRuntimeDebugEvent,
       sessionId,
@@ -3058,6 +3434,9 @@ export function useSessionWorkbench() {
     settingsFeedback,
     isDebugBundleGenerating,
     debugBundleProgress,
+    materialPackages,
+    isLoadingMaterialPackages,
+    isImportingMaterialPackage,
     runtimeDebugSnapshot,
     runtimeDebugEvents,
     latestDebugMaterialBundle,
@@ -3081,6 +3460,7 @@ export function useSessionWorkbench() {
     handleEndSession,
     handleReset,
     handleCopySessionId,
+    handleLoadBackendSession,
     handleUserModelConfigChange,
     handleFetchUserModels,
     handleUploadRagFile,
@@ -3091,6 +3471,8 @@ export function useSessionWorkbench() {
     refreshRuntimeDebugSnapshot,
     handleCopyRuntimeDebugPackage,
     handleDebugMaterialBundleScenario,
+    refreshMaterialPackages,
+    handleImportMaterialPackage,
     handleDebugFillCurrentGap,
     handleClearHistory,
     handleRestoreSession,

@@ -4,7 +4,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
-from app.db.models import CaseMemorySnapshotRecord, DocumentRecord, SessionRecord
+from app.db.models import (
+    CaseMemorySnapshotRecord,
+    DocumentRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.domain.case_memory import (
     CaseClaim,
     CaseConflict,
@@ -17,7 +22,10 @@ from app.domain.case_memory import (
 )
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
-from app.services.case_memory_service import CaseMemoryService
+from app.services.case_memory_service import (
+    CASE_MEMORY_USER_CLAIMS_KEY,
+    CaseMemoryService,
+)
 
 
 def test_case_memory_service_persists_material_understanding_in_document_artifact(
@@ -743,6 +751,174 @@ def test_case_memory_service_merges_user_claims_and_material_conflicts(
                     "note": "applicant clarified sponsor wording",
                 }
             ]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_case_memory_user_funding_extractor_ignores_project_responsibility(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-user-funding-context.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            service = CaseMemoryService(db)
+
+            assert (
+                service.extract_explicit_user_turn_claims(
+                    turn_id="turn-project",
+                    message_text="我自己主要负责这个 AI 项目的数据整理和模型评估。",
+                )
+                == []
+            )
+
+            claims = service.extract_explicit_user_turn_claims(
+                turn_id="turn-funding",
+                message_text="我自己支付学费和生活费。",
+            )
+            assert [(claim.field_path, claim.value) for claim in claims] == [
+                ("/funding/primary_source", "self")
+            ]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_case_memory_canonicalizes_parent_funding_aliases(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-funding-alias.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-alias", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-family",
+                    session_id="sess-alias",
+                    filename="bank.pdf",
+                    artifact_json={"document_type": "funding_proof"},
+                    raw_bytes=b"bank",
+                )
+            )
+            db.commit()
+
+        result = MaterialUnderstandingResult(
+            evidence_cards=[
+                EvidenceCard(
+                    evidence_id="ev-family",
+                    source_type="uploaded_file",
+                    document_id="doc-family",
+                    excerpt="Primary source of support: Family",
+                    claim_refs=["claim-family-funding"],
+                    confidence=0.88,
+                ),
+                EvidenceCard(
+                    evidence_id="ev-parent",
+                    source_type="uploaded_file",
+                    document_id="doc-family",
+                    excerpt="Primary source of support: Parents",
+                    claim_refs=["claim-parent-funding"],
+                    confidence=0.9,
+                ),
+            ],
+            extracted_claims=[
+                CaseClaim(
+                    claim_id="claim-family-funding",
+                    field_path="/funding/primary_source",
+                    value="Family",
+                    status="documented",
+                    supporting_evidence_ids=["ev-family"],
+                    confidence=0.88,
+                ),
+                CaseClaim(
+                    claim_id="claim-parent-funding",
+                    field_path="/funding/primary_source",
+                    value="Parents",
+                    status="documented",
+                    supporting_evidence_ids=["ev-parent"],
+                    confidence=0.9,
+                ),
+            ],
+            confidence=0.9,
+        )
+
+        with testing_session_local() as db:
+            snapshot = CaseMemoryService(db).upsert_material_understanding(
+                document_id="doc-family",
+                job=MaterialUnderstandingJob(
+                    job_id="job-family",
+                    document_id="doc-family",
+                    status="completed",
+                    result=result,
+                ),
+            )
+
+            assert {claim.value for claim in snapshot.claims} == {"parents"}
+            assert snapshot.conflicts == []
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_case_memory_rebuild_ignores_stale_user_funding_metadata(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-stale-user-funding.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-stale", declared_family="f1"))
+            db.add(
+                SessionTurnRecord(
+                    turn_id="turn-stale",
+                    turn_index=1,
+                    session_id="sess-stale",
+                    role="user",
+                    content="我自己主要负责这个 AI 项目的数据整理和模型评估。",
+                    source="user_message",
+                    metadata_json={
+                        CASE_MEMORY_USER_CLAIMS_KEY: [
+                            CaseClaim(
+                                claim_id="claim-stale-funding",
+                                field_path="/funding/primary_source",
+                                value="self",
+                                status="stated",
+                                confidence=0.72,
+                                metadata={
+                                    "source": "explicit_user_turn",
+                                    "capture_method": "conservative_phrase_match",
+                                },
+                            ).model_dump(mode="json")
+                        ]
+                    },
+                )
+            )
+            db.commit()
+
+            snapshot = CaseMemoryService(db).build_snapshot("sess-stale")
+
+            assert [
+                claim
+                for claim in snapshot.claims
+                if claim.field_path == "/funding/primary_source"
+            ] == []
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

@@ -1,6 +1,7 @@
 from typing import Any
 
 from app.domain.contracts import GovernorDecision, InterviewStateStatus
+from app.domain.runtime import InterviewResult
 from app.services.case_board_projection import (
     case_board_has_state,
     missing_evidence_from_case_board,
@@ -93,6 +94,17 @@ class ReportService:
             governor_decision=governor_decision,
             effective_interviewer_state=effective_interviewer_state,
         )
+        interview_result, interview_result_label, interview_result_reason = (
+            self._resolve_interview_result(
+                interview_status=interview_status,
+                risk_level=risk_level,
+                missing_evidence=missing_evidence,
+                risk_points=case_risk_points,
+                remaining_required_documents=remaining_required_documents,
+                current_key_proof=current_key_proof,
+                runtime_view_state=runtime_view_state,
+            )
+        )
 
         outcome_label = "需核验关键事实"
         summary = self._waiting_key_proof_summary(current_key_proof)
@@ -131,6 +143,11 @@ class ReportService:
             summary = "当前已进入正式 interview 阶段，可继续回答后续问题。"
             recommended_improvements = ["继续回答后续问题，并保持叙事一致。"]
 
+        if interview_result == InterviewResult.PASSED.value:
+            outcome_label = interview_result_label
+            summary = interview_result_reason
+            recommended_improvements = ["本轮回答已形成清晰、低风险的面签闭环，可进入复盘或开始新一轮练习。"]
+
         recommended_improvements = self._merge_recommendations(
             recommended_improvements,
             case_board_payload,
@@ -141,6 +158,9 @@ class ReportService:
             "visa_family": visa_family,
             "governor_decision": public_governor_decision,
             "interview_status": interview_status,
+            "interview_result": interview_result,
+            "interview_result_label": interview_result_label,
+            "interview_result_reason": interview_result_reason,
             "outcome_label": outcome_label,
             "summary": summary,
             "strengths": case_strengths or ["已完成基本签证家族识别"],
@@ -268,6 +288,7 @@ class ReportService:
             "governor_decision",
             "public_status",
             "risk_level",
+            "source_turn_content",
             "current_key_question",
             "current_key_proof",
             "current_risk_code",
@@ -446,6 +467,93 @@ class ReportService:
         if interview_status == InterviewStateStatus.VERIFY_KEY_ISSUE.value:
             return "medium"
         return "none"
+
+    def _resolve_interview_result(
+        self,
+        *,
+        interview_status: str,
+        risk_level: str,
+        missing_evidence: list[str],
+        risk_points: list[str],
+        remaining_required_documents: list[str],
+        current_key_proof: str | None,
+        runtime_view_state: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        if interview_status == InterviewStateStatus.SIMULATED_REFUSAL.value:
+            return (
+                InterviewResult.REFUSED.value,
+                "模拟拒签",
+                "当前记录存在拒签级别风险或已确认硬冲突，本轮模拟结果为拒签。",
+            )
+
+        if interview_status == InterviewStateStatus.HIGH_RISK_REVIEW.value:
+            return (
+                InterviewResult.NOT_PASSED.value,
+                "未通过：高风险待复核",
+                "当前仍有高风险事项需要先复核，本轮不能给出通过结论。",
+            )
+
+        if interview_status in {
+            InterviewStateStatus.VERIFY_KEY_ISSUE.value,
+            InterviewStateStatus.WAITING_KEY_PROOF.value,
+        }:
+            return (
+                InterviewResult.NOT_PASSED.value,
+                "未通过：关键事实待核实",
+                "当前仍有关键事实或证据链需要补强，本轮不能给出通过结论。",
+            )
+
+        if risk_level in {"medium", "high"} or risk_points:
+            return (
+                InterviewResult.NOT_PASSED.value,
+                "未通过：风险待处理",
+                "当前仍有材料或回答风险点需要处理，本轮不能给出通过结论。",
+            )
+
+        if missing_evidence or remaining_required_documents or current_key_proof:
+            return (
+                InterviewResult.NOT_PASSED.value,
+                "未通过：材料或事实待补强",
+                "当前仍有待核实材料或事实，本轮不能给出通过结论。",
+            )
+
+        if self._is_interview_closure(runtime_view_state):
+            return (
+                InterviewResult.PASSED.value,
+                "本轮模拟通过",
+                "签证官已自然结束问答，且当前没有明显风险、待补材料或关键事实冲突，本轮模拟可判定为通过。",
+            )
+
+        return (
+            InterviewResult.IN_PROGRESS.value,
+            "继续面谈",
+            "当前没有形成拒签或通过结论，仍处于正式问答过程中。",
+        )
+
+    def _is_interview_closure(self, runtime_view_state: dict[str, Any]) -> bool:
+        content = str(runtime_view_state.get("source_turn_content") or "").strip()
+        if not content:
+            return False
+        normalized = " ".join(content.lower().split())
+        closure_markers = (
+            "that will be all",
+            "that is all",
+            "that's all",
+            "no further questions",
+            "i have no further questions",
+            "your visa is approved",
+            "your application is approved",
+            "approved",
+            "没有其他问题",
+            "没有别的问题",
+            "我这边没有其他问题",
+            "问题就到这里",
+            "今天就到这里",
+            "面谈结束",
+            "签证通过",
+            "通过了",
+        )
+        return any(marker in normalized for marker in closure_markers)
 
     def _case_strengths(self, case_board: dict[str, Any]) -> list[str]:
         strengths: list[str] = []

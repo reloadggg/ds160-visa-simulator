@@ -7,18 +7,26 @@ from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, RunConfig, Runner
-from agents.exceptions import AgentsException
+from agents.exceptions import AgentsException, ModelBehaviorError
 from agents.model_settings import Reasoning
-from openai import APIStatusError, AsyncOpenAI
-from pydantic import BaseModel, Field, field_validator
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    OpenAI,
+)
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.model_factory import AgentModelFactory
 from app.agents.user_model_config import current_user_model_config
+from app.core.settings import settings
 from app.db.evidence_models import DocumentChunkRecord
 from app.db.models import SessionRecord
 from app.domain.contracts import GovernorDecision
+from app.integrations.openai_compat_headers import openai_compat_default_headers
 from app.platform.turn_record import TurnRecord
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
@@ -59,6 +67,45 @@ class NativeInterviewerOutput(BaseModel):
     requested_documents: list[str] = Field(default_factory=list)
     next_safe_action: NativeNextSafeAction = "continue_interview"
     memory_notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_message_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict) or value.get("assistant_message"):
+            return value
+        nested_output = value.get("output")
+        if isinstance(nested_output, dict):
+            nested_message = cls._message_alias_from_mapping(nested_output)
+            if nested_message:
+                normalized = dict(value)
+                normalized["assistant_message"] = nested_message
+                return normalized
+        nested_message = cls._message_alias_from_mapping(value)
+        if nested_message:
+            normalized = dict(value)
+            normalized["assistant_message"] = nested_message
+            return normalized
+        return value
+
+    @classmethod
+    def _message_alias_from_mapping(cls, value: dict[str, Any]) -> str | None:
+        for key in (
+            "response_text",
+            "user_facing_message",
+            "message",
+            "next_question",
+            "question",
+            "follow_up_question",
+            "interviewer_message",
+            "officer_message",
+            "response",
+            "text",
+            "content",
+        ):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        return None
 
     @field_validator("assistant_message")
     @classmethod
@@ -277,6 +324,13 @@ class OpenAIAgentsInterviewerRunner:
         output_type: type[NativeInterviewerOutput],
         runtime: dict[str, Any],
     ) -> NativeInterviewerOutput:
+        if runtime.get("provider") == "openai_compatible":
+            return self._run_chat_json_fallback(
+                prompt=prompt,
+                instructions=instructions,
+                output_type=output_type,
+                runtime=runtime,
+            )
         agent = Agent(
             name="DS-160 Native Interviewer",
             instructions=instructions,
@@ -284,18 +338,79 @@ class OpenAIAgentsInterviewerRunner:
             model_settings=self._build_model_settings(runtime),
             output_type=output_type,
         )
-        result = Runner.run_sync(
-            agent,
-            prompt,
-            max_turns=1,
-            run_config=RunConfig(
-                workflow_name="ds160_native_interviewer",
-                tracing_disabled=True,
-            ),
+        try:
+            result = Runner.run_sync(
+                agent,
+                prompt,
+                max_turns=1,
+                run_config=RunConfig(
+                    workflow_name="ds160_native_interviewer",
+                    tracing_disabled=True,
+                ),
+            )
+            return result.final_output_as(output_type, raise_if_incorrect_type=True)
+        except ModelBehaviorError:
+            return self._run_chat_json_fallback(
+                prompt=prompt,
+                instructions=instructions,
+                output_type=output_type,
+                runtime=runtime,
+            )
+
+    def _run_chat_json_fallback(
+        self,
+        *,
+        prompt: str,
+        instructions: str,
+        output_type: type[NativeInterviewerOutput],
+        runtime: dict[str, Any],
+    ) -> NativeInterviewerOutput:
+        api_key, base_url, model_name = self._resolve_model_config(runtime)
+        schema = json.dumps(output_type.model_json_schema(), ensure_ascii=False)
+        json_instructions = (
+            f"{instructions}\n\n"
+            "Return only one JSON object matching this schema. "
+            "Do not include markdown, prose, or code fences.\n"
+            f"{schema}"
         )
-        return result.final_output_as(output_type, raise_if_incorrect_type=True)
+        completion = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=settings.openai_timeout_seconds,
+            default_headers=openai_compat_default_headers(),
+        ).chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": json_instructions},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        content = completion.choices[0].message.content
+        if not content:
+            raise ModelBehaviorError(
+                "Native interviewer JSON fallback returned empty content.",
+            )
+        try:
+            payload = self._parse_json_object_content(content)
+            return output_type.model_validate(payload)
+        except Exception as exc:
+            raise ModelBehaviorError(
+                f"Native interviewer JSON fallback returned invalid output: {exc}",
+            ) from exc
 
     def _build_model(self, runtime: dict[str, Any]) -> OpenAIChatCompletionsModel:
+        api_key, base_url, model_name = self._resolve_model_config(runtime)
+        return OpenAIChatCompletionsModel(
+            model=model_name,
+            openai_client=AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=openai_compat_default_headers(),
+            ),
+        )
+
+    def _resolve_model_config(self, runtime: dict[str, Any]) -> tuple[str, str, str]:
         user_config = current_user_model_config()
         api_key = (
             user_config.api_key
@@ -316,13 +431,21 @@ class OpenAIAgentsInterviewerRunner:
                 model=model_name,
                 missing_env_vars=runtime.get("model_unavailable_missing_env_vars"),
             )
-        return OpenAIChatCompletionsModel(
-            model=model_name,
-            openai_client=AsyncOpenAI(
-                api_key=api_key,
-                base_url=base_url,
-            ),
-        )
+        return api_key, base_url, model_name
+
+    def _parse_json_object_content(self, content: str) -> dict[str, Any]:
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            stripped = "\n".join(lines).strip()
+        payload = json.loads(stripped)
+        if not isinstance(payload, dict):
+            raise ValueError("native interviewer output must be a JSON object")
+        return payload
 
     def _build_model_settings(self, runtime: dict[str, Any]) -> ModelSettings:
         reasoning_effort = self._string_or_none(runtime.get("reasoning_effort"))
@@ -480,6 +603,7 @@ class NativeInterviewerRuntimeService:
         raise ModelRuntimeError(
             detail="模型输出未通过连续面谈质量检查，已阻止发送重复或失真的面试问题。",
             status_code=503,
+            upstream_code="native_quality_guard_failed",
         )
 
     def _run_interviewer_agent(
@@ -585,7 +709,19 @@ class NativeInterviewerRuntimeService:
             "7. 正常面谈回复一到两句，只问一个自然追问；可以有半句承接。\n"
             "8. 不要暴露内部字段、风险码、run id、prompt、trace、JSON 路径或系统实现。\n"
             "9. 如果需要材料，说明自然语言材料名和原因；如果继续问答，直接问一个基于当前事实的追问。\n"
-            "10. 输出必须符合 NativeInterviewerOutput 结构。"
+            "10. F-1 常规面谈的重点是学习目的、学校和项目选择、学术准备、资金来源、家庭/回国联系、毕业后计划。"
+            "不要把面谈变成考研复试、技术答辩或工作面试。\n"
+            "11. 追问必须有清晰的签证判断价值：用于核对材料一致性、学习真实性、资金可信度、回国约束或风险点。"
+            "如果申请人的回答已经与材料和当前面谈逻辑对得上，就换到下一个 F-1 维度或自然收束；不要围绕同一个点反复追问。\n"
+            "12. 可以问课程项目或实习，但只用于判断学术准备和学习动机。除非出现敏感研究、明显矛盾或高风险信号，"
+            "不要连续追问项目实现细节、模型设计、平台细节、工程分工或技术方案。\n"
+            "13. 如果申请人已经解释过项目暴露出的能力缺口、为什么需要 NYU 课程、以及毕业后回中国的岗位方向，"
+            "不要再换一种说法追问“最想补哪项工程/技术能力”。这类信息已经够用于 F-1 学习动机判断。\n"
+            "14. 如果历史里出现连续 assistant 问题，只把最新 assistant 问题当作当前问题；"
+            "不要回填更早的 assistant 问题，也不要因为旧问题未答而把对话拉回技术细节。\n"
+            "15. 如果核心 F-1 维度已经回答清楚、材料支持充分且没有明显风险，不要为了继续问而发明新问题；"
+            "可以用一句自然收束说明当前回答已经比较完整，必要时只问一个非常短的最终确认。\n"
+            "16. 输出必须符合 NativeInterviewerOutput 结构。"
         )
 
     def _build_interviewer_context(
@@ -603,7 +739,7 @@ class NativeInterviewerRuntimeService:
                 "legacy_extracted_hints_are_untrusted": True,
                 "do_not_treat_missing_legacy_fields_as_unanswered": True,
             },
-            "full_transcript": [],
+            "full_transcript": self._conversation_context(case_state),
             "document_evidence": {
                 "documents": self._list_payload(case_state.get("documents")),
                 "evidence_digest": self._payload(case_state.get("evidence_digest")),
@@ -617,6 +753,35 @@ class NativeInterviewerRuntimeService:
                 "case_brief": self._payload(case_state.get("case_brief")),
                 "history_summary": self._payload(case_state.get("history_summary")),
             },
+        }
+
+    def _conversation_context(self, case_state: dict[str, Any]) -> dict[str, Any]:
+        transcript = self._list_payload(case_state.get("full_transcript"))
+        compacted: list[dict[str, Any]] = []
+        for item in transcript:
+            turn = self._payload(item)
+            role = self._string_or_none(turn.get("role"))
+            if role not in {"user", "assistant"}:
+                continue
+            payload = {
+                "turn_index": turn.get("turn_index"),
+                "role": role,
+                "content": self._string_or_none(turn.get("content")) or "",
+            }
+            if role == "assistant" and compacted and compacted[-1].get("role") == "assistant":
+                compacted[-1] = payload
+                continue
+            compacted.append(payload)
+        tail = compacted[-18:]
+        return {
+            "policy": {
+                "consecutive_assistant_turns": (
+                    "compacted_to_latest_assistant_question"
+                ),
+                "active_question": "latest_assistant_turn_only",
+            },
+            "omitted_older_turns": max(len(compacted) - len(tail), 0),
+            "turns": tail,
         }
 
     def _build_case_state(self, record: SessionRecord) -> dict[str, Any]:
@@ -977,27 +1142,97 @@ class NativeInterviewerRuntimeService:
         model = self._string_or_none(runtime.get("model"))
         if isinstance(exc, ModelRuntimeError):
             return exc
+        if isinstance(exc, ModelBehaviorError):
+            return ModelRuntimeError(
+                detail="上游模型返回内容不符合面谈结构化输出要求，后端已阻止发送不完整回复。",
+                status_code=502,
+                provider=provider,
+                model=model,
+                upstream_code="model_output_invalid",
+                error_category="model_output_invalid",
+            )
+        cause = exc.__cause__ if isinstance(exc.__cause__, Exception) else None
+        if isinstance(exc, AgentsException) and cause is not None:
+            return self._normalize_model_error(cause, runtime=runtime)
         if isinstance(exc, APIStatusError):
+            upstream_code = self._model_error_code(getattr(exc, "body", None))
             return ProviderAPIError(
-                detail="native interviewer model failed.",
+                detail=self._provider_status_error_detail(
+                    exc.status_code or 503,
+                    upstream_code=upstream_code,
+                ),
                 status_code=exc.status_code or 503,
                 provider=provider,
                 model=model,
+                upstream_code=upstream_code,
                 body=getattr(exc, "body", None),
+            )
+        if isinstance(exc, APITimeoutError):
+            return ModelRuntimeError(
+                detail=self._provider_timeout_error_detail(model=model),
+                status_code=504,
+                provider=provider,
+                model=model,
+                upstream_code="upstream_timeout",
+                error_category="upstream_timeout",
+            )
+        if isinstance(exc, APIConnectionError):
+            return ModelRuntimeError(
+                detail="上游模型服务连接失败，请检查 Base URL、网络或服务可用性。",
+                status_code=502,
+                provider=provider,
+                model=model,
+                upstream_code="upstream_connection_error",
+                error_category="upstream_connection_error",
             )
         if isinstance(exc, AgentsException):
             return ModelRuntimeError(
-                detail="native interviewer agent failed.",
+                detail="面谈模型代理运行失败，可能是模型输出解析或 Agents SDK 内部错误。",
                 status_code=503,
                 provider=provider,
                 model=model,
+                upstream_code="agent_runtime_error",
+                error_category="agent_runtime_error",
             )
         return ModelRuntimeError(
-            detail="native interviewer model failed.",
-            status_code=503,
+            detail=f"面谈运行时内部错误：{exc.__class__.__name__}",
+            status_code=500,
             provider=provider,
             model=model,
+            upstream_code="native_interviewer_internal_error",
+            error_category="internal_error",
         )
+
+    def _provider_status_error_detail(
+        self,
+        status_code: int,
+        *,
+        upstream_code: str | None,
+    ) -> str:
+        if status_code in {401, 403}:
+            return "上游模型认证失败，请检查 API Key、Base URL 或模型访问权限。"
+        if status_code == 429:
+            return "上游模型额度已耗尽或请求过于频繁，请稍后重试或更换模型配置。"
+        if status_code == 504:
+            return self._provider_timeout_error_detail(model=None)
+        suffix = f"（错误码：{upstream_code}）" if upstream_code else ""
+        return f"上游模型服务返回 HTTP {status_code}{suffix}，本轮面谈回复未生成。"
+
+    def _provider_timeout_error_detail(self, *, model: str | None) -> str:
+        model_label = f"（模型：{model}）" if model else ""
+        return f"上游模型请求超时{model_label}，本轮面谈回复未生成。"
+
+    def _model_error_code(self, body: object | None) -> str | None:
+        if isinstance(body, dict):
+            code = body.get("code")
+            if isinstance(code, str) and code:
+                return code
+            error = body.get("error")
+            if isinstance(error, dict):
+                error_code = error.get("code") or error.get("type")
+                if isinstance(error_code, str) and error_code:
+                    return error_code
+        return None
 
     def _build_run_id(self) -> str:
         return f"native-run-{time_ns():020d}-{uuid4().hex[:8]}"

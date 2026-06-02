@@ -5,7 +5,7 @@ import os
 from typing import Any, Literal, Protocol, TypeVar
 
 from openai import APIStatusError, OpenAI
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.agents.model_factory import AgentModelFactory
@@ -13,6 +13,7 @@ from app.agents.user_model_config import current_user_model_config
 from app.core.settings import settings
 from app.db.models import SessionRecord
 from app.domain.document_types import normalize_document_type
+from app.integrations.openai_compat_headers import openai_compat_default_headers
 from app.services.runtime_errors import (
     ModelRuntimeError,
     ModelUnavailableError,
@@ -22,6 +23,9 @@ from app.services.runtime_errors import (
 
 GeneratedBundleScenario = Literal[
     "normal_f1_bundle",
+    "normal_j1_bundle",
+    "normal_b1_b2_bundle",
+    "normal_h1b_bundle",
     "school_mismatch_bundle",
     "identity_mismatch_bundle",
     "funding_shortfall_bundle",
@@ -36,6 +40,24 @@ ALLOWED_GENERATED_DOCUMENT_TYPES = {
     "admission_letter",
     "funding_proof",
     "relationship_proof_between_applicant_and_sponsors",
+    "ds2019",
+    "program_invitation",
+    "sevis_fee_receipt",
+    "training_plan_ds7002",
+    "insurance_proof",
+    "itinerary_or_trip_purpose",
+    "invitation_letter",
+    "employment_proof",
+    "travel_history",
+    "family_ties_proof",
+    "i797",
+    "i129_petition",
+    "employer_letter",
+    "offer_letter",
+    "lca",
+    "degree_certificate",
+    "resume",
+    "client_letter",
 }
 ORACLE_TEXT_MARKERS = (
     "Missing:",
@@ -175,13 +197,7 @@ class GeneratedMaterialBundleOutput(BaseModel):
     @model_validator(mode="after")
     def validate_required_document_mix(self) -> "GeneratedMaterialBundleOutput":
         document_types = {document.document_type for document in self.documents}
-        required = {
-            "ds160",
-            "passport_bio",
-            "i20",
-            "admission_letter",
-            "funding_proof",
-        }
+        required = {"ds160", "passport_bio"}
         missing = sorted(required - document_types)
         if missing:
             raise ValueError(f"generated bundle missing required documents: {missing}")
@@ -225,9 +241,11 @@ class OpenAIChatCompletionsMaterialBundleRunner:
         if not content:
             raise ModelRuntimeError(
                 detail="材料生成模型返回了空内容。",
-                status_code=503,
+                status_code=502,
                 provider=runtime.get("provider"),
                 model=runtime.get("model"),
+                upstream_code="model_output_invalid",
+                error_category="model_output_invalid",
             )
         payload = self._parse_json_content(content)
         normalized = self._normalize_material_payload(payload)
@@ -284,6 +302,7 @@ class OpenAIChatCompletionsMaterialBundleRunner:
             api_key=api_key,
             base_url=base_url,
             timeout=settings.ai_material_bundle_timeout_seconds,
+            default_headers=openai_compat_default_headers(),
         )
 
     def _parse_json_content(self, content: str) -> dict[str, Any]:
@@ -453,8 +472,23 @@ class AIMaterialBundleGeneratorService:
         try:
             output = self.runner.run(
                 prompt=prompt,
-                instructions=self._build_instructions(record.declared_family),
+                instructions=self._build_instructions(
+                    self._target_family_for_scenario(
+                        scenario,
+                        record.declared_family,
+                    )
+                ),
                 output_type=GeneratedMaterialBundleOutput,
+                runtime=runtime,
+            )
+            output = GeneratedMaterialBundleOutput.model_validate(output)
+            required_documents = self._required_documents_for_scenario(
+                scenario,
+                record.declared_family,
+            )
+            self._validate_required_documents(
+                output,
+                required_documents,
                 runtime=runtime,
             )
         except Exception as exc:
@@ -468,9 +502,14 @@ class AIMaterialBundleGeneratorService:
             "prompt_pack_id": "ds160.ai_material_bundle",
             "prompt_version": "v1",
             "seed_text_present": True,
+            "target_family": self._target_family_for_scenario(
+                scenario,
+                record.declared_family,
+            ),
+            "required_documents": required_documents,
             "timeout_seconds": settings.ai_material_bundle_timeout_seconds,
         }
-        return GeneratedMaterialBundleOutput.model_validate(output), trace
+        return output, trace
 
     def _build_runtime(self, declared_family: str | None) -> dict[str, Any]:
         if hasattr(self.model_factory, "build_runtime_config"):
@@ -494,24 +533,27 @@ class AIMaterialBundleGeneratorService:
         seed_text: str,
         include_synthetic_user_turns: bool,
     ) -> str:
+        target_family = self._target_family_for_scenario(
+            scenario,
+            record.declared_family,
+        )
+        required_documents = self._required_documents_for_scenario(
+            scenario,
+            record.declared_family,
+        )
         payload = {
             "schema_version": "ai_material_bundle.v1",
             "session": {
                 "session_id": record.session_id,
                 "declared_family": record.declared_family,
             },
+            "target_family": target_family,
             "scenario": scenario,
             "seed_text": seed_text,
             "existing_profile_json": dict(record.profile_json or {}),
             "include_synthetic_user_turns": include_synthetic_user_turns,
-            "required_documents": [
-                "ds160",
-                "passport_bio",
-                "i20",
-                "admission_letter",
-                "funding_proof",
-                "relationship_proof_between_applicant_and_sponsors",
-            ],
+            "required_documents": required_documents,
+            "family_material_guidance": self._family_material_guidance(target_family),
             "scenario_rules": self._scenario_rules(scenario),
             "output_contract": {
                 "top_level_keys": [
@@ -539,16 +581,16 @@ class AIMaterialBundleGeneratorService:
         }
         return json.dumps(payload, ensure_ascii=False)
 
-    def _build_instructions(self, declared_family: str | None) -> str:
-        family = declared_family or "unknown"
+    def _build_instructions(self, target_family: str | None) -> str:
+        family = target_family or "unknown"
         return (
             "你是 DS-160 模拟器里的 AI 材料生成器，必须返回可解析 JSON。\n"
-            f"当前签证类别：{family}。\n"
+            f"当前材料包目标签证类别：{family}。\n"
             "核心规则：\n"
             "1. seed_text 是材料事实的唯一来源；学校、项目、资金来源、资助人、金额必须与 seed_text 一致。\n"
             "2. 生成的是看起来像真实 OCR/文本摘录的练习材料正文，不是总结、分析或风险报告。\n"
-            "3. 正常场景必须生成 DS-160、护照首页、I-20、录取信、资金证明，最好也生成亲属关系证明。\n"
-            "4. 字段必须用 JSON pointer，例如 /education/school_name、/education/program_name、/funding/primary_source。\n"
+            "3. 正常场景必须按 required_documents 生成对应签证类别材料；非 F-1 不要生成 I-20 或录取信，除非 required_documents 明确要求。\n"
+            "4. 字段必须用 JSON pointer，例如 /identity/full_name、/visa_intent/purpose、/funding/primary_source。\n"
             "5. 不得在材料正文里写 Issue、Missing、Expected、Defect、This conflicts with 等答案提示。\n"
             "6. 如果场景要求制造冲突，只能通过材料字段值不同或用户声明与材料不同表达，不要解释冲突。\n"
             "7. 不要把内部 scenario、oracle、expected_findings、prompt、trace 写进材料正文。\n"
@@ -557,6 +599,135 @@ class AIMaterialBundleGeneratorService:
             "10. 每个 document 必须使用 document_type、filename、raw_text、fields、counts_toward_gate。\n"
             "11. raw_text 必须是完整材料正文字符串；fields 必须是 JSON object，不要用数组。"
         )
+
+    def _target_family_for_scenario(
+        self,
+        scenario: GeneratedBundleScenario,
+        declared_family: str | None,
+    ) -> str:
+        if scenario == "normal_j1_bundle":
+            return "j1"
+        if scenario == "normal_b1_b2_bundle":
+            return "b1_b2"
+        if scenario == "normal_h1b_bundle":
+            return "h1b"
+        if scenario in {
+            "normal_f1_bundle",
+            "school_mismatch_bundle",
+            "identity_mismatch_bundle",
+            "funding_shortfall_bundle",
+            "sponsor_chain_gap_bundle",
+            "claim_vs_document_bundle",
+        }:
+            return "f1"
+        normalized = (declared_family or "").strip().lower()
+        return normalized or "f1"
+
+    def _required_documents_for_scenario(
+        self,
+        scenario: GeneratedBundleScenario,
+        declared_family: str | None,
+    ) -> list[str]:
+        target_family = self._target_family_for_scenario(scenario, declared_family)
+        if target_family == "j1":
+            return [
+                "ds160",
+                "passport_bio",
+                "ds2019",
+                "funding_proof",
+                "program_invitation",
+                "sevis_fee_receipt",
+            ]
+        if target_family == "b1_b2":
+            return [
+                "ds160",
+                "passport_bio",
+                "itinerary_or_trip_purpose",
+                "funding_proof",
+                "employment_proof",
+                "invitation_letter",
+            ]
+        if target_family == "h1b":
+            return [
+                "ds160",
+                "passport_bio",
+                "i797",
+                "employer_letter",
+                "lca",
+                "degree_certificate",
+            ]
+        return [
+            "ds160",
+            "passport_bio",
+            "i20",
+            "admission_letter",
+            "funding_proof",
+            "relationship_proof_between_applicant_and_sponsors",
+        ]
+
+    def _family_material_guidance(self, target_family: str) -> dict[str, Any]:
+        if target_family == "j1":
+            return {
+                "purpose": "exchange visitor program",
+                "primary_evidence": [
+                    "DS-2019 program information",
+                    "program sponsor or invitation letter",
+                    "funding support for the exchange period",
+                    "SEVIS I-901 receipt when available",
+                ],
+                "avoid_documents": ["i20", "admission_letter"],
+            }
+        if target_family == "b1_b2":
+            return {
+                "purpose": "temporary business or visitor travel",
+                "primary_evidence": [
+                    "trip purpose or itinerary",
+                    "invitation or meeting letter when applicable",
+                    "employment and leave proof",
+                    "financial support and home ties",
+                ],
+                "avoid_documents": ["i20", "admission_letter", "ds2019"],
+            }
+        if target_family == "h1b":
+            return {
+                "purpose": "specialty occupation temporary work",
+                "primary_evidence": [
+                    "I-797 approval notice",
+                    "employer support letter",
+                    "LCA or role details",
+                    "degree and resume evidence",
+                ],
+                "avoid_documents": ["i20", "admission_letter", "ds2019"],
+            }
+        return {
+            "purpose": "academic study",
+            "primary_evidence": [
+                "I-20",
+                "admission letter",
+                "funding proof",
+                "relationship proof when sponsored by parents",
+            ],
+            "avoid_documents": ["ds2019", "i797", "employer_letter"],
+        }
+
+    def _validate_required_documents(
+        self,
+        output: GeneratedMaterialBundleOutput,
+        required_documents: list[str],
+        *,
+        runtime: dict[str, Any],
+    ) -> None:
+        document_types = {document.document_type for document in output.documents}
+        missing = sorted(set(required_documents) - document_types)
+        if missing:
+            raise ModelRuntimeError(
+                detail=f"AI 材料生成结果缺少当前签证类别必需材料：{missing}",
+                status_code=502,
+                provider=runtime.get("provider"),
+                model=runtime.get("model"),
+                upstream_code="model_output_invalid",
+                error_category="model_output_invalid",
+            )
 
     def _scenario_rules(self, scenario: str) -> dict[str, str]:
         if scenario == "school_mismatch_bundle":
@@ -619,7 +790,18 @@ class AIMaterialBundleGeneratorService:
                 model=runtime.get("model"),
                 status_code=exc.status_code,
             )
+        if isinstance(exc, (json.JSONDecodeError, ValidationError, ValueError)):
+            return ModelRuntimeError(
+                detail=f"材料生成模型输出结构不合格：{exc.__class__.__name__}: {exc}",
+                status_code=502,
+                provider=runtime.get("provider"),
+                model=runtime.get("model"),
+                upstream_code="model_output_invalid",
+                error_category="model_output_invalid",
+            )
         return ModelRuntimeError(
             detail=f"材料生成失败：{exc.__class__.__name__}: {exc}",
             status_code=503,
+            provider=runtime.get("provider"),
+            model=runtime.get("model"),
         )

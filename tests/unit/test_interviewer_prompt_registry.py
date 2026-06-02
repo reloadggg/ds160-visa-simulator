@@ -124,6 +124,59 @@ def test_f1_adjudication_prompt_keeps_base_contract_and_family_addendum() -> Non
     assert "这个回答太笼统" in instructions
 
 
+def test_j1_prompt_focuses_exchange_program_not_f1_school_choice() -> None:
+    instructions = InterviewerPromptRegistry().build_instructions(
+        "adjudication_agent",
+        declared_family="j1",
+    )
+    question_instructions = InterviewerPromptRegistry().build_instructions(
+        "question_agent",
+        declared_family="j1",
+    )
+
+    assert "当前是 J-1 面谈语境" in instructions
+    assert "DS-2019" in instructions
+    assert "sponsor" in instructions
+    assert "项目结束后你回国继续做什么？" in instructions
+    assert "不要套用 F-1 选校/选专业话术" in question_instructions
+
+
+def test_b1_b2_prompt_focuses_temporary_visit_and_not_study_or_work() -> None:
+    instructions = InterviewerPromptRegistry().build_instructions(
+        "adjudication_agent",
+        declared_family="b1_b2",
+    )
+    question_instructions = InterviewerPromptRegistry().build_instructions(
+        "question_agent",
+        declared_family="b1_b2",
+    )
+
+    assert "当前是 B-1/B-2 面谈语境" in instructions
+    assert "临时访问目的" in instructions
+    assert "你计划停留多久？" in instructions
+    assert "这次费用由谁支付？" in instructions
+    assert "不要问成 F-1 学习计划" in question_instructions
+    assert "为什么选择这个学校" not in instructions
+
+
+def test_h1b_prompt_focuses_petition_and_avoids_technical_interview() -> None:
+    instructions = InterviewerPromptRegistry().build_instructions(
+        "adjudication_agent",
+        declared_family="h1b",
+    )
+    question_instructions = InterviewerPromptRegistry().build_instructions(
+        "question_agent",
+        declared_family="h1b",
+    )
+
+    assert "当前是 H-1B 面谈语境" in instructions
+    assert "I-797" in instructions
+    assert "薪资/LCA" in instructions
+    assert "你的美国雇主是哪家公司？" in instructions
+    assert "不要问成技术面试" in question_instructions
+    assert "模型架构" in instructions
+
+
 def test_default_fallback_messages_are_window_style() -> None:
     registry = InterviewerPromptRegistry()
     fallback = registry.fallback_messages()
