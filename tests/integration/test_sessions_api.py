@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
-from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
+from app.db.models import AdminSettingRecord, DocumentRecord, SessionRecord, SessionTurnRecord
 from app.core import settings as settings_module
 from app.db.session import get_db
 from app.main import app
@@ -839,6 +839,38 @@ def test_runtime_trace_endpoint_returns_graph_events(
 
     assert message_response.status_code == 200
     run_id = message_response.json()["native_run_id"]
+    with db_session_factory() as db:
+        db.add(
+            AdminSettingRecord(
+                setting_key="demo",
+                value_json={
+                    "debug_console_enabled": False,
+                    "debug_material_enabled": False,
+                    "show_github_link": False,
+                    "user_model_config_enabled": False,
+                    "rag_status_user_visible": False,
+                },
+            )
+        )
+        db.commit()
+    disabled_response = client.get(f"/v1/sessions/{session_id}/runtime-traces/{run_id}")
+    assert disabled_response.status_code == 403
+
+    with db_session_factory() as db:
+        db.merge(
+            AdminSettingRecord(
+                setting_key="demo",
+                value_json={
+                    "debug_console_enabled": True,
+                    "debug_material_enabled": False,
+                    "show_github_link": False,
+                    "user_model_config_enabled": False,
+                    "rag_status_user_visible": False,
+                },
+            )
+        )
+        db.commit()
+
     trace_response = client.get(f"/v1/sessions/{session_id}/runtime-traces/{run_id}")
 
     assert trace_response.status_code == 200

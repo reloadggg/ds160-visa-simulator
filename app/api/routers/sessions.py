@@ -303,6 +303,8 @@ def get_runtime_trace(
     _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
+    if not _runtime_debug_enabled(db):
+        raise HTTPException(status_code=403, detail="runtime debug is disabled")
     statement = (
         select(SessionTurnRecord)
         .where(

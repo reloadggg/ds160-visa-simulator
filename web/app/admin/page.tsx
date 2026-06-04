@@ -8,7 +8,6 @@ type AdminSettings = Record<string, unknown> & {
   debug_console_enabled?: boolean
   debug_material_enabled?: boolean
   user_model_config_enabled?: boolean
-  rag_status_user_visible?: boolean
   model_base_url?: string | null
   model_name?: string | null
   model_streaming_enabled?: boolean
@@ -242,7 +241,6 @@ export default function AdminPage() {
                 ["debug_console_enabled", "开放调试台"],
                 ["debug_material_enabled", "开放调试材料"],
                 ["user_model_config_enabled", "允许用户自定义模型"],
-                ["rag_status_user_visible", "用户可见 RAG 状态"],
               ].map(([key, label]) => (
                 <label key={key} className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white/60 px-4 py-3">
                   <span>{label}</span>

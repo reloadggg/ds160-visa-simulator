@@ -38,7 +38,7 @@ class AdminConfigService:
 
     def get_settings(self) -> dict[str, Any]:
         record = self.db.get(AdminSettingRecord, DEMO_SETTINGS_KEY)
-        payload = dict(DEFAULT_DEMO_SETTINGS)
+        payload = _default_demo_settings()
         if record is not None and isinstance(record.value_json, dict):
             payload.update(record.value_json)
         return payload
@@ -71,7 +71,10 @@ class AdminConfigService:
                 and current.get("debug_material_enabled")
             ),
             "user_model_config_enabled": bool(current.get("user_model_config_enabled")),
-            "rag_status_user_visible": bool(current.get("rag_status_user_visible")),
+            # Product rule for the online demo: RAG/knowledge-base status is an
+            # admin-only operational surface. Keep the field for frontend
+            # compatibility, but never expose it to the user workbench.
+            "rag_status_user_visible": False,
         }
 
     def admin_payload(self) -> dict[str, Any]:
@@ -118,3 +121,15 @@ def _clean_string(value: Any) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _default_demo_settings() -> dict[str, Any]:
+    payload = dict(DEFAULT_DEMO_SETTINGS)
+    # Preserve existing env-driven local/test behavior when no admin setting has
+    # been saved yet, while production remains closed by default because these
+    # settings default to false.
+    payload["debug_console_enabled"] = bool(
+        settings.allow_runtime_debug or settings.allow_debug_fill
+    )
+    payload["debug_material_enabled"] = bool(settings.allow_debug_fill)
+    return payload

@@ -433,6 +433,14 @@ async def simple_auth_middleware(request: Request, call_next) -> Response:
 
         if not settings.app_auth_enabled:
             return await call_next(request)
+        if get_current_admin_session(request, db) is not None:
+            if (
+                settings.app_auth_csrf_protection
+                and request.method not in SAFE_METHODS
+                and not _origin_allowed(request)
+            ):
+                return _csrf_response()
+            return await call_next(request)
         if get_current_auth_session(request, db) is None:
             return _unauthorized_response()
 

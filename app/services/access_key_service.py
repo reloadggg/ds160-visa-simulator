@@ -67,21 +67,17 @@ class AccessKeyService:
         return CreatedAccessKey(plaintext_key=plaintext_key, record=record)
 
     def lookup_login_key(self, plaintext_key: str) -> AccessKeyRecord | None:
-        """Return a non-revoked key for login.
+        """Return an existing key for login.
 
-        Login itself must not consume or require quota. Quota/expiration checks
-        happen when creating a new backend interview session so exhausted keys
-        can still open their already-bound server history.
+        Login itself must not consume quota or require create-session
+        eligibility. Quota, expiration, and disabled-state checks happen when
+        creating a new backend interview session so exhausted/expired/disabled
+        keys can still open their already-bound server history.
         """
         key_hash = hash_secret(plaintext_key.strip())
-        record = self.db.execute(
+        return self.db.execute(
             select(AccessKeyRecord).where(AccessKeyRecord.key_hash == key_hash)
         ).scalar_one_or_none()
-        if record is None:
-            return None
-        if record.revoked_at is not None:
-            return None
-        return record
 
     def lookup_valid_key(self, plaintext_key: str, *, now: datetime | None = None) -> AccessKeyRecord | None:
         """Backward-compatible strict lookup for callers that need createability."""

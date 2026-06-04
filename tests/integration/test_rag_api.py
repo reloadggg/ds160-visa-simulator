@@ -33,12 +33,22 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, N
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.auth_session_factory = TestingSessionLocal
     monkeypatch.setattr(settings_module.settings, "rag_enabled", False)
+    monkeypatch.setattr(settings_module.settings, "app_auth_password", "admin-pass")
+    monkeypatch.setattr(settings_module.settings, "app_auth_cookie_secure", False)
+    monkeypatch.setattr(settings_module.settings, "app_auth_csrf_protection", False)
     try:
         with TestClient(app) as test_client:
+            login_response = test_client.post(
+                "/v1/admin/login",
+                json={"password": "admin-pass"},
+            )
+            assert login_response.status_code == 200
             yield test_client
     finally:
         app.dependency_overrides.clear()
+        app.state.auth_session_factory = None
 
 
 def test_rag_status_reports_disabled(client: TestClient) -> None:

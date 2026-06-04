@@ -11,6 +11,7 @@ from app.core import settings as settings_module
 from app.db.base import Base
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import (
+    AdminSettingRecord,
     CaseMemorySnapshotRecord,
     DocumentRecord,
     SessionRecord,
@@ -62,6 +63,9 @@ def db_session_factory(tmp_path):
 
 @pytest.fixture()
 def client(db_session_factory) -> Generator[TestClient, None, None]:
+    with db_session_factory() as db:
+        _set_demo_debug_settings(db, console=True, materials=True)
+
     def override_get_db() -> Generator[Session, None, None]:
         db = db_session_factory()
         try:
@@ -73,6 +77,31 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+def _set_demo_debug_settings(
+    db: Session,
+    *,
+    console: bool,
+    materials: bool,
+) -> None:
+    db.merge(
+        AdminSettingRecord(
+            setting_key="demo",
+            value_json={
+                "model_base_url": None,
+                "model_api_key": None,
+                "model_name": None,
+                "model_streaming_enabled": True,
+                "user_model_config_enabled": False,
+                "show_github_link": False,
+                "debug_console_enabled": console,
+                "debug_material_enabled": materials,
+                "rag_status_user_visible": False,
+            },
+        )
+    )
+    db.commit()
 
 
 def install_material_refresh_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -622,10 +651,10 @@ def test_runtime_debug_snapshot_redacts_sensitive_metadata(
 
 def test_runtime_debug_snapshot_respects_debug_switch(
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
+    db_session_factory,
 ) -> None:
-    monkeypatch.setattr(settings_module.settings, "allow_debug_fill", False)
-    monkeypatch.setattr(settings_module.settings, "allow_runtime_debug", False)
+    with db_session_factory() as db:
+        _set_demo_debug_settings(db, console=False, materials=True)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -1141,9 +1170,10 @@ def test_debug_material_bundle_rejects_unknown_scenario(
 
 def test_debug_material_bundle_respects_debug_switch(
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
+    db_session_factory,
 ) -> None:
-    monkeypatch.setattr(settings_module.settings, "allow_debug_fill", False)
+    with db_session_factory() as db:
+        _set_demo_debug_settings(db, console=True, materials=False)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -1158,9 +1188,10 @@ def test_debug_material_bundle_respects_debug_switch(
 
 def test_material_package_archive_respects_debug_switch(
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
+    db_session_factory,
 ) -> None:
-    monkeypatch.setattr(settings_module.settings, "allow_debug_fill", False)
+    with db_session_factory() as db:
+        _set_demo_debug_settings(db, console=True, materials=False)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 

@@ -691,6 +691,11 @@ def test_get_file_content_uses_cookie_auth_when_enabled(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "app_auth_password", "test-password")
+    monkeypatch.setattr(
+        settings_module.settings,
+        "app_auth_password_user_fallback_enabled",
+        True,
+    )
     monkeypatch.setattr(settings_module.settings, "app_auth_cookie_secure", False)
     monkeypatch.setattr(settings_module.settings, "app_auth_csrf_protection", True)
     session_id = "sess-auth-content"

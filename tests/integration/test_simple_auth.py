@@ -59,6 +59,11 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
 def enabled_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     LOGIN_FAILURES.clear()
     monkeypatch.setattr(settings_module.settings, "app_auth_password", "test-password")
+    monkeypatch.setattr(
+        settings_module.settings,
+        "app_auth_password_user_fallback_enabled",
+        True,
+    )
     monkeypatch.setattr(settings_module.settings, "app_auth_session_ttl_seconds", 3600)
     monkeypatch.setattr(settings_module.settings, "app_auth_idle_timeout_seconds", 3600)
     monkeypatch.setattr(settings_module.settings, "app_auth_cookie_secure", False)
@@ -106,7 +111,11 @@ def test_login_sets_cookie_and_allows_business_api(
     )
 
     assert response.status_code == 200
-    assert response.json() == {"authenticated": True, "expires_in": 3600}
+    assert response.json() == {
+        "authenticated": True,
+        "expires_in": 3600,
+        "history_namespace": "local-dev",
+    }
     cookie_header = response.headers["set-cookie"]
     assert settings_module.settings.app_auth_cookie_name in cookie_header
     assert "HttpOnly" in cookie_header
@@ -214,7 +223,11 @@ def test_me_reports_cookie_session_status(
     client: TestClient,
     enabled_auth: None,
 ) -> None:
-    assert client.get("/v1/auth/me").json() == {"authenticated": False, "expires_at": None}
+    assert client.get("/v1/auth/me").json() == {
+        "authenticated": False,
+        "expires_at": None,
+        "history_namespace": None,
+    }
 
     login(client)
     response = client.get("/v1/auth/me")
@@ -340,7 +353,11 @@ def test_auth_is_disabled_without_password(client: TestClient) -> None:
     response = client.post("/v1/sessions", json={"declared_family": "f1"})
 
     assert response.status_code == 201
-    assert client.get("/v1/auth/me").json() == {"authenticated": True, "expires_at": None}
+    assert client.get("/v1/auth/me").json() == {
+        "authenticated": True,
+        "expires_at": None,
+        "history_namespace": None,
+    }
 
 
 def test_debug_fill_is_disabled_by_default(

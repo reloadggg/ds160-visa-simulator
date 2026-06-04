@@ -100,6 +100,32 @@ def test_admin_key_quota_and_session_ownership_flow(client: TestClient) -> None:
     assert disabled.status_code == 200
     assert disabled.json()["record"]["enabled"] is False
 
+    client.post("/v1/admin/logout")
+    disabled_login = client.post("/v1/auth/login", json={"password": plaintext_key})
+    assert disabled_login.status_code == 200
+    disabled_session_list = client.get("/v1/sessions")
+    assert disabled_session_list.status_code == 200
+    assert [item["session_id"] for item in disabled_session_list.json()["sessions"]] == [
+        session_id
+    ]
+    disabled_create = client.post("/v1/sessions", json={"declared_family": "f1"})
+    assert disabled_create.status_code == 403
+    assert "revoked" in disabled_create.json()["detail"]
+
+    client.post("/v1/auth/logout")
+    client.post("/v1/admin/login", json={"password": "admin-pass"})
+    increased = client.patch(
+        f"/v1/admin/access-keys/{key_id}",
+        json={"enabled": True, "usage_limit": 2},
+    )
+    assert increased.status_code == 200
+    assert increased.json()["record"]["remaining_uses"] == 1
+
+    client.post("/v1/admin/logout")
+    assert client.post("/v1/auth/login", json={"password": plaintext_key}).status_code == 200
+    resumed_create = client.post("/v1/sessions", json={"declared_family": "f1"})
+    assert resumed_create.status_code == 201
+
 
 def test_user_model_config_requires_admin_toggle(
     client: TestClient,
@@ -114,6 +140,19 @@ def test_user_model_config_requires_admin_toggle(
     )
     assert updated.status_code == 200
     assert client.get("/v1/app-config").json()["user_model_config_enabled"] is True
+
+
+def test_rag_status_is_never_public_in_app_config(client: TestClient) -> None:
+    assert client.get("/v1/app-config").json()["rag_status_user_visible"] is False
+
+    client.post("/v1/admin/login", json={"password": "admin-pass"})
+    updated = client.patch(
+        "/v1/admin/settings",
+        json={"rag_status_user_visible": True},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["rag_status_user_visible"] is True
+    assert client.get("/v1/app-config").json()["rag_status_user_visible"] is False
 
 
 def test_access_key_cannot_read_another_key_session(client: TestClient) -> None:
