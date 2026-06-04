@@ -9,7 +9,9 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.agents.user_model_config import current_user_model_config
+from app.db.session import SessionLocal
 from app.integrations.openai_compat_headers import openai_compat_default_headers
+from app.services.admin_config_service import AdminConfigService
 from app.services.interviewer_prompt_registry import InterviewerPromptRegistry
 from app.services.runtime_policies import RuntimePolicyRegistry
 
@@ -60,9 +62,7 @@ class AgentModelFactory:
         ):
             return None, runtime
 
-        user_config = current_user_model_config()
-        api_key = user_config.api_key if user_config is not None else os.getenv("OPENAI_API_KEY")
-        base_url = user_config.base_url if user_config is not None else os.getenv("OPENAI_BASE_URL")
+        api_key, base_url, _source = _resolve_effective_client_config()
         provider = OpenAIProvider(
             openai_client=AsyncOpenAI(
                 api_key=api_key,
@@ -111,9 +111,16 @@ class AgentModelFactory:
             return runtime
 
         user_config = current_user_model_config()
-        api_key = user_config.api_key if user_config is not None else os.getenv("OPENAI_API_KEY")
-        base_url = user_config.base_url if user_config is not None else os.getenv("OPENAI_BASE_URL")
-        if user_config is not None:
+        admin_config = _admin_model_config()
+        api_key, base_url, config_source = _resolve_effective_client_config(
+            user_config=user_config,
+            admin_config=admin_config,
+        )
+        if admin_config.source == "admin" and admin_config.model:
+            runtime["model"] = admin_config.model
+            runtime["provider"] = "openai_compatible"
+            runtime["admin_model_configured"] = True
+        elif config_source == "user" and user_config is not None:
             runtime["model"] = user_config.model
             runtime["provider"] = "openai_compatible"
             runtime["user_model_configured"] = True
@@ -121,10 +128,10 @@ class AgentModelFactory:
             env_var
             for env_var, value in (
                 ("USER_MODEL_API_KEY", api_key)
-                if user_config is not None
+                if config_source == "user"
                 else ("OPENAI_API_KEY", api_key),
                 ("USER_MODEL_BASE_URL", base_url)
-                if user_config is not None
+                if config_source == "user"
                 else ("OPENAI_BASE_URL", base_url),
             )
             if not value
@@ -150,3 +157,24 @@ class AgentModelFactory:
             module_key,
             declared_family=declared_family,
         )
+
+
+def _admin_model_config():
+    with SessionLocal() as db:
+        return AdminConfigService(db).effective_model_config()
+
+
+def _resolve_effective_client_config(
+    *,
+    user_config=None,
+    admin_config=None,
+):
+    user_config = current_user_model_config() if user_config is None else user_config
+    admin_config = _admin_model_config() if admin_config is None else admin_config
+    if admin_config.source == "admin" and admin_config.api_key and admin_config.base_url:
+        return admin_config.api_key, admin_config.base_url, "admin"
+    if admin_config.api_key and admin_config.base_url:
+        return admin_config.api_key, admin_config.base_url, "env"
+    if user_config is not None:
+        return user_config.api_key, user_config.base_url, "user"
+    return admin_config.api_key or os.getenv("OPENAI_API_KEY"), admin_config.base_url or os.getenv("OPENAI_BASE_URL"), "env"

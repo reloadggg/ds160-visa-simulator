@@ -98,6 +98,10 @@ interface SettingsPanelProps {
   onImportMaterialPackage: (packageId: string) => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
+  showGithub?: boolean
+  showUserModelConfig?: boolean
+  showRagStatus?: boolean
+  showDebugTools?: boolean
 }
 
 export function SettingsPanel({
@@ -132,6 +136,10 @@ export function SettingsPanel({
   onImportMaterialPackage,
   onResetCurrentSession,
   onClearHistory,
+  showGithub = true,
+  showUserModelConfig = true,
+  showRagStatus = true,
+  showDebugTools = true,
 }: SettingsPanelProps) {
   const ragFileInputRef = useRef<HTMLInputElement | null>(null)
   const [ragUploadFile, setRagUploadFile] = useState<File | null>(null)
@@ -273,7 +281,7 @@ export function SettingsPanel({
           </CardContent>
         </Card>
 
-        <Card className="py-4">
+        {showRagStatus ? <Card className="py-4">
           <CardHeader className="px-5 pb-3">
             <CardTitle className="text-base">知识库 / RAG 状态</CardTitle>
           </CardHeader>
@@ -283,7 +291,7 @@ export function SettingsPanel({
                 <div>
                   <div className="text-sm font-medium text-foreground">服务端知识库</div>
                   <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                    RAG 使用后端 SiliconFlow 与 Chroma 配置，不使用前端自带模型 API Key。
+                    RAG 使用后端通用知识库和向量检索配置，不使用前端自带模型 API Key。
                   </div>
                 </div>
                 <Badge variant={ragStatus?.ready ? "default" : "outline"}>
@@ -446,9 +454,9 @@ export function SettingsPanel({
               </div>
             ) : null}
           </CardContent>
-        </Card>
+        </Card> : null}
 
-        <Card className="py-4">
+        {showUserModelConfig ? <Card className="py-4">
           <CardHeader className="px-5 pb-3">
             <CardTitle className="text-base">自带模型配置</CardTitle>
           </CardHeader>
@@ -554,7 +562,7 @@ export function SettingsPanel({
               </div>
             ) : null}
           </CardContent>
-        </Card>
+        </Card> : null}
 
         <Card className="py-4">
           <CardHeader className="px-5 pb-3">
@@ -587,6 +595,7 @@ export function SettingsPanel({
               <Camera className="h-4 w-4" />
               导出完整会话长截图
             </Button>
+            {showDebugTools ? (
             <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -740,6 +749,7 @@ export function SettingsPanel({
                 ))}
               </div>
             </div>
+            ) : null}
             <Button
               variant="outline"
               className="w-full justify-start"
@@ -786,7 +796,7 @@ export function SettingsPanel({
           </CardContent>
         </Card>
 
-        <Card className="py-4">
+        {showGithub ? <Card className="py-4">
           <CardHeader className="px-5 pb-3">
             <CardTitle className="text-base">项目信息</CardTitle>
           </CardHeader>
@@ -808,7 +818,7 @@ export function SettingsPanel({
               <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
             </a>
           </CardContent>
-        </Card>
+        </Card> : null}
       </div>
     </ScrollArea>
   )

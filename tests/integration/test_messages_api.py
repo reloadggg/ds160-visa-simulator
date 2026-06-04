@@ -11,7 +11,12 @@ import fitz
 
 from app.db.base import Base
 from app.db.evidence_models import EvidenceItemRecord
-from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
+from app.db.models import (
+    AdminSettingRecord,
+    DocumentRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.db.session import get_db
 from app.domain.contracts import (
     ApplicantProfile,
@@ -79,6 +84,17 @@ def parse_sse_events(body: str) -> list[tuple[str, dict]]:
         if event_name is not None and isinstance(event_data, dict):
             events.append((event_name, event_data))
     return events
+
+
+def enable_admin_user_model_config(db_session_factory) -> None:
+    with db_session_factory() as db:
+        db.merge(
+            AdminSettingRecord(
+                setting_key="demo",
+                value_json={"user_model_config_enabled": True},
+            )
+        )
+        db.commit()
 
 
 @pytest.fixture()
@@ -735,7 +751,7 @@ def test_messages_apply_user_model_config_for_request_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_configs = []
-    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    enable_admin_user_model_config(db_session_factory)
 
     def fake_run_turn(self, record, message_text: str) -> dict:
         captured_configs.append(current_user_model_config())
@@ -909,9 +925,10 @@ def test_messages_stream_model_error_exposes_public_cause(
 
 def test_messages_stream_requires_switch_for_user_model_config(
     client: TestClient,
+    db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    enable_admin_user_model_config(db_session_factory)
     monkeypatch.setattr(settings_module.settings, "allow_user_model_streaming", False)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
@@ -938,7 +955,7 @@ def test_messages_stream_emits_final_payload_contract(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    enable_admin_user_model_config(db_session_factory)
     monkeypatch.setattr(settings_module.settings, "allow_user_model_streaming", True)
 
     def fake_run_turn(self, record, message_text: str) -> dict:

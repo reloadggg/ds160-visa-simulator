@@ -3,14 +3,13 @@ import json
 from queue import Empty, Queue
 from threading import Thread
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.core import settings as settings_module
 from app.core.visa_families import validate_declared_family
 from app.db.session import get_db, session_factory_from_session
-from app.core.dependencies import get_session_repo
+from app.core.dependencies import get_session_repo, require_session_access
 from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
 from app.services.debug_material_bundle_service import DebugMaterialBundleService
@@ -20,7 +19,9 @@ from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotServ
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import SessionTurnRecord
+from app.db.models import SessionRecord, SessionTurnRecord
+from app.services.access_key_service import AccessKeyService
+from app.services.admin_config_service import AdminConfigService
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -40,13 +41,19 @@ class DebugMaterialBundleRequest(BaseModel):
     generation_mode: str = "ai_if_available"
 
 
-def _runtime_debug_enabled() -> bool:
-    return RuntimeDebugSnapshotService.debug_enabled()
+def _runtime_debug_enabled(db: Session) -> bool:
+    return AdminConfigService(db).debug_console_enabled()
+
+
+def _debug_material_enabled(db: Session) -> bool:
+    return AdminConfigService(db).debug_material_enabled()
 
 
 @router.post("", status_code=201)
 def create_session(
     payload: CreateSessionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
     repo: SessionRepository = Depends(get_session_repo),
 ) -> dict:
     try:
@@ -59,6 +66,21 @@ def create_session(
         declared_family=declared_family,
         gate_status_json=gate_status,
     )
+    # Middleware does not currently attach the record, so read from cookie-bound
+    # auth state only when the user logged in with an access key.
+    from app.core.simple_auth import get_current_auth_session
+
+    current_auth = get_current_auth_session(request, db, touch=False)
+    if current_auth is not None and current_auth.access_key_id:
+        try:
+            AccessKeyService(db).consume_session_quota(
+                key_id=current_auth.access_key_id,
+                session_id=record.session_id,
+            )
+        except PermissionError as exc:
+            db.delete(record)
+            db.commit()
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {
         "session_id": record.session_id,
         "phase_state": record.phase_state,
@@ -67,9 +89,49 @@ def create_session(
     }
 
 
+@router.get("")
+def list_sessions(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.core.simple_auth import get_current_admin_session, get_current_auth_session
+    from app.db.models import AccessKeySessionRecord
+
+    if get_current_admin_session(request, db, touch=False) is not None:
+        records = db.scalars(select(SessionRecord).order_by(SessionRecord.session_id.desc())).all()
+    else:
+        current_auth = get_current_auth_session(request, db, touch=False)
+        if current_auth is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+        if current_auth.access_key_id:
+            records = db.scalars(
+                select(SessionRecord)
+                .join(
+                    AccessKeySessionRecord,
+                    AccessKeySessionRecord.session_id == SessionRecord.session_id,
+                )
+                .where(AccessKeySessionRecord.key_id == current_auth.access_key_id)
+                .order_by(AccessKeySessionRecord.created_at.desc())
+            ).all()
+        else:
+            records = []
+    return {
+        "sessions": [
+            {
+                "session_id": record.session_id,
+                "phase_state": record.phase_state,
+                "declared_family": record.declared_family,
+                "current_governor_decision": record.current_governor_decision,
+            }
+            for record in records
+        ]
+    }
+
+
 @router.get("/{session_id}/required-package")
 def get_required_package(
     session_id: str,
+    _: None = Depends(require_session_access),
     repo: SessionRepository = Depends(get_session_repo),
 ) -> dict:
     record = repo.get(session_id)
@@ -92,9 +154,10 @@ def get_required_package(
 def debug_fill_current_gap(
     session_id: str,
     payload: DebugFillCurrentGapRequest | None = None,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
-    if not settings_module.settings.allow_debug_fill:
+    if not _debug_material_enabled(db):
         raise HTTPException(status_code=403, detail="debug fill is disabled")
     try:
         scenario = payload.scenario if payload is not None else "normal"
@@ -114,9 +177,10 @@ def debug_fill_current_gap(
 def debug_create_material_bundle(
     session_id: str,
     payload: DebugMaterialBundleRequest,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
-    if not settings_module.settings.allow_debug_fill:
+    if not _debug_material_enabled(db):
         raise HTTPException(status_code=403, detail="debug fill is disabled")
     try:
         return DebugMaterialBundleService(db).create_bundle(
@@ -145,9 +209,10 @@ def _sse_event(event: str, payload: dict) -> str:
 def debug_create_material_bundle_stream(
     session_id: str,
     payload: DebugMaterialBundleRequest,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
-    if not settings_module.settings.allow_debug_fill:
+    if not _debug_material_enabled(db):
         raise HTTPException(status_code=403, detail="debug fill is disabled")
     stream_session_factory = session_factory_from_session(db)
 
@@ -220,9 +285,10 @@ def debug_create_material_bundle_stream(
 @router.get("/{session_id}/debug/runtime")
 def get_runtime_debug_snapshot(
     session_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
-    if not _runtime_debug_enabled():
+    if not _runtime_debug_enabled(db):
         raise HTTPException(status_code=403, detail="runtime debug is disabled")
     try:
         return RuntimeDebugSnapshotService(db).build(session_id)
@@ -234,6 +300,7 @@ def get_runtime_debug_snapshot(
 def get_runtime_trace(
     session_id: str,
     run_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     statement = (

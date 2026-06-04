@@ -1,14 +1,56 @@
+from collections.abc import Generator
+
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import settings as settings_module
+from app.db.base import Base
+from app.db.models import AdminSettingRecord
+from app.db.session import get_db
 from app.main import app
 
 
 @pytest.fixture()
-def client() -> TestClient:
+def db_session_factory(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'model-config-api.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+    try:
+        yield testing_session_local
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.fixture()
+def client(db_session_factory) -> Generator[TestClient, None, None]:
+    def override_get_db() -> Generator[Session, None, None]:
+        db = db_session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
-        return test_client
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+def enable_admin_user_model_config(db_session_factory) -> None:
+    with db_session_factory() as db:
+        db.merge(
+            AdminSettingRecord(
+                setting_key="demo",
+                value_json={"user_model_config_enabled": True},
+            )
+        )
+        db.commit()
 
 
 def test_model_list_rejects_when_user_model_config_disabled(client: TestClient) -> None:
@@ -26,10 +68,11 @@ def test_model_list_rejects_when_user_model_config_disabled(client: TestClient) 
 
 def test_model_list_proxies_openai_compatible_models(
     client: TestClient,
+    db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requested: dict[str, object] = {}
-    monkeypatch.setattr(settings_module.settings, "allow_user_model_config", True)
+    enable_admin_user_model_config(db_session_factory)
 
     class FakeModelListResponse:
         def model_dump(self, *, mode: str):

@@ -412,12 +412,24 @@ class MessageService:
             raise
 
     def _is_refusal_closed(self, record) -> bool:
+        if record.phase_state in {"completed", "session_closed"}:
+            return True
         if record.current_governor_decision == "simulated_refusal":
             return True
-        interviewer_state = record.interviewer_state_json or {}
-        if interviewer_state.get("status") == "simulated_refusal":
+        if record.current_governor_decision in {"passed", "not_passed", "refused"}:
             return True
-        return record.phase_state == "session_closed"
+        interviewer_state = record.interviewer_state_json or {}
+        if interviewer_state.get("status") in {
+            "simulated_refusal",
+            "passed",
+            "not_passed",
+            "refused",
+            "completed",
+        }:
+            return True
+        if interviewer_state.get("interview_result") in {"passed", "not_passed", "refused"}:
+            return True
+        return False
 
     def _select_public_runtime(self, session_id: str) -> PublicRuntimeMode:
         if settings.agent_runtime in {"graph", "graph_shadow", "native_interviewer"}:
@@ -676,6 +688,10 @@ class MessageService:
         reason = current_focus.get("reason")
         if isinstance(reason, str) and reason.strip():
             return f"{reason.strip()} 当前会话已结束，不能继续提交新的面谈消息。"
+        if record.phase_state == "completed":
+            return "本轮面签已结束，不能继续提交新的面谈消息。"
+        if record.current_governor_decision in {"passed", "not_passed", "refused"}:
+            return "本轮面签已有最终结果，不能继续提交新的面谈消息。"
         return "当前会话已收到模拟拒签结果，不能继续提交新的面谈消息。"
 
     def _append_assistant_turn(

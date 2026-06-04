@@ -27,7 +27,14 @@ def login(
 ) -> LoginResponse:
     auth_session = authenticate_password(payload.password, request, db)
     set_auth_cookie(response, auth_session.session_id, auth_session.expires_at)
-    return LoginResponse(expires_in=settings.app_auth_session_ttl_seconds)
+    return LoginResponse(
+        expires_in=settings.app_auth_session_ttl_seconds,
+        history_namespace=(
+            f"key_{auth_session.access_key_id}"
+            if auth_session.access_key_id
+            else "local-dev"
+        ),
+    )
 
 
 @router.get("/me", response_model=AuthStatusResponse)
@@ -43,6 +50,11 @@ def me(
     return AuthStatusResponse(
         authenticated=True,
         expires_at=record.expires_at.isoformat() + "Z",
+        history_namespace=(
+            f"key_{record.access_key_id}"
+            if record.access_key_id
+            else "local-dev"
+        ),
     )
 
 

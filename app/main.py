@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from app.api.routers.admin import router as admin_router
+from app.api.routers.app_config import router as app_config_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.files import router as files_router
 from app.api.routers.material_packages import router as material_packages_router
@@ -45,6 +47,12 @@ DOCUMENT_COLUMN_DEFS = {
 }
 SESSION_TURN_COLUMN_DEFS = {
     "turn_index": ("INTEGER", "0"),
+}
+AUTH_SESSION_COLUMN_DEFS = {
+    "session_kind": ("VARCHAR(16)", "'user'"),
+}
+AUTH_SESSION_NULLABLE_COLUMN_DEFS = {
+    "access_key_id": "VARCHAR(32)",
 }
 SESSION_TURN_ORDER_INDEX_NAME = "ux_session_turns_session_id_turn_index"
 SESSION_TURN_CLIENT_MESSAGE_INDEX_NAME = "ux_session_turns_session_id_client_message_id"
@@ -97,11 +105,56 @@ def _bootstrap_table_columns(
             )
 
 
+def _bootstrap_nullable_table_columns(
+    db_engine: Engine,
+    *,
+    table_name: str,
+    column_defs: dict[str, str],
+) -> None:
+    if db_engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(db_engine)
+    if table_name not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+    missing_columns = [
+        column_name
+        for column_name in column_defs
+        if column_name not in existing_columns
+    ]
+    if not missing_columns:
+        return
+
+    with db_engine.begin() as connection:
+        for column_name in missing_columns:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {table_name} "
+                    f"ADD COLUMN {column_name} {column_defs[column_name]}"
+                )
+            )
+
+
 def bootstrap_sessions_table(db_engine: Engine) -> None:
     _bootstrap_table_columns(
         db_engine,
         table_name="sessions",
         column_defs=SESSION_RUNTIME_COLUMN_DEFS,
+    )
+
+
+def bootstrap_auth_sessions_table(db_engine: Engine) -> None:
+    _bootstrap_table_columns(
+        db_engine,
+        table_name="auth_sessions",
+        column_defs=AUTH_SESSION_COLUMN_DEFS,
+    )
+    _bootstrap_nullable_table_columns(
+        db_engine,
+        table_name="auth_sessions",
+        column_defs=AUTH_SESSION_NULLABLE_COLUMN_DEFS,
     )
 
 
@@ -288,10 +341,13 @@ app.add_middleware(
 app.middleware("http")(simple_auth_middleware)
 bootstrap_sqlite_runtime(engine)
 Base.metadata.create_all(bind=engine)
+bootstrap_auth_sessions_table(engine)
 bootstrap_sessions_table(engine)
 bootstrap_documents_table(engine)
 bootstrap_session_turns_table(engine)
 app.include_router(sessions_router)
+app.include_router(app_config_router)
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(files_router)
 app.include_router(material_packages_router)

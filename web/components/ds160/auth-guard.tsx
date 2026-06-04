@@ -107,7 +107,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
                 <div>
                   <h2 className="text-2xl font-semibold tracking-[-0.03em] text-slate-950 sm:text-3xl">进入测试环境</h2>
                   <p className="mt-2 text-sm leading-6 text-slate-500">
-                    请输入访问密码。验证通过后会进入 DS-160 面签工作台。
+                    请输入后台发放的授权 Key。验证通过后会进入 DS-160 面签工作台。
                   </p>
                 </div>
               </div>
@@ -140,13 +140,13 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
                 <div className="space-y-2">
                   <Label htmlFor="auth-password" className="text-sm font-medium text-slate-700">
-                    访问密码
+                    授权 Key
                   </Label>
                   <Input
                     id="auth-password"
                     name="password"
                     type="password"
-                    placeholder="agent2-..."
+                    placeholder="ds160_..."
                     autoComplete="current-password"
                     autoFocus
                     required
@@ -163,13 +163,13 @@ export function AuthGuard({ children }: AuthGuardProps) {
                   disabled={isLoggingIn}
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 text-base font-semibold text-white shadow-lg shadow-slate-950/18 transition-all hover:-translate-y-0.5 hover:bg-slate-800 disabled:opacity-50 sm:h-13"
                 >
-                  {isLoggingIn ? "正在验证..." : "确认进入"}
+                  {isLoggingIn ? "正在验证..." : "使用授权 Key 进入"}
                   <ArrowRight className="h-4 w-4" />
                 </button>
               </form>
 
               <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-xs leading-5 text-slate-500">
-                这是临时公网测试入口。不要公开分享链接或密码；如页面无响应，请刷新后重试。
+                这是临时公网 demo 入口。授权 Key 只用于当前演示额度；如页面无响应，请刷新后重试。
               </div>
             </div>
           </div>

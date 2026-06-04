@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
+from sqlalchemy.orm import Session
 
 from app.agents.user_model_config import UserModelConfig, normalize_openai_base_url
-from app.core.settings import settings
+from app.db.session import SessionLocal
+from app.services.admin_config_service import AdminConfigService
 
 
 class UserModelConfigPayload(BaseModel):
@@ -25,15 +27,23 @@ class UserModelConfigPayload(BaseModel):
         return stripped
 
 
-def ensure_user_model_config_enabled() -> None:
-    if not settings.allow_user_model_config:
+def ensure_user_model_config_enabled(db: Session | None = None) -> None:
+    if db is not None:
+        admin_enabled = AdminConfigService(db).user_model_config_enabled()
+    else:
+        with SessionLocal() as local_db:
+            admin_enabled = AdminConfigService(local_db).user_model_config_enabled()
+    if not admin_enabled:
         raise PermissionError("当前部署未启用用户自定义模型配置。")
 
 
-def to_runtime_config(payload: UserModelConfigPayload | None) -> UserModelConfig | None:
+def to_runtime_config(
+    payload: UserModelConfigPayload | None,
+    db: Session | None = None,
+) -> UserModelConfig | None:
     if payload is None:
         return None
-    ensure_user_model_config_enabled()
+    ensure_user_model_config_enabled(db)
     return UserModelConfig(
         base_url=payload.base_url,
         api_key=payload.api_key.get_secret_value(),

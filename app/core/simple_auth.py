@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 from app.core.settings import settings
 from app.db.models import AuthSessionRecord
 from app.db.session import SessionLocal
+from app.services.access_key_service import AccessKeyService
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
@@ -24,6 +25,9 @@ BASE_PUBLIC_PATHS = {
     "/version",
     "/v1/auth/login",
     "/v1/auth/me",
+    "/v1/admin/login",
+    "/v1/admin/me",
+    "/v1/app-config",
 }
 DOC_PATHS = {
     "/openapi.json",
@@ -41,17 +45,21 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     authenticated: bool = True
     expires_in: int
+    history_namespace: str = "local-dev"
 
 
 class AuthStatusResponse(BaseModel):
     authenticated: bool
     expires_at: str | None = None
+    history_namespace: str | None = None
 
 
 @dataclass(frozen=True)
 class CreatedAuthSession:
     session_id: str
     expires_at: datetime
+    session_kind: str = "user"
+    access_key_id: str | None = None
 
 
 def _utcnow() -> datetime:
@@ -118,21 +126,54 @@ def create_auth_session(
     request: Request,
     *,
     now: datetime | None = None,
+    session_kind: str = "user",
+    access_key_id: str | None = None,
+    ttl_seconds: int | None = None,
 ) -> CreatedAuthSession:
     current_time = now or _utcnow()
+    effective_ttl = ttl_seconds or settings.app_auth_session_ttl_seconds
     session_id = secrets.token_urlsafe(32)
     user_agent_hash, ip_hash = _request_fingerprint(request)
     record = AuthSessionRecord(
         session_id_hash=_hash_secret(session_id),
+        session_kind=session_kind,
+        access_key_id=access_key_id,
         created_at=current_time,
         last_seen_at=current_time,
-        expires_at=current_time + timedelta(seconds=settings.app_auth_session_ttl_seconds),
+        expires_at=current_time + timedelta(seconds=effective_ttl),
         user_agent_hash=user_agent_hash,
         ip_hash=ip_hash,
     )
     db.add(record)
     db.commit()
-    return CreatedAuthSession(session_id=session_id, expires_at=record.expires_at)
+    return CreatedAuthSession(
+        session_id=session_id,
+        expires_at=record.expires_at,
+        session_kind=session_kind,
+        access_key_id=access_key_id,
+    )
+
+
+def authenticate_access_key(
+    access_key: str,
+    request: Request,
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> CreatedAuthSession | None:
+    current_time = now or _utcnow()
+    _check_login_rate_limit(request, current_time)
+    record = AccessKeyService(db).lookup_login_key(access_key)
+    if record is None:
+        return None
+    _clear_login_failures(request)
+    return create_auth_session(
+        db,
+        request,
+        now=current_time,
+        session_kind="user",
+        access_key_id=record.key_id,
+    )
 
 
 def authenticate_password(
@@ -143,15 +184,22 @@ def authenticate_password(
     now: datetime | None = None,
 ) -> CreatedAuthSession:
     current_time = now or _utcnow()
+    access_key_session = authenticate_access_key(password, request, db, now=current_time)
+    if access_key_session is not None:
+        return access_key_session
+
     configured_password = settings.app_auth_password
     if not configured_password:
+        _record_login_failure(request, current_time)
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="app auth is not enabled",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid access key",
         )
 
-    _check_login_rate_limit(request, current_time)
-    if not hmac.compare_digest(password, configured_password):
+    if (
+        not settings.app_auth_password_user_fallback_enabled
+        or not hmac.compare_digest(password, configured_password)
+    ):
         _record_login_failure(request, current_time)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -168,11 +216,14 @@ def _get_auth_session(
     *,
     now: datetime | None = None,
     touch: bool = True,
+    session_kind: str | None = None,
 ) -> AuthSessionRecord | None:
     if not session_id:
         return None
     record = db.get(AuthSessionRecord, _hash_secret(session_id))
     if record is None:
+        return None
+    if session_kind is not None and record.session_kind != session_kind:
         return None
     current_time = now or _utcnow()
     if record.revoked_at is not None:
@@ -211,6 +262,23 @@ def get_current_auth_session(
         request.cookies.get(settings.app_auth_cookie_name),
         now=now,
         touch=touch,
+        session_kind="user",
+    )
+
+
+def get_current_admin_session(
+    request: Request,
+    db: Session,
+    *,
+    now: datetime | None = None,
+    touch: bool = True,
+) -> AuthSessionRecord | None:
+    return _get_auth_session(
+        db,
+        request.cookies.get(settings.admin_auth_cookie_name),
+        now=now,
+        touch=touch,
+        session_kind="admin",
     )
 
 
@@ -219,6 +287,20 @@ def revoke_current_auth_session(request: Request, db: Session) -> None:
         db,
         request.cookies.get(settings.app_auth_cookie_name),
         touch=False,
+    )
+    if record is None:
+        return
+    record.revoked_at = _utcnow()
+    db.add(record)
+    db.commit()
+
+
+def revoke_current_admin_session(request: Request, db: Session) -> None:
+    record = _get_auth_session(
+        db,
+        request.cookies.get(settings.admin_auth_cookie_name),
+        touch=False,
+        session_kind="admin",
     )
     if record is None:
         return
@@ -241,9 +323,31 @@ def set_auth_cookie(response: Response, session_id: str, expires_at: datetime) -
     )
 
 
+def set_admin_auth_cookie(response: Response, session_id: str, expires_at: datetime) -> None:
+    response.set_cookie(
+        key=settings.admin_auth_cookie_name,
+        value=session_id,
+        max_age=settings.admin_auth_session_ttl_seconds,
+        expires=expires_at.replace(tzinfo=timezone.utc),
+        httponly=True,
+        secure=settings.app_auth_cookie_secure,
+        samesite=settings.app_auth_cookie_samesite,
+        domain=settings.app_auth_cookie_domain,
+        path="/",
+    )
+
+
 def clear_auth_cookie(response: Response) -> None:
     response.delete_cookie(
         key=settings.app_auth_cookie_name,
+        domain=settings.app_auth_cookie_domain,
+        path="/",
+    )
+
+
+def clear_admin_auth_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.admin_auth_cookie_name,
         domain=settings.app_auth_cookie_domain,
         path="/",
     )
@@ -308,7 +412,7 @@ def _csrf_response() -> JSONResponse:
 
 
 async def simple_auth_middleware(request: Request, call_next) -> Response:
-    if not settings.app_auth_enabled or _is_public_request(request):
+    if _is_public_request(request):
         return await call_next(request)
 
     if _machine_api_authorized(request):
@@ -316,6 +420,19 @@ async def simple_auth_middleware(request: Request, call_next) -> Response:
 
     session_factory = getattr(request.app.state, "auth_session_factory", None) or SessionLocal
     with session_factory() as db:
+        if request.url.path.startswith("/v1/admin"):
+            if get_current_admin_session(request, db) is None:
+                return _unauthorized_response()
+            if (
+                settings.app_auth_csrf_protection
+                and request.method not in SAFE_METHODS
+                and not _origin_allowed(request)
+            ):
+                return _csrf_response()
+            return await call_next(request)
+
+        if not settings.app_auth_enabled:
+            return await call_next(request)
         if get_current_auth_session(request, db) is None:
             return _unauthorized_response()
 

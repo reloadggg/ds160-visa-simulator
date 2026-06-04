@@ -11,9 +11,11 @@ from sqlalchemy.orm import Session
 from app.agents.model_factory import AgentModelFactory
 from app.agents.user_model_config import current_user_model_config
 from app.core.settings import settings
+from app.db.session import SessionLocal
 from app.db.models import SessionRecord
 from app.domain.document_types import normalize_document_type
 from app.integrations.openai_compat_headers import openai_compat_default_headers
+from app.services.admin_config_service import AdminConfigService
 from app.services.runtime_errors import (
     ModelRuntimeError,
     ModelUnavailableError,
@@ -279,17 +281,24 @@ class OpenAIChatCompletionsMaterialBundleRunner:
 
     def _build_client(self, runtime: dict[str, Any]) -> OpenAI:
         user_config = current_user_model_config()
-        api_key = (
-            user_config.api_key
-            if user_config is not None
-            else os.getenv("OPENAI_API_KEY")
-        )
-        base_url = (
-            user_config.base_url
-            if user_config is not None
-            else os.getenv("OPENAI_BASE_URL")
-        )
-        model_name = self._string_or_none(runtime.get("model"))
+        with SessionLocal() as db:
+            admin_config = AdminConfigService(db).effective_model_config()
+        if admin_config.source == "admin":
+            api_key = admin_config.api_key
+            base_url = admin_config.base_url
+            model_name = admin_config.model
+        elif admin_config.api_key and admin_config.base_url:
+            api_key = admin_config.api_key
+            base_url = admin_config.base_url
+            model_name = self._string_or_none(runtime.get("model"))
+        elif user_config is not None:
+            api_key = user_config.api_key
+            base_url = user_config.base_url
+            model_name = user_config.model
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+            base_url = os.getenv("OPENAI_BASE_URL")
+            model_name = self._string_or_none(runtime.get("model"))
         if not api_key or not base_url or not model_name:
             raise ModelUnavailableError(
                 detail=runtime.get("model_unavailable_detail")

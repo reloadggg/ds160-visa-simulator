@@ -88,12 +88,52 @@ class AuthSessionRecord(Base):
     __tablename__ = "auth_sessions"
 
     session_id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_kind: Mapped[str] = mapped_column(String(16), default="user", index=True)
+    access_key_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     user_agent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AccessKeyRecord(Base):
+    __tablename__ = "access_keys"
+
+    key_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(160), default="")
+    usage_limit: Mapped[int] = mapped_column(Integer, default=1)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utc_now_naive)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    created_by_session_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AccessKeySessionRecord(Base):
+    __tablename__ = "access_key_sessions"
+    __table_args__ = (
+        Index("ux_access_key_sessions_session_id", "session_id", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key_id: Mapped[str] = mapped_column(String(32), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utc_now_naive)
+
+
+class AdminSettingRecord(Base):
+    __tablename__ = "admin_settings"
+
+    setting_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        default=utc_now_naive,
+    )
 
 
 class CaseMemorySnapshotRecord(Base):

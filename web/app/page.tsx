@@ -17,7 +17,24 @@ import { AuthGuard } from "@/components/ds160/auth-guard"
 import { useAuth } from "@/hooks/use-auth"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
 import { APP_VERSION_LABEL } from "@/lib/app-version"
-import type { SessionHistoryEntry } from "@/lib/api/types"
+import { getAppConfig } from "@/lib/api/client"
+import type { AppConfig, SessionHistoryEntry, UserModelConfig } from "@/lib/api/types"
+
+const DEFAULT_APP_CONFIG: AppConfig = {
+  show_github_link: false,
+  debug_console_enabled: false,
+  debug_material_enabled: false,
+  user_model_config_enabled: false,
+  rag_status_user_visible: false,
+}
+
+const DISABLED_USER_MODEL_CONFIG: UserModelConfig = {
+  enabled: false,
+  streamingEnabled: false,
+  baseUrl: "",
+  apiKey: "",
+  model: "",
+}
 
 export default function DS160Workbench() {
   return (
@@ -29,13 +46,14 @@ export default function DS160Workbench() {
 
 function Workbench() {
   const [activeNavItem, setActiveNavItem] = useState("workbench")
-  const [activeTab, setActiveTab] = useState("simulation")
+  const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG)
   const { userProfile } = useAuth()
 
   const {
     apiBaseUrl,
     mockMode,
     sessionId,
+    isInterviewTerminal,
     visaType,
     isInitializing,
     messages,
@@ -55,7 +73,6 @@ function Workbench() {
     handleReportModalOpenChange,
     handleGenerateInterviewReview,
     isPaused,
-    sessionTimeLabel,
     initError,
     uploadedMaterials,
     sessionHistory,
@@ -104,34 +121,63 @@ function Workbench() {
     handleRestoreSession,
   } = useSessionWorkbench()
 
+  useEffect(() => {
+    let cancelled = false
+    getAppConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setAppConfig(config)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAppConfig(DEFAULT_APP_CONFIG)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const effectiveActiveNavItem =
+    activeNavItem === "debug" && !appConfig.debug_console_enabled
+      ? "workbench"
+      : activeNavItem
+
+  useEffect(() => {
+    if (!appConfig.user_model_config_enabled) {
+      handleUserModelConfigChange(DISABLED_USER_MODEL_CONFIG)
+    }
+  }, [appConfig.user_model_config_enabled, handleUserModelConfigChange])
+
   const onRestoreSession = (entry: SessionHistoryEntry) => {
     handleRestoreSession(entry)
     setActiveNavItem("workbench")
   }
-
   useEffect(() => {
-    if (activeNavItem !== "debug" || !sessionId) {
+    if (effectiveActiveNavItem !== "debug" || !sessionId) {
       return
     }
     void refreshRuntimeDebugSnapshot(sessionId)
-  }, [activeNavItem, refreshRuntimeDebugSnapshot, sessionId])
+  }, [effectiveActiveNavItem, refreshRuntimeDebugSnapshot, sessionId])
 
   const renderHeader = () => {
     if (sessionId) {
       return (
         <TopBar
           visaType={visaType || "F-1"}
-          sessionTime={sessionTimeLabel}
           isPaused={isPaused}
-          activeTab={activeTab}
           userName={userProfile?.displayName ?? "User"}
           userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
           mockMode={mockMode}
-          onTabChange={setActiveTab}
           onPause={handlePause}
           onEndSession={handleEndSession}
           onReset={handleReset}
-          onDebugMaterialBundleScenario={handleDebugMaterialBundleScenario}
+          onDebugMaterialBundleScenario={
+            appConfig.debug_material_enabled
+              ? handleDebugMaterialBundleScenario
+              : undefined
+          }
           isDebugBundleGenerating={isDebugBundleGenerating}
           onExportConversationImage={handleExportConversationImage}
         />
@@ -139,11 +185,11 @@ function Workbench() {
     }
 
     return (
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-border bg-card px-4 md:px-6">
+      <header className="m-3 flex h-16 shrink-0 items-center justify-between rounded-[28px] border border-white/70 bg-white/60 px-4 shadow-lg shadow-blue-950/5 backdrop-blur-2xl md:mx-4 md:px-6">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <h2 className="truncate text-base font-semibold text-foreground md:text-lg">DS-160 面签工作台</h2>
-            <span className="shrink-0 rounded-md border border-border bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+            <span className="shrink-0 rounded-xl border border-blue-100 bg-blue-50/70 px-2 py-0.5 font-mono text-[11px] text-blue-700">
               {APP_VERSION_LABEL}
             </span>
           </div>
@@ -178,7 +224,7 @@ function Workbench() {
         <main
           className={cn(
             "flex min-h-0 min-w-0 flex-1 flex-col",
-            activeTab === "coach" ? "p-2 md:p-3" : "p-2 md:p-4",
+            "p-2 md:p-4",
           )}
         >
           <ChatPanel
@@ -189,6 +235,7 @@ function Workbench() {
             userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
             isSending={isSending}
             isUploading={isUploading}
+            isSessionEnded={isInterviewTerminal}
             error={chatError}
             composerCommand={composerCommand}
             onComposerCommandHandled={handleComposerCommandHandled}
@@ -200,7 +247,7 @@ function Workbench() {
           report={userReport}
           isLoading={isLoadingReport}
           error={reportError}
-          mode={activeTab === "coach" ? "coach" : "simulation"}
+          mode="coach"
           materials={uploadedMaterials}
           onViewDetails={handleViewDetails}
           onViewAllMaterials={() => setActiveNavItem("materials")}
@@ -212,32 +259,37 @@ function Workbench() {
 
   return (
     <>
-      <div className="relative flex h-[100dvh] overflow-hidden bg-background">
+      <div className="relative flex h-[100dvh] overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(37,99,235,.14),transparent_32%),radial-gradient(circle_at_85%_0%,rgba(14,165,233,.12),transparent_28%),linear-gradient(135deg,#f8fbff,#edf4ff)]">
         <div className="absolute left-4 top-4 z-50 hidden items-center gap-2 lg:flex">
           <div className="h-3 w-3 rounded-full border border-[#E0443E] bg-[#FF5F57]" />
           <div className="h-3 w-3 rounded-full border border-[#DEA123] bg-[#FEBC2E]" />
           <div className="h-3 w-3 rounded-full border border-[#1AAB29] bg-[#28C840]" />
         </div>
 
-        <Sidebar activeItem={activeNavItem} onItemClick={setActiveNavItem} />
+        <Sidebar
+          activeItem={effectiveActiveNavItem}
+          onItemClick={setActiveNavItem}
+          showDebug={appConfig.debug_console_enabled}
+          showGithub={appConfig.show_github_link}
+        />
 
         <div className="flex min-w-0 flex-1 flex-col">
           {renderHeader()}
           <div className="min-h-0 flex-1 overflow-y-auto pb-[calc(4.75rem+env(safe-area-inset-bottom))] lg:pb-0">
-            <div className={cn("h-full", activeNavItem === "workbench" ? "block" : "hidden")}>
+            <div className={cn("h-full", effectiveActiveNavItem === "workbench" ? "block" : "hidden")}>
               {renderWorkbench()}
             </div>
-            <div className={cn("h-full", activeNavItem === "history" ? "block" : "hidden")}>
+            <div className={cn("h-full", effectiveActiveNavItem === "history" ? "block" : "hidden")}>
               <HistoryPanel entries={sessionHistory} onRestore={onRestoreSession} />
             </div>
-            <div className={cn("h-full", activeNavItem === "materials" ? "block" : "hidden")}>
+            <div className={cn("h-full", effectiveActiveNavItem === "materials" ? "block" : "hidden")}>
               <MaterialsPanel
                 currentMaterials={uploadedMaterials}
                 historyEntries={sessionHistory}
                 currentSessionId={sessionId}
               />
             </div>
-            <div className={cn("h-full", activeNavItem === "debug" ? "block" : "hidden")}>
+            <div className={cn("h-full", effectiveActiveNavItem === "debug" && appConfig.debug_console_enabled ? "block" : "hidden")}>
               <RuntimeDebugPanel
                 sessionId={sessionId}
                 snapshot={runtimeDebugSnapshot}
@@ -249,7 +301,7 @@ function Workbench() {
                 onCopyDebugPackage={handleCopyRuntimeDebugPackage}
               />
             </div>
-            <div className={cn("h-full", activeNavItem === "settings" ? "block" : "hidden")}>
+            <div className={cn("h-full", effectiveActiveNavItem === "settings" ? "block" : "hidden")}>
               <SettingsPanel
                 mockMode={mockMode}
                 apiBaseUrl={apiBaseUrl}
@@ -282,6 +334,10 @@ function Workbench() {
                 onImportMaterialPackage={handleImportMaterialPackage}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
+                showGithub={appConfig.show_github_link}
+                showUserModelConfig={appConfig.user_model_config_enabled}
+                showRagStatus={appConfig.rag_status_user_visible}
+                showDebugTools={appConfig.debug_material_enabled}
               />
             </div>
           </div>
@@ -290,9 +346,9 @@ function Workbench() {
         {/* Mobile Bottom Navigation */}
         <nav className="fixed bottom-0 left-0 right-0 z-50 flex h-[calc(4rem+env(safe-area-inset-bottom))] items-center border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">
           <ul className="flex w-full justify-around px-2">
-            {navItems.map((item) => {
+            {navItems.filter((item) => item.id !== "debug" || appConfig.debug_console_enabled).map((item) => {
               const Icon = item.icon
-              const isActive = activeNavItem === item.id
+              const isActive = effectiveActiveNavItem === item.id
               return (
                 <li key={item.id} className="flex-1">
                   <button

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.dependencies import require_session_access
+from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.repositories.document_repo import DocumentRepository
 from app.services.case_memory_service import CaseMemoryService
@@ -8,6 +10,26 @@ from app.services.file_service import FileService, FileTooLargeError, FileUpload
 from app.services.file_service import SessionNotFoundError, UnsupportedFileTypeError
 
 router = APIRouter(prefix="/v1/sessions/{session_id}/files", tags=["files"])
+
+
+def _session_is_terminal(record: SessionRecord) -> bool:
+    if record.phase_state in {"completed", "session_closed"}:
+        return True
+    if record.current_governor_decision in {
+        "simulated_refusal",
+        "passed",
+        "not_passed",
+        "refused",
+    }:
+        return True
+    interviewer_state = record.interviewer_state_json or {}
+    return interviewer_state.get("status") in {
+        "simulated_refusal",
+        "passed",
+        "not_passed",
+        "refused",
+        "completed",
+    }
 
 
 def _case_board_refresh_payload(
@@ -55,8 +77,12 @@ async def upload_file(
     file: UploadFile = File(),
     document_type: str | None = Form(default=None),
     context_text: str | None = Form(default=None),
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
+    record = db.get(SessionRecord, session_id)
+    if record is not None and _session_is_terminal(record):
+        raise HTTPException(status_code=409, detail="本轮面签已结束，不能继续上传材料。")
     raw_bytes = await file.read()
     try:
         result = FileService(db).upload(
@@ -108,6 +134,7 @@ async def upload_file(
 def get_file_content(
     session_id: str,
     document_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> Response:
     document = DocumentRepository(db).get_document(document_id)
@@ -125,6 +152,7 @@ def get_file_content(
 def delete_file(
     session_id: str,
     document_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     document = DocumentRepository(db).get_document(document_id)

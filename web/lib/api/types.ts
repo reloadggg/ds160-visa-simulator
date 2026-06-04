@@ -748,6 +748,7 @@ export interface ComposerCommand {
 export interface AuthResponse {
   authenticated: boolean
   expires_in: number
+  history_namespace?: string
 }
 
 export interface LoginPayload {
@@ -757,6 +758,15 @@ export interface LoginPayload {
 export interface AuthStatusResponse {
   authenticated: boolean
   expires_at?: string | null
+  history_namespace?: string | null
+}
+
+export interface AppConfig {
+  show_github_link: boolean
+  debug_console_enabled: boolean
+  debug_material_enabled: boolean
+  user_model_config_enabled: boolean
+  rag_status_user_visible: boolean
 }
 
 export interface BackendSession {
@@ -764,6 +774,18 @@ export interface BackendSession {
   phase_state?: string
   current_governor_decision?: string | null
   gate_status?: BackendSessionGateStatus | null
+  declared_family?: string | null
+}
+
+export interface BackendSessionListItem {
+  session_id: string
+  phase_state?: string
+  declared_family?: string | null
+  current_governor_decision?: string | null
+}
+
+export interface BackendSessionListResponse {
+  sessions: BackendSessionListItem[]
 }
 
 export interface BackendSessionGateStatus {

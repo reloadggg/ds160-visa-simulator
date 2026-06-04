@@ -5,7 +5,6 @@ import { useMemo, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,13 +43,10 @@ import type { DebugMaterialBundleScenario, VisaFamily } from "@/lib/api/types"
 
 interface TopBarProps {
   visaType: VisaFamily
-  sessionTime: string
   isPaused: boolean
-  activeTab: string
   userName: string
   userAvatarUrl: string
   mockMode?: boolean
-  onTabChange: (tab: string) => void
   onPause: () => void
   onEndSession: () => void
   onReset: () => void
@@ -64,13 +60,10 @@ interface TopBarProps {
 
 export function TopBar({
   visaType,
-  sessionTime,
   isPaused,
-  activeTab,
   userName,
   userAvatarUrl,
   mockMode = false,
-  onTabChange,
   onPause,
   onEndSession,
   onReset,
@@ -134,27 +127,12 @@ export function TopBar({
         </div>
       </div>
 
-      {/* Center section - Tabs */}
-      <div className="hidden min-w-0 flex-1 justify-center lg:flex">
-        <Tabs value={activeTab} onValueChange={onTabChange}>
-          <TabsList className="bg-muted/50">
-            <TabsTrigger value="simulation" className="px-6">
-              模拟面签
-            </TabsTrigger>
-            <TabsTrigger value="coach" className="px-6">
-              教练视图
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+      <div className="hidden min-w-0 flex-1 justify-center text-sm text-muted-foreground lg:flex">
+        模拟面签中 · 教练提示已合并在右侧分析面板
       </div>
 
       {/* Right section - Timer and controls */}
       <div className="flex min-w-0 shrink-0 items-center gap-2 lg:gap-3">
-        {/* Timer */}
-        <span className="min-w-[70px] text-right font-mono text-base font-semibold tracking-wider text-foreground sm:min-w-[82px] lg:text-xl">
-          {sessionTime}
-        </span>
-
         <div className="hidden items-center gap-2 sm:flex lg:gap-3">
           <Button
             variant="outline"
@@ -187,22 +165,7 @@ export function TopBar({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             <div className="lg:hidden">
-              <DropdownMenuItem
-                onClick={() => onTabChange("simulation")}
-                className={cn(
-                  activeTab === "simulation" && "bg-primary/10 text-primary",
-                )}
-              >
-                模拟面签
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => onTabChange("coach")}
-                className={cn(
-                  activeTab === "coach" && "bg-primary/10 text-primary",
-                )}
-              >
-                教练视图
-              </DropdownMenuItem>
+              <DropdownMenuItem disabled>模拟面签</DropdownMenuItem>
               <DropdownMenuSeparator />
             </div>
             <div className="sm:hidden">

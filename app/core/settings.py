@@ -29,11 +29,15 @@ class Settings(BaseSettings):
     app_auth_cookie_secure: bool = True
     app_auth_cookie_samesite: str = "lax"
     app_auth_cookie_domain: str | None = None
+    admin_auth_password: str | None = None
+    admin_auth_cookie_name: str = "ds160_admin_session"
+    admin_auth_session_ttl_seconds: int = 60 * 60 * 24
     app_auth_login_rate_limit_attempts: int = 5
     app_auth_login_rate_limit_window_seconds: int = 60
     app_auth_touch_interval_seconds: int = 60
     app_auth_csrf_protection: bool = True
     app_auth_protect_docs: bool = True
+    app_auth_password_user_fallback_enabled: bool = False
     app_compat_api_key: str | None = None
     allow_debug_fill: bool = False
     allow_runtime_debug: bool = False
@@ -105,6 +109,14 @@ class Settings(BaseSettings):
     @property
     def app_auth_enabled(self) -> bool:
         return bool(self.app_auth_password)
+
+    @property
+    def admin_auth_enabled(self) -> bool:
+        return bool(self.admin_auth_password or self.app_auth_password)
+
+    @property
+    def effective_admin_auth_password(self) -> str | None:
+        return self.admin_auth_password or self.app_auth_password
 
     @property
     def app_auth_docs_public(self) -> bool:

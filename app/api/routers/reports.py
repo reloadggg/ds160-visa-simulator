@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.dependencies import require_session_access
 from app.db.session import get_db
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/v1/sessions/{session_id}/reports", tags=["reports"])
 @router.get("/user")
 def get_user_report(
     session_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     record = SessionRepository(db).get(session_id)
@@ -39,6 +41,7 @@ def get_user_report(
 @router.get("/internal")
 def get_internal_report(
     session_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     record = SessionRepository(db).get(session_id)
@@ -65,6 +68,7 @@ def get_internal_report(
 @router.post("/review")
 def generate_interview_review(
     session_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
@@ -76,6 +80,7 @@ def generate_interview_review(
 @router.get("/export")
 def export_session_report(
     session_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     record = SessionRepository(db).get(session_id)

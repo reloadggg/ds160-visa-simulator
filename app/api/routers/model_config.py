@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, Field, SecretStr, field_validator
+from sqlalchemy.orm import Session
 
 from app.agents.user_model_config import normalize_openai_base_url
 from app.core.settings import settings
+from app.db.session import get_db
 from app.integrations.openai_compat_headers import openai_compat_default_headers
 from app.services.user_model_config_service import ensure_user_model_config_enabled
 
@@ -35,9 +37,12 @@ class ModelListResponse(BaseModel):
 
 
 @router.post("/models")
-def list_user_models(payload: ModelListRequest) -> ModelListResponse:
+def list_user_models(
+    payload: ModelListRequest,
+    db: Session = Depends(get_db),
+) -> ModelListResponse:
     try:
-        ensure_user_model_config_enabled()
+        ensure_user_model_config_enabled(db)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 

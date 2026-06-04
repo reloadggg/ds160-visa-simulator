@@ -9,6 +9,8 @@ import { Bug, Clock, FolderOpen, Github, MessageSquare, Settings } from "lucide-
 interface SidebarProps {
   activeItem: string
   onItemClick: (item: string) => void
+  showDebug?: boolean
+  showGithub?: boolean
 }
 
 export const navItems = [
@@ -19,13 +21,19 @@ export const navItems = [
   { id: "settings", label: "设置", icon: Settings },
 ]
 
-export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
+export function Sidebar({
+  activeItem,
+  onItemClick,
+  showDebug = true,
+  showGithub = true,
+}: SidebarProps) {
+  const visibleNavItems = navItems.filter((item) => item.id !== "debug" || showDebug)
   return (
-    <aside className="hidden lg:flex w-60 bg-card border-r border-border flex-col h-full">
+    <aside className="hidden h-full w-64 flex-col border-r border-white/60 bg-white/55 shadow-xl shadow-blue-950/5 backdrop-blur-2xl lg:flex">
       {/* Logo */}
-      <div className="px-5 pt-12 pb-6 border-b border-border">
+      <div className="border-b border-white/60 px-5 pb-6 pt-12">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-primary/10">
+          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-white/70 bg-blue-50/80 shadow-sm">
             <Image src="/brand-icon.svg" alt="面签模拟器" width={40} height={40} className="h-10 w-10" />
           </div>
           <div className="min-w-0">
@@ -38,7 +46,7 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
       {/* Navigation */}
       <nav className="flex-1 p-3">
         <ul className="space-y-1">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon
             const isActive = activeItem === item.id
             return (
@@ -46,10 +54,10 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
                 <button
                   onClick={() => onItemClick(item.id)}
                   className={cn(
-                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                    "flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition-all duration-200",
                     isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                      ? "border border-blue-200/70 bg-blue-600/10 text-blue-700 shadow-sm"
+                      : "text-slate-600 hover:-translate-y-0.5 hover:bg-white/70 hover:text-slate-950"
                   )}
                 >
                   <Icon className="w-5 h-5" />
@@ -61,8 +69,8 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
         </ul>
       </nav>
 
-      <div className="border-t border-border p-4">
-        <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
+      {showGithub ? <div className="border-t border-white/60 p-4">
+        <div className="rounded-3xl border border-white/70 bg-white/55 px-3 py-3 shadow-sm backdrop-blur-xl">
           <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Created by
           </div>
@@ -76,13 +84,13 @@ export function Sidebar({ activeItem, onItemClick }: SidebarProps) {
             href={PROJECT_INFO.githubUrl}
             target="_blank"
             rel="noreferrer"
-            className="mt-3 inline-flex max-w-full items-center gap-2 rounded-md text-sm font-medium text-primary hover:text-primary/80"
+            className="mt-3 inline-flex max-w-full items-center gap-2 rounded-xl text-sm font-medium text-blue-700 transition-colors hover:text-blue-600"
           >
             <Github className="h-4 w-4 shrink-0" />
             <span className="truncate">GitHub</span>
           </a>
         </div>
-      </div>
+      </div> : null}
     </aside>
   )
 }

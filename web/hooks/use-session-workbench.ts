@@ -25,6 +25,7 @@ import {
   getUserReport,
   importMaterialPackage,
   listMaterialPackages,
+  listSessions,
   listUserModels,
   sendMessage,
   sendMessageStream,
@@ -60,6 +61,7 @@ import type {
   AllowedAction,
   AttachmentKind,
   BackendSessionMessage,
+  BackendSessionListItem,
   ChatAttachment,
   ChatMessage,
   ComposerCommand,
@@ -91,7 +93,8 @@ import type {
   VisaFamily,
 } from "@/lib/api/types"
 
-const HISTORY_STORAGE_KEY = "ds160-web-history-v1"
+const HISTORY_NAMESPACE_KEY = "auth_history_namespace"
+const HISTORY_STORAGE_PREFIX = "ds160-web-history-v2:"
 const MODEL_CONFIG_STORAGE_KEY = "ds160-user-model-config-v1"
 const MAX_PERSISTED_PREVIEW_BYTES = 2 * 1024 * 1024
 const MAX_RUNTIME_DEBUG_EVENTS = 160
@@ -114,6 +117,59 @@ function getTimestamp(): string {
 
 function getIsoTimestamp(): string {
   return new Date().toISOString()
+}
+
+function isTerminalInterviewState(
+  session: Session | null,
+  userReport: UserReport | null,
+): boolean {
+  return (
+    session?.phase_state === "completed" ||
+    session?.phase_state === "session_closed" ||
+    userReport?.interview_result === "passed" ||
+    userReport?.interview_result === "not_passed" ||
+    userReport?.interview_status === "simulated_refusal"
+  )
+}
+
+function visaFamilyFromBackendFamily(value?: string | null): VisaFamily {
+  switch ((value ?? "").toLowerCase()) {
+    case "f1":
+    case "f-1":
+      return "F-1"
+    case "j1":
+    case "j-1":
+      return "J-1"
+    case "b1_b2":
+    case "b-1/b-2":
+      return "B-1/B-2"
+    case "h1b":
+    case "h-1b":
+      return "H-1B"
+    default:
+      return "F-1"
+  }
+}
+
+function serverSessionToHistoryEntry(item: BackendSessionListItem): SessionHistoryEntry {
+  const now = getIsoTimestamp()
+  const visaType = visaFamilyFromBackendFamily(item.declared_family)
+  return {
+    id: item.session_id,
+    session_id: item.session_id,
+    visa_type: visaType,
+    status: item.phase_state === "completed" ? "completed" : "active",
+    title: `${visaType} 面签会话`,
+    summary: "服务器授权会话，打开后读取完整记录。",
+    last_message: null,
+    message_count: 0,
+    created_at: now,
+    updated_at: now,
+    required_package: null,
+    report: null,
+    materials: [],
+    messages: [],
+  }
 }
 
 function isPublicReasoning(value: unknown): value is PublicReasoning {
@@ -576,7 +632,17 @@ function readFileAsDataUrl(file: File): Promise<string | null> {
 const EMPTY_HISTORY_ENTRIES: SessionHistoryEntry[] = []
 const historyStoreListeners = new Set<() => void>()
 let cachedHistoryRaw: string | null = null
+let cachedHistoryKey: string | null = null
 let cachedHistoryEntries: SessionHistoryEntry[] = EMPTY_HISTORY_ENTRIES
+
+function currentHistoryStorageKey(): string {
+  if (typeof window === "undefined") {
+    return `${HISTORY_STORAGE_PREFIX}local-dev`
+  }
+  const namespace =
+    window.localStorage.getItem(HISTORY_NAMESPACE_KEY)?.trim() || "local-dev"
+  return `${HISTORY_STORAGE_PREFIX}${namespace}`
+}
 
 function loadHistoryEntries(): SessionHistoryEntry[] {
   if (typeof window === "undefined") {
@@ -584,10 +650,12 @@ function loadHistoryEntries(): SessionHistoryEntry[] {
   }
 
   try {
-    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY)
-    if (raw === cachedHistoryRaw) {
+    const historyKey = currentHistoryStorageKey()
+    const raw = window.localStorage.getItem(historyKey)
+    if (historyKey === cachedHistoryKey && raw === cachedHistoryRaw) {
       return cachedHistoryEntries
     }
+    cachedHistoryKey = historyKey
     cachedHistoryRaw = raw
     if (!raw) {
       cachedHistoryEntries = EMPTY_HISTORY_ENTRIES
@@ -618,7 +686,11 @@ function subscribeHistoryStore(listener: () => void): () => void {
   }
 
   const handleStorage = (event: StorageEvent) => {
-    if (event.key === HISTORY_STORAGE_KEY) {
+    if (
+      event.key === HISTORY_NAMESPACE_KEY ||
+      event.key?.startsWith(HISTORY_STORAGE_PREFIX)
+    ) {
+      cachedHistoryKey = null
       cachedHistoryRaw = null
       listener()
     }
@@ -640,9 +712,11 @@ function writeHistoryEntries(
   }
 
   const raw = JSON.stringify(entries)
+  const historyKey = currentHistoryStorageKey()
+  cachedHistoryKey = historyKey
   cachedHistoryRaw = raw
   cachedHistoryEntries = entries
-  window.localStorage.setItem(HISTORY_STORAGE_KEY, raw)
+  window.localStorage.setItem(historyKey, raw)
 
   if (options?.notify) {
     historyStoreListeners.forEach((listener) => listener())
@@ -655,8 +729,9 @@ function removeHistoryEntries(): void {
   }
 
   cachedHistoryRaw = null
+  cachedHistoryKey = null
   cachedHistoryEntries = EMPTY_HISTORY_ENTRIES
-  window.localStorage.removeItem(HISTORY_STORAGE_KEY)
+  window.localStorage.removeItem(currentHistoryStorageKey())
   historyStoreListeners.forEach((listener) => listener())
 }
 
@@ -1544,6 +1619,9 @@ export function useSessionWorkbench() {
     loadHistoryEntries,
     getServerHistoryEntries,
   )
+  const [serverHistoryEntries, setServerHistoryEntries] = useState<
+    SessionHistoryEntry[]
+  >([])
   const updateHistoryStore = useCallback(
     (
       updater:
@@ -1557,6 +1635,28 @@ export function useSessionWorkbench() {
     },
     [],
   )
+
+  const refreshServerHistory = useCallback(async () => {
+    if (mockMode) {
+      setServerHistoryEntries([])
+      return
+    }
+    try {
+      const response = await listSessions()
+      setServerHistoryEntries(response.sessions.map(serverSessionToHistoryEntry))
+    } catch {
+      setServerHistoryEntries([])
+    }
+  }, [mockMode])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshServerHistory()
+    }, 0)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [refreshServerHistory])
   const [composerCommand, setComposerCommand] =
     useState<ComposerCommand | null>(null)
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null)
@@ -1757,16 +1857,6 @@ export function useSessionWorkbench() {
     }
   }, [getErrorMessage, mockMode])
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void refreshMaterialPackages()
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timer)
-    }
-  }, [refreshMaterialPackages])
-
   const refreshRagStatus = useCallback(async () => {
     if (mockMode) {
       setRagStatus({
@@ -1797,16 +1887,6 @@ export function useSessionWorkbench() {
       setIsLoadingRagStatus(false)
     }
   }, [getErrorMessage, mockMode])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void refreshRagStatus()
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timer)
-    }
-  }, [refreshRagStatus])
 
   const fetchUserReport = useCallback(
     async (targetSessionId: string): Promise<UserReport | null> => {
@@ -2200,14 +2280,23 @@ export function useSessionWorkbench() {
   }, [buildHistoryEntry, sessionId, visaType])
 
   const sessionHistory = useMemo(() => {
+    const mergedHistory = [
+      ...serverHistoryEntries,
+      ...historyStore.filter(
+        (entry) =>
+          !serverHistoryEntries.some(
+            (serverEntry) => serverEntry.session_id === entry.session_id,
+          ),
+      ),
+    ]
     if (!activeHistoryEntry) {
-      return historyStore
+      return mergedHistory
     }
     return [
       activeHistoryEntry,
-      ...historyStore.filter((entry) => entry.id !== activeHistoryEntry.id),
+      ...mergedHistory.filter((entry) => entry.id !== activeHistoryEntry.id),
     ]
-  }, [activeHistoryEntry, historyStore])
+  }, [activeHistoryEntry, historyStore, serverHistoryEntries])
 
   useEffect(() => {
     writeHistoryEntries(sessionHistory)
@@ -2408,6 +2497,7 @@ export function useSessionWorkbench() {
         setSessionTime(0)
 
         await fetchUserReport(createdSession.session_id)
+        void refreshServerHistory()
       } catch (error) {
         setInitError(
           getErrorMessage(error, "无法连接到服务器，请确认后端已启动。"),
@@ -2416,12 +2506,20 @@ export function useSessionWorkbench() {
         setIsInitializing(false)
       }
     },
-    [fetchUserReport, getErrorMessage, mockMode],
+    [fetchUserReport, getErrorMessage, mockMode, refreshServerHistory],
   )
 
   const handleSendMessage = useCallback(
     async (content: string, files?: File[]) => {
       if (!sessionId || sendingRef.current || isSending || isUploading) {
+        return
+      }
+      if (isTerminalInterviewState(session, userReport)) {
+        setChatError("本轮面签已结束，不能继续发送消息或上传材料。")
+        appendActivityEvent({
+          kind: "message",
+          content: "本轮已结束。你可以查看总结/复盘，或重新开始一轮面签。",
+        })
         return
       }
 
@@ -2743,11 +2841,13 @@ export function useSessionWorkbench() {
       recordRuntimeDebugEvent,
       removeMessage,
       sessionId,
+      session,
       updateActivityEventContent,
       updateActivityEventStatus,
       updateMessageAttachment,
       updateMessageStatus,
       userModelConfig,
+      userReport,
     ],
   )
 
@@ -3401,11 +3501,14 @@ export function useSessionWorkbench() {
     )
   }, [userReport])
 
+  const isInterviewTerminal = isTerminalInterviewState(session, userReport)
+
   return {
     apiBaseUrl,
     mockMode,
     session,
     sessionId,
+    isInterviewTerminal,
     visaType,
     requiredPackage,
     isInitializing,

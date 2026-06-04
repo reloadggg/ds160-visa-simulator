@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from sqlalchemy.orm import Session
 
+from app.core.simple_auth import get_current_admin_session
 from app.core.settings import settings
+from app.db.session import get_db
 from app.services.visa_policy_ingest_service import (
     PolicyKnowledgeParseError,
     PolicyKnowledgeIngestService,
@@ -15,13 +18,19 @@ router = APIRouter(prefix="/v1/rag", tags=["rag"])
 RAG_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 
+def _require_admin(request: Request, db: Session = Depends(get_db)) -> None:
+    if get_current_admin_session(request, db, touch=False) is None:
+        raise HTTPException(status_code=403, detail="RAG 管理仅对后台开放。")
+
+
 @router.get("/status")
-def get_rag_status() -> dict:
+def get_rag_status(_: None = Depends(_require_admin)) -> dict:
     return PolicyKnowledgeIngestService().status_payload()
 
 
 @router.post("/files", status_code=202)
 async def upload_rag_file(
+    _: None = Depends(_require_admin),
     file: UploadFile = File(),
     title: str | None = Form(default=None),
     url: str | None = Form(default=None),
@@ -54,7 +63,7 @@ async def upload_rag_file(
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail="RAG 知识库索引失败，请检查 Chroma 和 SiliconFlow 配置。",
+            detail="RAG 知识库索引失败，请检查向量库和嵌入/重排模型配置。",
         ) from exc
 
     if result.skipped:

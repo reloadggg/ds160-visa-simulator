@@ -32,6 +32,7 @@ interface ChatPanelProps {
   isLoading?: boolean
   isSending?: boolean
   isUploading?: boolean
+  isSessionEnded?: boolean
   error?: string | null
   composerCommand?: ComposerCommand | null
   onComposerCommandHandled?: () => void
@@ -46,6 +47,7 @@ export function ChatPanel({
   isLoading = false,
   isSending = false,
   isUploading = false,
+  isSessionEnded = false,
   error,
   composerCommand,
   onComposerCommandHandled,
@@ -84,7 +86,7 @@ export function ChatPanel({
       return
     }
 
-    if (composerCommand.type === "upload") {
+    if (composerCommand.type === "upload" && !isSessionEnded) {
       fileInputRef.current?.click()
     }
 
@@ -93,9 +95,12 @@ export function ChatPanel({
     }
 
     onComposerCommandHandled?.()
-  }, [composerCommand, onComposerCommandHandled])
+  }, [composerCommand, isSessionEnded, onComposerCommandHandled])
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (isSessionEnded) {
+      return
+    }
     const items = e.clipboardData?.items
     if (!items) {
       return
@@ -124,7 +129,8 @@ export function ChatPanel({
     if (
       (inputValue.trim() || attachments.length > 0) &&
       !isSending &&
-      !isUploading
+      !isUploading &&
+      !isSessionEnded
     ) {
       onSendMessage(inputValue, attachments)
       setInputValue("")
@@ -145,6 +151,10 @@ export function ChatPanel({
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isSessionEnded) {
+      e.target.value = ""
+      return
+    }
     const selectedFiles = Array.from(e.target.files || [])
     if (selectedFiles.length > 0) {
       setAttachments((prev) => [...prev, ...selectedFiles])
@@ -157,10 +167,13 @@ export function ChatPanel({
   }
 
   const handleUploadClick = () => {
+    if (isSessionEnded) {
+      return
+    }
     fileInputRef.current?.click()
   }
 
-  const isDisabled = isSending || isUploading
+  const isDisabled = isSending || isUploading || isSessionEnded
   const isSendDisabled =
     (!inputValue.trim() && attachments.length === 0) || isDisabled
   const displayName = userName.trim() || "User"
@@ -259,7 +272,7 @@ export function ChatPanel({
   const visibleActivityEvents = activityEvents.slice(-4)
 
   return (
-    <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card shadow-sm md:rounded-xl md:border md:border-border">
+    <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-white/70 bg-white/62 shadow-xl shadow-blue-950/10 backdrop-blur-2xl md:rounded-[32px]">
       {/* Loading overlay */}
       {isLoading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/80">
@@ -279,7 +292,7 @@ export function ChatPanel({
       )}
 
       {visibleActivityEvents.length ? (
-        <div className="shrink-0 border-b border-border bg-muted/20 px-3 py-2 md:px-4">
+        <div className="shrink-0 border-b border-white/60 bg-white/45 px-3 py-2 backdrop-blur-xl md:px-4">
           <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
             {visibleActivityEvents.map((event) => (
               <div
@@ -288,7 +301,7 @@ export function ChatPanel({
                   "flex min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-xs leading-5",
                   event.status === "error" || event.kind === "error"
                     ? "bg-destructive/10 text-destructive"
-                    : "bg-background/60 text-muted-foreground",
+                    : "bg-white/65 text-slate-600",
                 )}
               >
                 {renderActivityIcon(event)}
@@ -461,7 +474,7 @@ export function ChatPanel({
       />
 
       {/* Input area */}
-      <div className="shrink-0 border-t border-border bg-card px-3 py-3 md:px-6 md:py-4">
+      <div className="shrink-0 border-t border-white/60 bg-white/55 px-3 py-3 backdrop-blur-2xl md:px-6 md:py-4">
         <div className="mx-auto max-w-3xl space-y-3">
           {/* Attachments list */}
           {attachments.length > 0 && (
@@ -515,13 +528,15 @@ export function ChatPanel({
                 onCompositionEnd={() => setIsComposing(false)}
                 onPaste={handlePaste}
                 placeholder={
-                  attachments.length > 0
-                    ? "添加关于附件的说明..."
-                    : "输入你的回答..."
+                  isSessionEnded
+                    ? "本轮面签已结束，请查看总结或重新开始。"
+                    : attachments.length > 0
+                      ? "添加关于附件的说明..."
+                      : "输入你的回答..."
                 }
                 rows={1}
                 disabled={isDisabled}
-                className="max-h-32 min-h-[44px] w-full resize-none overflow-y-auto rounded-xl border border-border bg-muted/30 px-3 py-3 pr-12 text-sm transition-all placeholder:text-muted-foreground focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 md:px-4 md:pr-14"
+                className="max-h-32 min-h-[44px] w-full resize-none overflow-y-auto rounded-2xl border border-white/70 bg-white/70 px-3 py-3 pr-12 text-sm shadow-inner shadow-blue-950/5 transition-all duration-200 placeholder:text-muted-foreground focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400/20 disabled:opacity-50 md:px-4 md:pr-14"
                 onInput={(e) => {
                   const target = e.target as HTMLTextAreaElement
                   target.style.height = "auto"
@@ -540,7 +555,9 @@ export function ChatPanel({
           </div>
         </div>
         <p className="mx-auto mt-3 max-w-3xl text-center text-[10px] text-muted-foreground md:text-xs">
-          回答仅用于模拟练习，不会被保存或提交给任何机构。
+          {isSessionEnded
+            ? "本轮已结束，不能继续发送消息。"
+            : "回答仅用于模拟练习，不会被保存或提交给任何机构。"}
         </p>
       </div>
     </div>

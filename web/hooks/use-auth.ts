@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from "react"
 import { getAuthStatus, login as apiLogin, logout as apiLogout } from "@/lib/api/client"
 
 const AUTH_USER_KEY = "auth_user"
+const AUTH_HISTORY_NAMESPACE_KEY = "auth_history_namespace"
+const LEGACY_HISTORY_STORAGE_KEY = "ds160-web-history-v1"
+const HISTORY_STORAGE_PREFIX = "ds160-web-history-v2:"
 const DEFAULT_AVATAR_URL = "/default-user-avatar.svg"
 
 export interface AuthUserProfile {
@@ -66,6 +69,31 @@ function clearStoredUserProfile(): void {
   localStorage.removeItem(AUTH_USER_KEY)
 }
 
+function syncHistoryNamespace(nextNamespace?: string | null): void {
+  if (typeof window === "undefined") {
+    return
+  }
+  const normalized = nextNamespace?.trim() || "local-dev"
+  const previous = localStorage.getItem(AUTH_HISTORY_NAMESPACE_KEY)
+  const legacyHistory = localStorage.getItem(LEGACY_HISTORY_STORAGE_KEY)
+  if ((previous && previous !== normalized) || (!previous && normalized !== "local-dev" && legacyHistory)) {
+    localStorage.removeItem(LEGACY_HISTORY_STORAGE_KEY)
+  }
+  localStorage.setItem(AUTH_HISTORY_NAMESPACE_KEY, normalized)
+}
+
+function clearHistoryNamespace(): void {
+  if (typeof window === "undefined") {
+    return
+  }
+  const namespace = localStorage.getItem(AUTH_HISTORY_NAMESPACE_KEY)
+  if (namespace) {
+    localStorage.removeItem(`${HISTORY_STORAGE_PREFIX}${namespace}`)
+  }
+  localStorage.removeItem(AUTH_HISTORY_NAMESPACE_KEY)
+  localStorage.removeItem(LEGACY_HISTORY_STORAGE_KEY)
+}
+
 export function useAuth() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoggingIn, setIsLoggingIn] = useState(false)
@@ -84,10 +112,12 @@ export function useAuth() {
         }
         if (!status.authenticated) {
           clearStoredUserProfile()
+          clearHistoryNamespace()
           setUserProfile(null)
           setIsAuthenticated(false)
           return
         }
+        syncHistoryNamespace(status.history_namespace)
         const profile = readStoredUserProfile() ?? buildUserProfile()
         writeStoredUserProfile(profile)
         setUserProfile(profile)
@@ -95,6 +125,7 @@ export function useAuth() {
       } catch {
         if (!cancelled) {
           clearStoredUserProfile()
+          clearHistoryNamespace()
           setUserProfile(null)
           setIsAuthenticated(false)
         }
@@ -107,6 +138,7 @@ export function useAuth() {
 
     const handleUnauthorized = () => {
       clearStoredUserProfile()
+      clearHistoryNamespace()
       setUserProfile(null)
       setIsAuthenticated(false)
       setError("会话已过期，请重新登录")
@@ -124,7 +156,8 @@ export function useAuth() {
     setIsLoggingIn(true)
     setError(null)
     try {
-      await apiLogin(password)
+      const response = await apiLogin(password)
+      syncHistoryNamespace(response.history_namespace)
       const profile = buildUserProfile(displayName)
       writeStoredUserProfile(profile)
       setUserProfile(profile)
@@ -142,6 +175,7 @@ export function useAuth() {
   const logout = useCallback(async () => {
     await apiLogout()
     clearStoredUserProfile()
+    clearHistoryNamespace()
     setUserProfile(null)
     setIsAuthenticated(false)
   }, [])

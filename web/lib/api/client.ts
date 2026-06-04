@@ -11,11 +11,13 @@ import {
 import type {
   AuthResponse,
   AuthStatusResponse,
+  AppConfig,
   BackendFileUploadResponse,
   BackendInternalReport,
   BackendMessageResponse,
   BackendRequiredPackage,
   BackendSession,
+  BackendSessionListResponse,
   BackendSessionMessagesResponse,
   BackendUserReport,
   DebugMaterialBundleResponse,
@@ -156,6 +158,11 @@ export async function getAuthStatus(): Promise<AuthStatusResponse> {
   return handleResponse<AuthStatusResponse>(response)
 }
 
+export async function getAppConfig(): Promise<AppConfig> {
+  const response = await apiFetch(buildApiUrl("/v1/app-config"))
+  return handleResponse<AppConfig>(response)
+}
+
 export async function logout(): Promise<void> {
   await apiFetch(buildApiUrl("/v1/auth/logout"), {
     method: "POST",
@@ -173,6 +180,13 @@ export async function createSession(visaFamily: VisaFamily): Promise<Session> {
   })
 
   return mapSession(await handleResponse<BackendSession>(response))
+}
+
+export async function listSessions(): Promise<BackendSessionListResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/sessions"), {
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<BackendSessionListResponse>(response)
 }
 
 export async function getRequiredPackage(sessionId: string): Promise<RequiredPackage> {

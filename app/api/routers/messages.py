@@ -11,6 +11,7 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
 from app.agents.user_model_config import user_model_runtime
+from app.core.dependencies import require_session_access
 from app.core.settings import settings
 from app.db.models import SessionRecord
 from app.db.session import get_db, session_factory_from_session
@@ -51,6 +52,7 @@ class MessageRequest(BaseModel):
 @router.get("")
 def get_messages(
     session_id: str,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     if db.get(SessionRecord, session_id) is None:
@@ -66,10 +68,11 @@ def get_messages(
 def post_message(
     session_id: str,
     payload: MessageRequest,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        runtime_config = to_runtime_config(payload.user_model_config)
+        runtime_config = to_runtime_config(payload.user_model_config, db)
         with user_model_runtime(runtime_config):
             return MessageService(db).handle_user_turn(
                 session_id,
@@ -128,10 +131,11 @@ def _log_model_runtime_error(
 def stream_message(
     session_id: str,
     payload: MessageRequest,
+    _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     try:
-        runtime_config = to_runtime_config(payload.user_model_config)
+        runtime_config = to_runtime_config(payload.user_model_config, db)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if runtime_config is not None and not settings.allow_user_model_streaming:
