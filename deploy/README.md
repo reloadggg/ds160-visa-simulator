@@ -34,20 +34,61 @@ docker compose up -d nginx
 
 ## 服务器更新
 
-主线代码推送到 GitHub 后，服务器可以直接在部署目录拉取并重建：
+生产服务器资源较弱，不推荐在服务器上执行 `docker compose up --build`。
+当前前端产物在镜像构建期生成，后端代码也打进镜像；因此 `git pull && docker compose up -d --no-build`
+只会重启旧镜像，不能发布代码变更。
+
+推荐的低负载发布路径是：在本地或 CI 构建镜像，传输到服务器 `docker load`，服务器只做
+`docker compose up -d --no-build` 重建容器。
+
+### 推荐：预构建镜像后在服务器无构建发布
+
+本地或 CI：
 
 ```bash
-cd /opt/ds160-agent2
-git fetch origin refactor/agent-runtime-graph
-git pull --ff-only origin refactor/agent-runtime-graph
+cd ds160-visa-simulator
+git fetch origin simplify/agent-runtime-core
+git checkout simplify/agent-runtime-core
+git pull --ff-only origin simplify/agent-runtime-core
 
 BUILD_SHA="$(git rev-parse --short HEAD)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-APP_GIT_SHA="$BUILD_SHA" \
-NEXT_PUBLIC_GIT_SHA="$BUILD_SHA" \
-APP_BUILD_TIME="$BUILD_TIME" \
-NEXT_PUBLIC_BUILD_TIME="$BUILD_TIME" \
-docker compose up -d --build postgres ds160-api ds160-web ds160-worker nginx
+IMAGE="ds160-agent2:${BUILD_SHA}"
+
+docker build   --build-arg APP_GIT_SHA="$BUILD_SHA"   --build-arg APP_BUILD_TIME="$BUILD_TIME"   --build-arg NEXT_PUBLIC_GIT_SHA="$BUILD_SHA"   --build-arg NEXT_PUBLIC_BUILD_TIME="$BUILD_TIME"   -t "$IMAGE" .
+
+docker save "$IMAGE" | gzip > "ds160-agent2-${BUILD_SHA}.tar.gz"
+scp "ds160-agent2-${BUILD_SHA}.tar.gz" root@conectv6.302dog.icu:/opt/ds160-agent2/
+```
+
+服务器：
+
+```bash
+cd /opt/ds160-agent2
+git fetch origin simplify/agent-runtime-core
+git pull --ff-only origin simplify/agent-runtime-core
+
+BUILD_SHA="$(git rev-parse --short HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+gunzip -c "ds160-agent2-${BUILD_SHA}.tar.gz" | docker load
+RELEASE_IMAGE="ds160-agent2:${BUILD_SHA}" APP_GIT_SHA="$BUILD_SHA" APP_BUILD_TIME="$BUILD_TIME" scripts/production-release-preloaded-image.sh
+```
+
+这个路径不会在服务器上运行 Docker build / pnpm build / uv sync；服务器只解压镜像、更新 `.env`
+中的发布 metadata、重启容器。
+
+### 仅适合资源充足主机：服务器直接重建
+
+如果明确接受服务器 CPU/内存压力，才使用远端重建：
+
+```bash
+cd /opt/ds160-agent2
+git fetch origin simplify/agent-runtime-core
+git pull --ff-only origin simplify/agent-runtime-core
+
+BUILD_SHA="$(git rev-parse --short HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+APP_GIT_SHA="$BUILD_SHA" NEXT_PUBLIC_GIT_SHA="$BUILD_SHA" APP_BUILD_TIME="$BUILD_TIME" NEXT_PUBLIC_BUILD_TIME="$BUILD_TIME" docker compose up -d --build postgres ds160-api ds160-web ds160-worker nginx
 ```
 
 更新后确认容器和健康检查：
