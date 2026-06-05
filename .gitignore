@@ -29,3 +29,7 @@ web/.env.local
 .gemini/
 .agents/
 AGENTS.md
+# Generated validation evidence and DB backups
+artifacts/
+*.sqlite3.*.bak
+*.sqlite3.bak-*

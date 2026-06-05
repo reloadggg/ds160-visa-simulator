@@ -200,6 +200,58 @@ def test_process_passport_and_i20_extract_structured_evidence(tmp_path) -> None:
         engine.dispose()
 
 
+def test_process_relationship_proof_extracts_family_evidence(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'document-pipeline-relationship.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-relationship",
+                    session_id="sess-1",
+                    filename="relationship.txt",
+                    raw_bytes=(
+                        b"Family Relationship Certificate\n"
+                        b"Applicant: Chen Ming\n"
+                        b"Father: Chen Wei\n"
+                        b"Mother: Wang Li\n"
+                        b"Relationship: Chen Ming is the son of Chen Wei and Wang Li."
+                    ),
+                    artifact_json={
+                        "document_type": (
+                            "relationship_proof_between_applicant_and_sponsors"
+                        )
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            result = DocumentPipelineService(db).process_document("doc-relationship")
+            db.commit()
+
+            evidence = db.scalars(select(EvidenceItemRecord)).all()
+            extracted = {item.field_path: item.value for item in evidence}
+
+            assert result == {"chunk_count": 1, "evidence_count": 4}
+            assert extracted["/identity/full_name"] == "Chen Ming"
+            assert extracted["/family/father_name"] == "Chen Wei"
+            assert extracted["/family/mother_name"] == "Wang Li"
+            assert (
+                extracted["/funding/sponsor_relationship"]
+                == "Chen Ming is the son of Chen Wei and Wang Li."
+            )
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
 def test_process_document_does_not_infer_document_type_from_filename(
     tmp_path,
 ) -> None:

@@ -36,6 +36,14 @@ _STRUCTURED_FIELD_PATTERNS: dict[str, list[tuple[str, str]]] = {
         (r"school name:\s*(.+)", "/education/school_name"),
         (r"program:\s*(.+)", "/education/program_name"),
     ],
+    "relationship_proof_between_applicant_and_sponsors": [
+        (r"full name:\s*(.+)", "/identity/full_name"),
+        (r"applicant:\s*(.+)", "/identity/full_name"),
+        (r"father:\s*(.+)", "/family/father_name"),
+        (r"mother:\s*(.+)", "/family/mother_name"),
+        (r"relationship:\s*(.+)", "/funding/sponsor_relationship"),
+        (r"parent names:\s*(.+)", "/family/parent_names"),
+    ],
     "ds2019": [
         (r"sevis id:\s*(.+)", "/education/sevis_id"),
         (r"sponsor:\s*(.+)", "/education/sponsor_name"),

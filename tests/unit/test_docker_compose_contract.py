@@ -25,6 +25,10 @@ def test_compose_uses_postgres_readiness_and_layered_app_healthcheck() -> None:
     dockerfile = Path("Dockerfile").read_text()
     assert "ARG UV_HTTP_TIMEOUT=180" in dockerfile
     assert "UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT}" in dockerfile
+    assert (
+        "COPY scripts/f1_demo_material_package.py ./scripts/f1_demo_material_package.py"
+        in dockerfile
+    )
 
     api_environment = api["environment"]
     worker_environment = worker["environment"]

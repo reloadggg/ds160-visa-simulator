@@ -55,6 +55,7 @@ RUN apt-get update \
 COPY --from=python-deps /app/.venv ./.venv
 COPY app ./app
 COPY fixtures ./fixtures
+COPY scripts/f1_demo_material_package.py ./scripts/f1_demo_material_package.py
 COPY --from=web-builder /app/web/.next/standalone ./web
 COPY --from=web-builder /app/web/.next/static ./web/.next/static
 COPY --from=web-builder /app/web/public ./web/public
