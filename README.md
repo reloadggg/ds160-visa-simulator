@@ -1,6 +1,6 @@
 # DS-160 AI 面签模拟器
 
-> 面向美国非移民签证场景的 AI Agent 面签工作台：用多轮追问、多模态案例理解、证据图谱和风险报告，帮助申请人更早发现 DS-160 叙事中的待核实事实、证据冲突和不一致。
+> 面向美国非移民签证准备的 AI 面签工作台：用多轮追问、材料理解、Case Board、证据图谱和复盘报告，帮助申请人在正式 DS-160 / 面签前发现叙事缺口、材料冲突和高风险信号。
 
 ![Architecture](docs/assets/architecture.svg)
 
@@ -8,74 +8,61 @@
 
 本仓库采用“源码可见、非商业使用”的自定义许可，完整条款见 [LICENSE](LICENSE)。这不是 MIT、Apache、GPL 等开放商用开源协议。
 
-允许：
+允许：个人学习、研究、教学、内部评估和非商业原型验证；在非商业场景下复制、修改、运行和分发，但必须保留 [LICENSE](LICENSE) 与版权声明。
 
-- 个人学习、研究、教学、内部评估和非商业原型验证
-- 在非商业场景下复制、修改、运行和分发，但必须保留 [LICENSE](LICENSE) 与版权声明
-
-禁止：
-
-- 未经书面授权用于付费产品、SaaS、咨询交付、商业内部系统或客户项目
-- 将代码、文档、提示词、测试数据或界面资源用于商业模型训练、商业数据产品或其他营利业务
-- 通过广告、订阅、交易抽成、引流销售等方式直接或间接商业化
+禁止：未经书面授权用于付费产品、SaaS、咨询交付、商业内部系统、客户项目、商业模型训练、商业数据产品或任何直接/间接营利业务。
 
 如需商业使用、商业部署或商业集成，必须先取得版权所有者的书面商业授权。
 
-## ✨ 项目定位
+## 这个项目是什么
 
-DS-160 AI 面签模拟器不是一个普通聊天机器人，也不是传统 SaaS 式的“材料齐了才允许聊”表单。它更像一个“签证面谈推演工作台”：用户选择签证类型后，系统会围绕 DS-160 信息、赴美目的、资金来源、学习/工作计划、回国约束和材料证据展开追问，并在每一轮对话和每一次上传后更新 Case Memory / Evidence Graph。
+DS-160 AI 面签模拟器不是普通聊天机器人，也不是“材料齐了才允许聊”的表单系统。它更像一个签证准备工作台：用户选择签证类别后，系统围绕赴美目的、资金来源、学习/工作计划、回国约束、材料证据和 DS-160 叙事一致性持续追问，并把每轮对话和每份材料沉淀为可复盘的 Case Memory / Evidence Graph。
 
-项目当前重点服务于内部测试和原型验证，适合用于：
+适合用于：
 
-- 🎙️ 模拟真实签证官式追问，而不是泛泛聊天
-- 📄 上传 I-20、offer、资金证明、关系证明、护照页等材料，并由多模态模型直接理解可见事实
-- 🔎 接入服务端 RAG 知识库，优先引用官方政策、领馆页面和互惠表信息
-- 🧭 识别当前回答中的待核实事实、材料冲突、不完整解释和高风险信号
-- 📊 生成面向用户的准备建议和面向内部调试的运行报告
-- 🧪 验证 native interviewer 公开 runtime、LangGraph replay/eval 基座、Case Memory、材料理解、RAG 检索、Governor 护栏和前端 Case Board 体验
+- 模拟签证官式追问，而不是泛泛闲聊；
+- 上传 I-20、offer、资金证明、关系证明、护照页等材料，并由多模态模型理解可见事实；
+- 通过 Case Board 展示已知事实、证据片段、冲突、待核实点和下一问原因；
+- 接入服务端 RAG，优先引用官方政策、领馆页面和互惠表资料；
+- 生成用户准备报告、内部调试报告、会话导出和复盘报告；
+- 验证 native interviewer runtime、材料理解、Case Memory、RAG、Governor 护栏和前端工作台体验。
 
-## 🧠 核心体验
+## 主要用户流程
 
-用户看到的是一个签证准备工作台：
+```text
+选择签证类别
+  ↓
+面签式对话：回答问题、补充背景、澄清风险点
+  ↓
+上传材料：PDF / 图片 / 文本材料进入材料理解队列
+  ↓
+Case Board 更新：事实、证据、冲突、证明点、下一步建议
+  ↓
+继续追问或复盘：报告、调试台、导出、后台管理
+```
 
-- 左侧是会话、历史、材料和设置入口
-- 中间是面签式问答流
-- 右侧是 Case Board，展示已理解事实、证据片段、冲突、待核实事实和下一问原因
-- 上传材料后，系统会判断材料能证明什么、是否与口头陈述冲突，而不是要求用户先手动分类
-- 会话结束或阶段性复盘时，可以生成用户报告和内部分析报告
-- 前端会直接显示版本号，调试台可查看当前 session 的 runtime、材料生成、材料刷新错误和流式事件
+工作台中的典型区域：
 
-后端看到的是一条可追踪的 Agent 运行链路：
+- 左侧：会话历史、材料库、设置、报告和后台入口；
+- 中间：面签问答流，失败消息可保留原文并重试；
+- 右侧：Case Board，展示案例事实、证据、冲突和下一问依据；
+- 后台：access key 发放、会话查看、运行时模型配置、RAG 状态和调试开关。
 
-- 每轮输入都会进入会话编排层
-- runtime 会结合历史、Case Memory、材料证据、签证规则和当前风险生成下一步动作
-- Governor 决定继续追问、定向澄清冲突、进入高风险复核或模拟拒签
-- trace、score、case board、document review 和 turn record 会沉淀到数据库，方便复盘
-
-## 🧪 调试与版本确认
-
-- 前端版本显示来自 `web/package.json`，同时支持 `NEXT_PUBLIC_APP_VERSION`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME` 覆盖。
-- 后端版本显示来自 `app/core/app_version.py`，同时支持 `APP_GIT_SHA`、`APP_BUILD_TIME` 覆盖。
-- 每次部署到服务器前都要递增前端版本号；否则无法从 UI 判断是否已经更新。
-- 工作台左侧“调试台”会读取 `GET /v1/sessions/{session_id}/debug/runtime`，需要开启 `ALLOW_RUNTIME_DEBUG=true` 或复用 `ALLOW_DEBUG_FILL=true`。
-- 调试台会展示消息流/材料包流的实时事件、runtime snapshot、材料生成来源、材料刷新错误和可复制调试包。
-
-## 🏗️ 系统架构
-
-项目采用“前端工作台 + FastAPI 单体后端 + Agent runtime + OpenAI-compatible 模型网关”的架构。
+## 架构一览
 
 ```text
 Next.js Workbench
-        │
+        │  /api/v1 in browser / proxy
         ▼
 FastAPI API Layer
-        │
+        │  /v1 direct backend
         ▼
 Message / File / Report Services
         │
         ├── MaterialUnderstandingService
         ├── CaseMemoryService / Evidence Graph
-        └── Report / Replay / Runtime Ledger
+        ├── RuntimeDebugSnapshotService
+        └── Report / Review / Export
         │
         ▼
 NativeInterviewerRuntimeService
@@ -84,146 +71,38 @@ NativeInterviewerRuntimeService
         ├── Typed LLM Runtime
         ├── Visa Policy RAG / Chroma / SiliconFlow
         ├── Governor / Grounding Guard
-        └── Legacy Gate Projection
-
-LangGraph DS160TurnGraph
-        └── replay / eval / future public-promotion candidate
+        └── Legacy Gate Compatibility Projection
 ```
-
-### 架构分层
 
 | 层级 | 作用 |
 | --- | --- |
-| `web/` | Next.js 前端工作台，负责会话、材料、报告、历史和鉴权体验 |
-| `app/api/routers/` | FastAPI 路由层，对外暴露 session、message、file、report、auth 等接口 |
-| `app/services/` | 业务编排层，承载 native interviewer 公开 runtime、LangGraph replay/eval 适配、Case Memory、材料理解、报告生成和状态同步 |
+| `web/` | Next.js 16 前端工作台，负责会话、材料、报告、历史、设置和鉴权体验 |
+| `app/api/routers/` | FastAPI 路由层，对外暴露 auth、session、message、file、report、admin、RAG、OpenAI-compatible API |
+| `app/services/` | 业务编排层，承载 native interviewer runtime、材料理解、Case Memory、报告、运行时快照和状态同步 |
 | `app/agents/` | Agent 运行单元，负责问题生成、材料复核、裁决和结构化输出 |
 | `app/domain/` | 领域模型与跨层合同，例如 Case Memory、证据卡、运行状态和决策结构 |
 | `app/integrations/` | 外部模型、embedding、rerank、文件解析等集成适配 |
-| `app/repositories/` | 数据访问层，封装会话、材料和 turn record 的持久化 |
-| `app/runtime_policies/` | 模型供应商、模型名称、reasoning effort 等运行时配置 |
-| `app/policy_packs/` | 不同签证类型的规则包，例如 F-1、J-1、B-1/B-2 等 |
+| `app/repositories/` | 会话、材料、turn record、access key 等持久化访问 |
+| `app/policy_packs/` | F-1、J-1、B-1/B-2、H-1B 等签证类别规则包 |
 
-## 🔁 一轮面谈如何运行
+## 核心概念
 
-1. 用户在前端发送回答或上传材料。
-2. FastAPI 接收请求，并由 `MessageService` 或 `FileService` 接管。
-3. 上传材料会创建 `case_understanding` 任务；PDF/图片由多模态模型直接理解，图片不再走 OCR。
-4. `CaseMemoryService` 把材料理解结果和用户明确陈述写入 Case Memory / Evidence Graph。
-5. Runtime state builder 把 Case Memory、最近 turn、材料证据、RAG 引用和旧兼容字段组装成面谈状态。
-6. 当前公开主流程由 `NativeInterviewerRuntimeService` 选择下一问；LangGraph 保留为 replay/eval 和后续公开 promotion 的候选基座，不在普通请求中并发 shadow 调用。Governor / guard 只负责高风险、拒签和 grounding 边界。
-7. 系统返回唯一一条面签式主回复，并同步更新 runtime view、trace、Case Board、score 和报告上下文。
-
-## 🧩 关键设计
-
-### 🎯 AI-native Case Understanding Runtime
-
-产品主轴已经从 Gate-first 材料清单迁移为 Case Memory-first 案例理解：
-
-- 文件上传不是“满足一个必填材料”，而是“向案例增加一个可引用证据来源”。
-- 用户口头说出的明确事实也会进入 Case Memory，来源标记为 `user_turn`。
-- 材料和口头陈述冲突时生成 `CaseConflict`，由 Agent 下一问做定向澄清。
-- Case Board 是前端主视图，展示事实、证据、证明点、冲突和下一问原因。
-- LLM 上下文不是产品状态源；长期事实、删除语义、replay 和报告都依赖持久化 Case Memory。
-
-### 🎯 LLM-first 面谈 Runtime
-
-系统把模型放在面谈主循环中，但不会让模型直接裸奔。模型输出会被结构化 schema、runtime projector、Governor 和报告合同约束，确保前端、报告和测试能消费稳定字段。
-
-当前公开主流程由 `NativeInterviewerRuntimeService` 写用户可见回复；`AGENT_RUNTIME=graph` / `graph_shadow` / `graph_canary` 目前只是兼容标签，响应里的 `selected_public_runtime` 必须暴露真实执行路径。LangGraph 继续作为 replay、显式评测和后续 public promotion 的图执行基座；未来如果试验 OpenAI Agents SDK，也只能藏在单个 runtime runner 后面，不能接管会话状态、handoff 或用户可见主回复。
-
-### 🛂 Governor 护栏
-
-Governor 负责把“模型想问什么”和“签证场景不能越过的边界”分开。它保留高风险复核、模拟拒签和会话关闭等护栏职责，但不再根据材料门控状态覆盖面试官 Agent 的主回复。
-
-### 🚦 Gate 只做兼容投影
-
-Gate 的职责是选择签证家族、维护旧客户端需要的最低材料包进度，并在 API 响应中提供 `gate_progress`。除 `family_not_selected` 之外，材料缺失、案例理解处理中或最低字段未齐都不会阻断聊天；Agent 仍会继续根据当前上下文判断是否追问、要求补材料或继续面谈。
-
-主线请求材料只来自 LLM turn decision 的显式输出：
-
-- `decision=need_more_evidence`
-- `requested_documents` 或 `focus_document_type` 明确指出当前关键材料
-
-Gate primary document、`score.missing_evidence`、document review 建议和 governor requested docs 都只能作为 advisory/support 信息，不能回填成主线 `requested_documents`、`phase_state` 或报告主状态。当前 Gate 残留和删除边界见 [Legacy Gate Decommission Inventory](docs/architecture/gate-decommission-inventory.md)。
-
-### 📄 材料理解与证据主线
-
-材料上传不是简单存文件，也不是前端先问用户“这是什么材料”。系统会保存原始文件，创建 `case_understanding` 任务，并把材料理解结果写入 Case Memory。
-
-当前合同：
-
-- 前端上传只传 `file` 和可选 `context_text`，不要求用户预选 `document_type`。
-- 图片材料返回 `parser_name="multimodal_required"`，不调用 `pytesseract` 或图片 OCR。
-- PDF 会在多模态服务里渲染为图片页，让视觉模型直接读取。
-- 文件名只作为审计元数据，不作为材料类型的事实来源。
-- 模型不可用时明确标记理解失败或不可用，不伪装成解析成功。
-
-### 🧪 调试材料包
-
-本地或受控测试环境可以开启 `ALLOW_DEBUG_FILL=true`，让前端从“材料包”菜单基于显式提示词生成 synthetic 材料包。材料包会一次性写入多份可见材料、结构化字段和证据 chunk，用来测试材料库、document review、Governor 和前端交互。
-
-材料正文会按签证类别模拟真实文件/OCR 文本形态；提示词为空或 AI 生成失败时不会写入演示占位材料。AI 返回空内容、JSON 无法解析、schema 不合格或缺少当前签证类别必需材料时，后端会返回结构化 `502 model_output_invalid`，前端应显示具体原因，而不是把它归为泛化 503。
-
-生成成功的 debug 材料包会成为可导入的“材料包存档”。存档菜单和导入接口同样受 `ALLOW_DEBUG_FILL=true` 保护；公开生产环境关闭该开关时不会列出或导入历史 synthetic 包。
-
-当前支持：
-
-- `normal_f1_bundle`：自洽基准材料
-- `normal_j1_bundle`：J-1 自洽基准材料
-- `normal_b1_b2_bundle`：B1/B2 自洽基准材料
-- `normal_h1b_bundle`：H-1B 自洽基准材料
-- `school_mismatch_bundle`：I-20 与录取信学校不一致
-- `identity_mismatch_bundle`：DS-160 与护照号码不一致
-- `funding_shortfall_bundle`：资金证明低于 I-20 第一年度费用
-- `sponsor_chain_gap_bundle`：父母股权资金来源缺少独立链路证明
-- `claim_vs_document_bundle`：口头资金来源与材料不一致
-
-调试材料包的 `expected_findings` 只作为 API 测试参考和前端材料详情里的“核验线索”展示，不写入材料正文、证据 excerpt、profile，也不进入 document review prompt/context。document review 必须基于材料字段、材料正文和口头 claim 自己判断缺陷。
-
-### 🧾 可复盘运行记录
-
-每一轮都会沉淀 turn record、runtime trace、score history 和 governor history。这样做的目的不是只看最终回复，而是能解释“系统为什么这样追问”。
-
-### 🔌 OpenAI-compatible 模型接入
-
-项目通过 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 接入兼容 OpenAI 协议的模型服务，便于在不同模型供应商之间切换。
-
-### 🔎 美签政策 RAG
-
-RAG 是服务端能力，不使用前端用户填写的对话模型配置。当前实现使用 Chroma 作为向量库，使用硅基流动提供 embedding 和 rerank：
-
-- `GET /v1/rag/status`：返回知识库是否关闭、未配置、可用、索引为空或索引不可访问。
-- `POST /v1/rag/files`：上传知识库文件，前端可选填写标题、来源链接、签证类型、国家、领馆/地区和备注。
-- 公共上传入口固定写入 `third_party_reference`，不会把用户上传文件提升为官方来源。
-- 官方、领馆和国家互惠表资料应通过受控导入流程写入，避免污染高权威集合。
-- 检索时会优先使用官方来源；第三方资料默认只作为研发参考，除非显式开启 `RAG_ALLOW_THIRD_PARTY_REFERENCE=true`。
-
-### 🧑‍💻 用户自带模型配置（BYOK）
-
-自行部署时可以开启用户自带模型配置。开启后，前端设置面板允许用户填写自己的 OpenAI-compatible `Base URL`、`API Key` 和 `Model`，后端仍负责 DS-160 编排、材料状态、Governor、报告和会话保存。
-
-需要注意：
-
-- BYOK 是“使用用户自己的模型服务”，不是“纯前端本地运行”。
-- 聊天记录、材料记录和报告仍保存在当前部署的后端数据库中。
-- 用户填写的 API Key 只随请求发送给后端代理使用，不写入后端数据库。
-- 前端不会把 API Key 持久化到 `localStorage`，刷新页面后需要重新填写。
-- 当前流式输出是事件式 SSE，展示处理阶段和最终结果；不是 token 级逐字流。线上反代必须禁用 SSE 缓冲，否则前端会等到后端完成后才一次性收到事件。
-
-## 🛠️ 技术栈
-
-| 模块 | 技术 |
+| 概念 | 简明说明 |
 | --- | --- |
-| 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS、Radix UI |
-| 后端 | Python 3.12、FastAPI、Pydantic v2、SQLAlchemy |
-| Agent | `pydantic-ai-slim[openai]`、结构化 schema、runtime policies |
-| RAG | Chroma、SiliconFlow Embedding、SiliconFlow Rerank |
-| 存储 | Docker Compose 默认 Postgres；本地开发和单容器 `docker run` 默认 SQLite，可通过 `DATABASE_URL` 替换；RAG 向量索引默认落在 `data/chroma/us_visa` |
-| 部署 | Docker、Docker Compose；生产 Compose 默认拆分 API、Web、Worker、Postgres、Nginx，单容器模式仅作为兼容入口 |
-| 测试 | pytest、integration tests、可选 live LLM tests |
+| Native interviewer runtime | 当前公开主流程。每轮只产生一条用户可见面试官回复，并通过结构化字段给前端、报告和调试台消费。 |
+| Case Memory / Evidence Graph | 长期事实、材料证据、冲突和证明点的持久化来源；LLM 上下文不是最终状态源。 |
+| Case Board | 前端主视图，展示 claims、evidence cards、proof points、conflicts 和 next move。 |
+| 材料理解 | 上传文件先保存并进入 `case_understanding` 队列；图片/PDF 由多模态模型理解，文件名只作为审计元数据。 |
+| RAG | 服务端政策知识库能力；使用 Chroma + SiliconFlow embedding/rerank，不由用户 BYOK 配置覆盖。 |
+| Admin console | 后台可以登录、发放 access keys、查看 key 关联会话、调整 demo 设置和测试运行时模型。 |
+| Access keys | 管理员发放给用户的访问密钥，并把用户历史隔离到 `history_namespace=key_<id>`。登录本身不消耗 quota；创建新 session 时才扣次数，禁用/过期/耗尽后仍可回到已绑定历史，但不能创建新会话。 |
+| Runtime model config | 后台可保存 OpenAI-compatible `Base URL`、`API Key`、`Model` 和 streaming 设置；测试接口会返回配置来源 `draft` / `admin` / `env`，不会回显 secret。 |
+| 失败消息重试 | 前端保留失败用户消息的 `client_message_id` 和 `retry_content`；重试同一条消息时复用 idempotency key，已完成请求返回 `idempotent_replay`，处理中请求返回 `409`。 |
+| Runtime debug snapshot | 调试台读取 `GET /v1/sessions/{session_id}/debug/runtime`，返回一次只读快照；敏感字段会被后端 redaction，不应当作写入接口或实时订阅。 |
 
-## 🚀 快速启动
+更深的运行时合同见 [Runtime Contracts](docs/runtime-contracts.md)、[Agent Runtime Spec](docs/architecture/agent-runtime-spec.md) 和 [AI-native Case Understanding Spec](docs/architecture/ai-native-case-understanding-spec.md)。
+
+## 快速启动
 
 ### 1. 准备后端环境
 
@@ -232,7 +111,7 @@ uv sync --dev
 cp .env.example .env
 ```
 
-至少配置：
+至少配置一个 OpenAI-compatible 模型服务：
 
 ```env
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
@@ -249,11 +128,6 @@ APP_AUTH_COOKIE_SECURE=true
 APP_AUTH_COOKIE_SAMESITE=lax
 APP_AUTH_PROTECT_DOCS=true
 APP_COMPAT_API_KEY=
-MULTIMODAL_EXTRACTION_ENABLED=true
-# 本地单进程开发不设置 DATABASE_URL 时默认 sqlite:///./app.sqlite3。
-# Docker Compose 不读取本地 DATABASE_URL；容器内 DATABASE_URL 默认使用内置 Postgres。
-# 如需让 Compose 使用外部数据库，设置 COMPOSE_DATABASE_URL。
-# DATABASE_URL=sqlite:///./app.sqlite3
 CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ALLOW_USER_MODEL_CONFIG=false
 ALLOW_USER_MODEL_STREAMING=false
@@ -261,29 +135,7 @@ ALLOW_RUNTIME_DEBUG=false
 ALLOW_DEBUG_FILL=false
 ```
 
-如果要允许用户在前端设置自己的模型服务：
-
-```env
-ALLOW_USER_MODEL_CONFIG=true
-ALLOW_USER_MODEL_STREAMING=true
-```
-
-如果要开启服务端 RAG：
-
-```env
-RAG_ENABLED=true
-RAG_CHROMA_PATH=./data/chroma/us_visa
-SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
-SILICONFLOW_API_KEY=your-siliconflow-api-key
-SILICONFLOW_EMBEDDING_MODEL=BAAI/bge-m3
-SILICONFLOW_RERANK_MODEL=Qwen/Qwen3-Reranker-4B
-```
-
-RAG 与 BYOK 的职责边界：
-
-- `ALLOW_USER_MODEL_CONFIG` 只影响用户对话模型。
-- `RAG_*` 和 `SILICONFLOW_*` 只由服务端读取。
-- 前端设置页只展示 RAG 状态和上传入口，不允许用户覆盖服务端 embedding/rerank 配置。
+本地单进程开发不设置 `DATABASE_URL` 时默认使用 `sqlite:///./app.sqlite3`。Docker Compose 默认使用内置 Postgres；如需外部数据库，设置 `COMPOSE_DATABASE_URL`。
 
 ### 2. 启动前后端
 
@@ -305,15 +157,28 @@ make dev
 API_PORT=8001 WEB_PORT=3001 make dev
 ```
 
-## 🐳 Docker 部署
+### 3. 可选：开启 RAG
 
-项目提供同一个 Docker 镜像，但默认 Compose 会把职责拆成独立服务：
-`ds160-api`、`ds160-web`、`ds160-worker`、`postgres` 和 `nginx`。旧的
-FastAPI + Next.js 单容器启动方式仍可用于本地试跑或极简部署兼容。
+```env
+RAG_ENABLED=true
+RAG_CHROMA_PATH=./data/chroma/us_visa
+SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
+SILICONFLOW_API_KEY=your-siliconflow-api-key
+SILICONFLOW_EMBEDDING_MODEL=BAAI/bge-m3
+SILICONFLOW_RERANK_MODEL=Qwen/Qwen3-Reranker-4B
+```
+
+RAG 与用户自带模型配置职责分离：`RAG_*` / `SILICONFLOW_*` 只由服务端读取；用户设置页只影响对话模型，不影响 embedding/rerank。
+
+## Docker / 部署
+
+项目提供同一个 Docker 镜像，但推荐 Compose 拆分职责：`ds160-api`、`ds160-web`、`ds160-worker`、`postgres` 和 `nginx`。
 
 ```bash
 docker build -t ds160-agent2:latest .
 ```
+
+本地或极简单容器试跑：
 
 ```bash
 docker run -d --name ds160-agent2 \
@@ -325,9 +190,7 @@ docker run -d --name ds160-agent2 \
   ds160-agent2:latest
 ```
 
-上面的 `docker run` 会使用镜像默认的 `DS160_PROCESS=combined`，容器内同时运行
-FastAPI 与 Next standalone server，并默认使用 SQLite。生产或服务器测试优先使用
-Compose：
+服务器/生产风格部署优先使用 Compose：
 
 ```bash
 APP_AUTH_PASSWORD='change-me' \
@@ -340,127 +203,68 @@ APP_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 docker compose up -d --build postgres ds160-api ds160-web ds160-worker
 ```
 
-基础 Compose 服务包括：
+`nginx` 是 TLS 入口，`/api` 指向 API，其余路径指向 Web。完整部署说明见 [deploy/README.md](deploy/README.md)。已有 SQLite 数据切到 Postgres 前，先按 [Postgres Migration Runbook](docs/architecture/postgres-migration-runbook.md) 做备份和 smoke test。
 
-- `ds160-api`：只运行 FastAPI，并关闭 inline parse worker
-- `ds160-web`：只运行 Next standalone server
-- `ds160-worker`：只运行材料理解/解析 worker
-- `postgres`：生产默认数据库
+## 访问保护与后台
 
-Compose 会默认把容器内 `DATABASE_URL` 指向 `postgres`；本地 `.env` 里的
-`DATABASE_URL=sqlite...` 不会覆盖 Compose。只有本地直接跑 FastAPI 或单容器
-`docker run` 时才建议使用 `sqlite:///./app.sqlite3`；Compose 如需外部数据库，请
-设置 `COMPOSE_DATABASE_URL`。已有 SQLite 数据切到 Postgres 前，先按
-[Postgres Migration Runbook](docs/architecture/postgres-migration-runbook.md)
-做备份和 smoke test。
+- `APP_AUTH_PASSWORD` 为空时关闭普通用户鉴权，方便本地开发。
+- 设置 `APP_AUTH_PASSWORD` 后，浏览器先调用 `POST /v1/auth/login`，后端通过 `HttpOnly` Cookie 保护业务接口。
+- `ADMIN_AUTH_PASSWORD` 可单独设置后台密码；未设置时后台使用 `APP_AUTH_PASSWORD` 作为 fallback。
+- 后台登录后可发放 access keys，用户用 access key 调用普通登录接口即可进入工作台。
+- 生产环境默认保护 `/docs`、`/redoc`、`/openapi.json`，可通过 `APP_AUTH_PROTECT_DOCS=false` 调整。
+- 外部机器客户端调用 `/v1/chat/completions` 或 `/v1/responses` 时，应配置 `APP_COMPAT_API_KEY` 并使用 `Authorization: Bearer <token>`。
 
-`nginx` 是 18000 端口 TLS 入口，`/api` 与 `/healthz` 指向 API，其余路径指向
-Web。启动前需要准备 `deploy/certs/origin.crt` 和 `origin.key`：
+这只是测试阶段的进入保护，不是完整多租户用户系统。
 
-```bash
-docker compose up -d nginx
-```
+## 主要 API
 
-如需临时启动旧单容器 Compose 模式，可显式使用 profile：
+完整认证方式、base URL、SSE 事件、错误合同和示例见 [API Guide](docs/API.md)。
 
-```bash
-docker compose --profile combined up -d ds160-agent2
-```
-
-## 🔐 访问保护
-
-服务器测试阶段可以通过一个共享入口密码保护主要业务接口。登录后后端会创建服务端会话，并通过 `HttpOnly` Cookie 访问业务 API；前端不再保存长期 Bearer token。
-
-- `APP_AUTH_PASSWORD` 为空时关闭鉴权，方便本地开发
-- 设置 `APP_AUTH_PASSWORD` 后，前端会先调用 `POST /v1/auth/login`
-- 登录成功后浏览器通过 `HttpOnly; Secure; SameSite` Cookie 访问受保护接口
-- `POST /v1/auth/logout` 会撤销当前服务端会话并清理 Cookie
-- 生产环境默认保护 `/docs`、`/redoc`、`/openapi.json`，可通过 `APP_AUTH_PROTECT_DOCS=false` 调整
-- `POST /v1/chat/completions` 如需被外部机器客户端直连，应单独配置 `APP_COMPAT_API_KEY` 并使用 `Authorization: Bearer <token>`
-
-这只是测试阶段的进入保护，不是完整用户系统。当前不包含用户注册、权限分级或多租户隔离。
-
-## 📡 主要 API
-
-完整请求/响应、认证方式、错误码和示例见 [API Reference](docs/API.md)。
-
-| 接口 | 作用 |
+| 分组 | 代表接口 |
 | --- | --- |
-| `POST /v1/auth/login` | 建立服务端登录会话 |
-| `GET /v1/auth/me` | 查询当前登录状态 |
-| `POST /v1/auth/logout` | 撤销当前登录会话 |
-| `POST /v1/sessions` | 创建签证模拟会话 |
-| `POST /v1/sessions/{session_id}/messages` | 提交一轮面谈回答 |
-| `POST /v1/sessions/{session_id}/messages/stream` | 事件式 SSE 面谈回答 |
-| `POST /v1/sessions/{session_id}/debug/material-bundles` | 生成调试材料包 |
-| `POST /v1/sessions/{session_id}/debug/material-bundles/stream` | 事件式 SSE 生成调试材料包 |
-| `POST /v1/sessions/{session_id}/files` | 上传材料 |
-| `DELETE /v1/sessions/{session_id}/files/{document_id}` | 撤回材料并 tombstone 其 Case Memory 贡献 |
-| `POST /v1/model-config/models` | 使用用户模型配置代理拉取 `/v1/models` |
-| `GET /v1/rag/status` | 查询服务端知识库状态 |
-| `POST /v1/rag/files` | 上传第三方知识库文件并写入 RAG 索引 |
-| `GET /v1/sessions/{session_id}/reports/user` | 获取用户报告 |
-| `GET /v1/sessions/{session_id}/reports/internal` | 获取内部调试报告 |
-| `POST /v1/chat/completions` | OpenAI-compatible 对话入口 |
+| App / version / health | `GET /v1/app-config`、`GET /version`、`GET /healthz` |
+| Auth | `POST /v1/auth/login`、`GET /v1/auth/me`、`POST /v1/auth/logout` |
+| Sessions | `POST /v1/sessions`、`GET /v1/sessions`、`GET /v1/sessions/{session_id}/required-package` |
+| Messages | `GET /v1/sessions/{session_id}/messages`、`POST /v1/sessions/{session_id}/messages`、`POST /v1/sessions/{session_id}/messages/stream` |
+| Files / materials | `POST /v1/sessions/{session_id}/files`、`GET /v1/material-packages`、`POST /v1/sessions/{session_id}/material-packages/{package_id}/import` |
+| Reports | `GET /v1/sessions/{session_id}/reports/user`、`POST /v1/sessions/{session_id}/reports/review`、`GET /v1/sessions/{session_id}/reports/export` |
+| RAG | `GET /v1/rag/status`、`POST /v1/rag/files`、`GET /v1/admin/rag/status` |
+| Admin | `POST /v1/admin/login`、`GET /v1/admin/access-keys`、`PATCH /v1/admin/settings`、`POST /v1/admin/model-config/test` |
+| OpenAI-compatible | `POST /v1/chat/completions`、`POST /v1/responses` |
+| Debug | `GET /v1/sessions/{session_id}/debug/runtime`、`POST /v1/sessions/{session_id}/debug/material-bundles/stream` |
 
-前端生产镜像通过 `/api` 代理访问后端，所以浏览器侧路径通常是 `/api/v1/...`；后端本身仍暴露 `/v1/...`。
-
-## 🧪 测试
-
-默认测试：
+## 常用验证命令
 
 ```bash
-uv run pytest -q
+# 后端集成测试
+uv run pytest tests/integration
+
+# 前端类型检查 / lint / test
+cd web
+pnpm install
+pnpm lint
+pnpm test
+
+# 查看路由和文档路径引用
+rg -n "include_router|@router\." app/main.py app/api/routers
+rg -n "/v1/(auth|sessions|admin|rag|model-config|chat|responses)" docs/API.md app/api/routers web/lib/api/client.ts
 ```
 
-跳过真实模型测试：
+可选 live LLM 测试需要显式配置模型服务和 `RUN_LIVE_LLM_TESTS=true`。
 
-```bash
-uv run pytest -q -m "not live_llm"
-```
+## 本地数据与版本控制
 
-真实模型联调测试需要显式提供模型配置：
+- `app.sqlite3`、`data/`、上传文件、Chroma 索引和本地 `.env` 都不应提交。
+- Compose 默认使用 Postgres volume；单容器/本地开发默认 SQLite。
+- 前端版本来自 `web/package.json`，也可用 `NEXT_PUBLIC_APP_VERSION`、`NEXT_PUBLIC_GIT_SHA`、`NEXT_PUBLIC_BUILD_TIME` 覆盖。
+- 后端版本来自 `app/core/app_version.py`，也可用 `APP_GIT_SHA`、`APP_BUILD_TIME` 覆盖。
+- 部署前建议递增或覆盖版本信息，避免 UI 无法判断是否已更新。
 
-```bash
-RUN_LIVE_LLM_TESTS=1 \
-OPENAI_BASE_URL=... \
-OPENAI_API_KEY=... \
-uv run pytest tests/integration/live -q -m live_llm
-```
+## 继续阅读
 
-冻结或删除 legacy runtime 前，先运行发布预检。它不会替代真实测试，而是输出必须补齐的 replay、非 live 回归、live smoke、Docker/Postgres smoke 和 rollback 文档门禁：
-
-```bash
-uv run python -m app.cli.main release-preflight
-```
-
-如果同一发布窗口已经跑完本地 replay、focused non-live tests 和 focused live smoke，可以显式记录证据，让 preflight 只剩 Docker/Postgres 门禁。preflight 会读取进程环境和本地 `.env` 的 key presence，但只输出布尔值，不输出密钥值。
-Docker 门禁会先选择可用的 `docker` / `docker.exe` CLI，再执行 `docker compose config --quiet` 和 `docker info`；它不会打印完整 Compose 渲染结果，避免把 `.env` 中的敏感值带到日志里。
-
-```bash
-uv run python -m app.cli.main release-preflight \
-  --replay-corpus-passed \
-  --focused-tests-passed \
-  --live-smoke-passed
-```
-
-RAG live 测试需要额外提供硅基流动配置，并确保本地 Chroma 索引已经存在：
-
-```bash
-RAG_ENABLED=true \
-SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1 \
-SILICONFLOW_API_KEY=... \
-uv run pytest tests/integration/live -q -m live_llm
-```
-
-## 🗂️ 本地数据与版本控制
-
-以下内容是本地运行产物或可再生成资料，不应直接提交到 Git：
-
-- `data/`：Chroma 向量库、RAG 原始资料、live 测试报告
-- `app.sqlite3`：本地 SQLite 数据库
-- `app.sqlite3-shm` / `app.sqlite3-wal`：SQLite WAL sidecar 文件
-- `.env`：本地密钥和部署配置
-- `*_raw_materials_pack.zip`：临时资料包
-
-需要共享知识库时，优先使用受控 artifact、对象存储或重新执行导入流程，不要把 Chroma 二进制索引混进代码提交。
+- [API Guide](docs/API.md)
+- [Runtime Contracts](docs/runtime-contracts.md)
+- [Agent Runtime Spec](docs/architecture/agent-runtime-spec.md)
+- [AI-native Case Understanding Spec](docs/architecture/ai-native-case-understanding-spec.md)
+- [RAG Knowledge Spec](docs/architecture/rag-knowledge-spec.md)
+- [Deployment Guide](deploy/README.md)
