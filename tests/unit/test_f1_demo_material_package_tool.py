@@ -5,6 +5,7 @@ from pathlib import Path
 
 import fitz
 import httpx
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -331,6 +332,54 @@ def test_publish_validated_archive_creates_listable_source_package(tmp_path: Pat
             assert packages[0]["status"] == "ready"
             assert packages[0]["document_count"] == len(REQUIRED_DOCUMENT_TYPES)
             assert "自洽" not in json.dumps(packages[0], ensure_ascii=False)
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_publish_replace_keeps_existing_package_when_validation_session_missing(
+    tmp_path: Path,
+) -> None:
+    engine, factory = _session_factory(tmp_path)
+    try:
+        with factory() as db:
+            db.add(SessionRecord(session_id="sess-existing-archive", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-existing-archive",
+                    session_id="sess-existing-archive",
+                    filename="existing.pdf",
+                    status="parsed",
+                    raw_bytes=b"%PDF-existing",
+                    raw_text="existing package document",
+                    artifact_json={
+                        "document_type": "passport_bio_page",
+                        "metadata": {
+                            "debug_material_bundle": True,
+                            "synthetic_bundle_id": PACKAGE_ID,
+                            "debug_bundle_scenario_label": PACKAGE_LABEL,
+                        },
+                    },
+                )
+            )
+            db.commit()
+
+            with pytest.raises(RuntimeError, match="validation session not found"):
+                publish_validated_archive(
+                    db,
+                    validation_artifact={
+                        "session_id": "sess-missing-validation",
+                        "validation": {"passed": True},
+                    },
+                    package_id=PACKAGE_ID,
+                    label=PACKAGE_LABEL,
+                    replace=True,
+                )
+
+            db.rollback()
+            remaining = db.get(DocumentRecord, "doc-existing-archive")
+            assert remaining is not None
+            assert remaining.artifact_json["metadata"]["synthetic_bundle_id"] == PACKAGE_ID
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

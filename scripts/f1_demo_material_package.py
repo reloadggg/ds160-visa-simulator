@@ -1020,7 +1020,12 @@ def cleanup_plan_payload(plans: Sequence[CleanupPackagePlan]) -> dict[str, Any]:
     }
 
 
-def apply_cleanup_plan(db: Session, plans: Sequence[CleanupPackagePlan]) -> None:
+def apply_cleanup_plan(
+    db: Session,
+    plans: Sequence[CleanupPackagePlan],
+    *,
+    commit: bool = True,
+) -> None:
     for plan in plans:
         for evidence_id in plan.evidence_ids:
             record = db.get(EvidenceItemRecord, evidence_id)
@@ -1038,7 +1043,8 @@ def apply_cleanup_plan(db: Session, plans: Sequence[CleanupPackagePlan]) -> None
             record = db.get(DocumentRecord, document_id)
             if record is not None and is_source_archive_document(record):
                 db.delete(record)
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def validate_artifact_passed(artifact_path: Path, *, force: bool) -> dict[str, Any]:
@@ -1067,13 +1073,6 @@ def publish_validated_archive(
     required_document_types = required_document_types_for(selected_template)
     assert_template_contract(selected_template)
     session_id = validation_artifact["session_id"]
-    existing = build_cleanup_plan(db, package_id=package_id)
-    if existing and not replace:
-        raise RuntimeError(
-            f"package {package_id!r} already exists; use --replace after taking a backup"
-        )
-    if existing:
-        apply_cleanup_plan(db, existing)
 
     source_session = db.get(SessionRecord, session_id)
     if source_session is None:
@@ -1089,6 +1088,14 @@ def publish_validated_archive(
     missing = [item for item in required_document_types if item not in source_by_type]
     if missing:
         raise RuntimeError(f"validation session is missing required document types: {missing}")
+
+    existing = build_cleanup_plan(db, package_id=package_id)
+    if existing and not replace:
+        raise RuntimeError(
+            f"package {package_id!r} already exists; use --replace after taking a backup"
+        )
+    if existing:
+        apply_cleanup_plan(db, existing, commit=False)
 
     archive_session = SessionRepository(db).create(
         declared_family=selected_template.visa_family,
