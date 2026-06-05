@@ -36,6 +36,7 @@ import {
   Upload,
   Github,
   ExternalLink,
+  LogOut,
 } from "lucide-react"
 import {
   AlertDialog,
@@ -49,6 +50,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import type {
+  AccessKeyQuota,
   DebugMaterialBundleScenario,
   MaterialPackageArchiveItem,
   RagStatus,
@@ -102,6 +104,8 @@ interface SettingsPanelProps {
   onImportMaterialPackage: (packageId: string) => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
+  onLogout: () => void
+  accessKeyQuota?: AccessKeyQuota | null
   showGithub?: boolean
   showUserModelConfig?: boolean
   showRagStatus?: boolean
@@ -135,6 +139,8 @@ export function SettingsPanel({
   onImportMaterialPackage,
   onResetCurrentSession,
   onClearHistory,
+  onLogout,
+  accessKeyQuota = null,
   showGithub = true,
   showUserModelConfig = true,
   showRagStatus = true,
@@ -284,6 +290,50 @@ export function SettingsPanel({
                 {sessionId ?? "当前没有进行中的会话"}
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="py-4">
+          <CardHeader className="px-5 pb-3">
+            <CardTitle className="text-base">当前授权 Key</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 px-5">
+            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">
+                    {accessKeyQuota
+                      ? accessKeyQuota.label || accessKeyQuota.key_id
+                      : "当前登录方式"}
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    {accessKeyQuota
+                      ? `Key ID：${accessKeyQuota.key_id} · 剩余 ${accessKeyQuota.remaining_uses}/${accessKeyQuota.usage_limit} 次创建额度`
+                      : "当前登录方式不限制创建额度。"}
+                  </div>
+                </div>
+                {accessKeyQuota ? (
+                  <Badge
+                    variant={
+                      accessKeyQuota.can_create_session
+                        ? "outline"
+                        : "destructive"
+                    }
+                  >
+                    {accessKeyQuota.can_create_session ? "可创建" : "额度已用尽"}
+                  </Badge>
+                ) : null}
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              className="w-full justify-center gap-2 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={onLogout}
+            >
+              <LogOut className="h-4 w-4" />
+              退出当前 Key / 切换账号
+            </Button>
           </CardContent>
         </Card>
 

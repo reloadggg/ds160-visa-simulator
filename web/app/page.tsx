@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 
 import { AnalysisPanel } from "@/components/ds160/analysis-panel"
 import { ChatPanel } from "@/components/ds160/chat-panel"
@@ -18,6 +19,7 @@ import { useAuth } from "@/hooks/use-auth"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
 import { APP_VERSION_LABEL } from "@/lib/app-version"
 import { getAppConfig } from "@/lib/api/client"
+import { LogOut } from "lucide-react"
 import type {
   AppConfig,
   SessionHistoryEntry,
@@ -51,7 +53,7 @@ export default function DS160Workbench() {
 function Workbench() {
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG)
-  const { userProfile, accessKeyQuota } = useAuth()
+  const { userProfile, accessKeyQuota, logout } = useAuth()
 
   const {
     apiBaseUrl,
@@ -181,6 +183,7 @@ function Workbench() {
           }
           isDebugBundleGenerating={isDebugBundleGenerating}
           onExportConversationImage={handleExportConversationImage}
+          onLogout={() => void logout()}
         />
       )
     }
@@ -200,11 +203,23 @@ function Workbench() {
             先选择签证类型开始新会话，也可以查看本地历史记录和材料归档。
           </p>
         </div>
-        {mockMode ? (
-          <div className="rounded-full border border-amber-300 bg-amber-50/95 px-3 py-1 text-[10px] font-medium text-amber-800 shadow-sm backdrop-blur md:text-xs">
-            {sessionId ? "MOCK" : "开发模式：Mock 数据"}
-          </div>
-        ) : null}
+        <div className="flex shrink-0 items-center gap-2">
+          {mockMode ? (
+            <div className="rounded-full border border-amber-300 bg-amber-50/95 px-3 py-1 text-[10px] font-medium text-amber-800 shadow-sm backdrop-blur md:text-xs">
+              {sessionId ? "MOCK" : "开发模式：Mock 数据"}
+            </div>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void logout()}
+            className="gap-2 rounded-full bg-white/70"
+          >
+            <LogOut className="h-4 w-4" />
+            <span className="hidden sm:inline">退出当前 Key</span>
+            <span className="sm:hidden">退出</span>
+          </Button>
+        </div>
       </header>
     )
   }
@@ -364,6 +379,8 @@ function Workbench() {
                 onImportMaterialPackage={handleImportMaterialPackage}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
+                onLogout={() => void logout()}
+                accessKeyQuota={accessKeyQuota}
                 showGithub={appConfig.show_github_link}
                 showUserModelConfig={appConfig.user_model_config_enabled}
                 showRagStatus={appConfig.rag_status_user_visible}

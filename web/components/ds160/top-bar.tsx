@@ -37,6 +37,7 @@ import {
   FlaskConical,
   Camera,
   MoreHorizontal,
+  LogOut,
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import type { DebugMaterialBundleScenario, VisaFamily } from "@/lib/api/types"
@@ -56,6 +57,7 @@ interface TopBarProps {
   ) => void
   isDebugBundleGenerating?: boolean
   onExportConversationImage?: () => void
+  onLogout: () => void
 }
 
 export function TopBar({
@@ -70,6 +72,7 @@ export function TopBar({
   onDebugMaterialBundleScenario,
   isDebugBundleGenerating = false,
   onExportConversationImage,
+  onLogout,
 }: TopBarProps) {
   const [debugBundleDialogOpen, setDebugBundleDialogOpen] = useState(false)
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
@@ -212,6 +215,11 @@ export function TopBar({
             <DropdownMenuItem onClick={onReset}>
               <RotateCcw className="h-4 w-4" />
               重新选择
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onLogout}>
+              <LogOut className="h-4 w-4" />
+              退出当前 Key
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

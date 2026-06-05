@@ -4,6 +4,7 @@ import type { AccessKeyQuota } from "@/lib/api/types"
 
 const AUTH_USER_KEY = "auth_user"
 const AUTH_HISTORY_NAMESPACE_KEY = "auth_history_namespace"
+const AUTH_LOGOUT_EVENT = "auth:logout"
 const LEGACY_HISTORY_STORAGE_KEY = "ds160-web-history-v1"
 const HISTORY_STORAGE_PREFIX = "ds160-web-history-v2:"
 const DEFAULT_AVATAR_URL = "/default-user-avatar.svg"
@@ -106,6 +107,15 @@ export function useAuth() {
   useEffect(() => {
     let cancelled = false
 
+    const clearAuthState = (message?: string) => {
+      clearStoredUserProfile()
+      clearHistoryNamespace()
+      setUserProfile(null)
+      setAccessKeyQuota(null)
+      setIsAuthenticated(false)
+      setError(message ?? null)
+    }
+
     const restoreAuthStatus = async () => {
       try {
         const status = await getAuthStatus()
@@ -113,11 +123,7 @@ export function useAuth() {
           return
         }
         if (!status.authenticated) {
-          clearStoredUserProfile()
-          clearHistoryNamespace()
-          setUserProfile(null)
-          setAccessKeyQuota(null)
-          setIsAuthenticated(false)
+          clearAuthState()
           return
         }
         syncHistoryNamespace(status.history_namespace)
@@ -128,11 +134,7 @@ export function useAuth() {
         setIsAuthenticated(true)
       } catch {
         if (!cancelled) {
-          clearStoredUserProfile()
-          clearHistoryNamespace()
-          setUserProfile(null)
-          setAccessKeyQuota(null)
-          setIsAuthenticated(false)
+          clearAuthState()
         }
       } finally {
         if (!cancelled) {
@@ -142,19 +144,20 @@ export function useAuth() {
     }
 
     const handleUnauthorized = () => {
-      clearStoredUserProfile()
-      clearHistoryNamespace()
-      setUserProfile(null)
-      setAccessKeyQuota(null)
-      setIsAuthenticated(false)
-      setError("会话已过期，请重新登录")
+      clearAuthState("会话已过期，请重新登录")
+    }
+
+    const handleLogout = () => {
+      clearAuthState()
     }
 
     void restoreAuthStatus()
     window.addEventListener("auth:unauthorized", handleUnauthorized)
+    window.addEventListener(AUTH_LOGOUT_EVENT, handleLogout)
     return () => {
       cancelled = true
       window.removeEventListener("auth:unauthorized", handleUnauthorized)
+      window.removeEventListener(AUTH_LOGOUT_EVENT, handleLogout)
     }
   }, [])
 
@@ -180,12 +183,11 @@ export function useAuth() {
   }, [])
 
   const logout = useCallback(async () => {
-    await apiLogout()
-    clearStoredUserProfile()
-    clearHistoryNamespace()
-    setUserProfile(null)
-    setAccessKeyQuota(null)
-    setIsAuthenticated(false)
+    try {
+      await apiLogout()
+    } finally {
+      window.dispatchEvent(new CustomEvent(AUTH_LOGOUT_EVENT))
+    }
   }, [])
 
   return {
