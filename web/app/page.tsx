@@ -18,7 +18,11 @@ import { useAuth } from "@/hooks/use-auth"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
 import { APP_VERSION_LABEL } from "@/lib/app-version"
 import { getAppConfig } from "@/lib/api/client"
-import type { AppConfig, SessionHistoryEntry, UserModelConfig } from "@/lib/api/types"
+import type {
+  AppConfig,
+  SessionHistoryEntry,
+  UserModelConfig,
+} from "@/lib/api/types"
 
 const DEFAULT_APP_CONFIG: AppConfig = {
   show_github_link: false,
@@ -88,9 +92,6 @@ function Workbench() {
     latestDebugMaterialBundle,
     isLoadingRuntimeDebug,
     runtimeDebugError,
-    userModelConfig,
-    availableModels,
-    isLoadingModels,
     modelConfigError,
     ragStatus,
     isLoadingRagStatus,
@@ -99,6 +100,7 @@ function Workbench() {
     handleComposerCommandHandled,
     handleVisaSelect,
     handleSendMessage,
+    handleRetryMessage,
     handleViewDetails,
     handleActionClick,
     handlePause,
@@ -106,7 +108,6 @@ function Workbench() {
     handleReset,
     handleCopySessionId,
     handleUserModelConfigChange,
-    handleFetchUserModels,
     handleUploadRagFile,
     refreshRagStatus,
     handleExportSession,
@@ -188,7 +189,9 @@ function Workbench() {
       <header className="m-3 flex h-16 shrink-0 items-center justify-between rounded-[28px] border border-white/70 bg-white/60 px-4 shadow-lg shadow-blue-950/5 backdrop-blur-2xl md:mx-4 md:px-6">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 className="truncate text-base font-semibold text-foreground md:text-lg">DS-160 面签工作台</h2>
+            <h2 className="truncate text-base font-semibold text-foreground md:text-lg">
+              模拟面签工作台
+            </h2>
             <span className="shrink-0 rounded-xl border border-blue-100 bg-blue-50/70 px-2 py-0.5 font-mono text-[11px] text-blue-700">
               {APP_VERSION_LABEL}
             </span>
@@ -222,15 +225,13 @@ function Workbench() {
     return (
       <div className="flex h-full min-h-0 min-w-0">
         <main
-          className={cn(
-            "flex min-h-0 min-w-0 flex-1 flex-col",
-            "p-2 md:p-4",
-          )}
+          className={cn("flex min-h-0 min-w-0 flex-1 flex-col", "p-2 md:p-4")}
         >
           <ChatPanel
             messages={messages}
             activityEvents={activityEvents}
             onSendMessage={handleSendMessage}
+            onRetryMessage={handleRetryMessage}
             userName={userProfile?.displayName ?? "User"}
             userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
             isSending={isSending}
@@ -276,20 +277,46 @@ function Workbench() {
         <div className="flex min-w-0 flex-1 flex-col">
           {renderHeader()}
           <div className="min-h-0 flex-1 overflow-y-auto pb-[calc(4.75rem+env(safe-area-inset-bottom))] lg:pb-0">
-            <div className={cn("h-full", effectiveActiveNavItem === "workbench" ? "block" : "hidden")}>
+            <div
+              className={cn(
+                "h-full",
+                effectiveActiveNavItem === "workbench" ? "block" : "hidden",
+              )}
+            >
               {renderWorkbench()}
             </div>
-            <div className={cn("h-full", effectiveActiveNavItem === "history" ? "block" : "hidden")}>
-              <HistoryPanel entries={sessionHistory} onRestore={onRestoreSession} />
+            <div
+              className={cn(
+                "h-full",
+                effectiveActiveNavItem === "history" ? "block" : "hidden",
+              )}
+            >
+              <HistoryPanel
+                entries={sessionHistory}
+                onRestore={onRestoreSession}
+              />
             </div>
-            <div className={cn("h-full", effectiveActiveNavItem === "materials" ? "block" : "hidden")}>
+            <div
+              className={cn(
+                "h-full",
+                effectiveActiveNavItem === "materials" ? "block" : "hidden",
+              )}
+            >
               <MaterialsPanel
                 currentMaterials={uploadedMaterials}
                 historyEntries={sessionHistory}
                 currentSessionId={sessionId}
               />
             </div>
-            <div className={cn("h-full", effectiveActiveNavItem === "debug" && appConfig.debug_console_enabled ? "block" : "hidden")}>
+            <div
+              className={cn(
+                "h-full",
+                effectiveActiveNavItem === "debug" &&
+                  appConfig.debug_console_enabled
+                  ? "block"
+                  : "hidden",
+              )}
+            >
               <RuntimeDebugPanel
                 sessionId={sessionId}
                 snapshot={runtimeDebugSnapshot}
@@ -301,7 +328,12 @@ function Workbench() {
                 onCopyDebugPackage={handleCopyRuntimeDebugPackage}
               />
             </div>
-            <div className={cn("h-full", effectiveActiveNavItem === "settings" ? "block" : "hidden")}>
+            <div
+              className={cn(
+                "h-full",
+                effectiveActiveNavItem === "settings" ? "block" : "hidden",
+              )}
+            >
               <SettingsPanel
                 mockMode={mockMode}
                 apiBaseUrl={apiBaseUrl}
@@ -314,22 +346,19 @@ function Workbench() {
                 materialPackages={materialPackages}
                 isLoadingMaterialPackages={isLoadingMaterialPackages}
                 isImportingMaterialPackage={isImportingMaterialPackage}
-                userModelConfig={userModelConfig}
-                availableModels={availableModels}
-                isLoadingModels={isLoadingModels}
                 modelConfigError={modelConfigError}
                 ragStatus={ragStatus}
                 isLoadingRagStatus={isLoadingRagStatus}
                 isUploadingRagFile={isUploadingRagFile}
                 ragError={ragError}
-                onUserModelConfigChange={handleUserModelConfigChange}
-                onFetchUserModels={handleFetchUserModels}
                 onUploadRagFile={handleUploadRagFile}
                 onRefreshRagStatus={refreshRagStatus}
                 onCopySessionId={handleCopySessionId}
                 onExportSession={handleExportSession}
                 onExportConversationImage={handleExportConversationImage}
-                onDebugMaterialBundleScenario={handleDebugMaterialBundleScenario}
+                onDebugMaterialBundleScenario={
+                  handleDebugMaterialBundleScenario
+                }
                 onRefreshMaterialPackages={refreshMaterialPackages}
                 onImportMaterialPackage={handleImportMaterialPackage}
                 onResetCurrentSession={handleReset}
@@ -346,26 +375,33 @@ function Workbench() {
         {/* Mobile Bottom Navigation */}
         <nav className="fixed bottom-0 left-0 right-0 z-50 flex h-[calc(4rem+env(safe-area-inset-bottom))] items-center border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">
           <ul className="flex w-full justify-around px-2">
-            {navItems.filter((item) => item.id !== "debug" || appConfig.debug_console_enabled).map((item) => {
-              const Icon = item.icon
-              const isActive = effectiveActiveNavItem === item.id
-              return (
-                <li key={item.id} className="flex-1">
-                  <button
-                    onClick={() => setActiveNavItem(item.id)}
-                    className={cn(
-                      "flex w-full flex-col items-center justify-center gap-1 py-2 transition-colors",
-                      isActive
-                        ? "text-primary"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    <Icon className="h-5 w-5" />
-                    <span className="text-[10px] font-medium">{item.label}</span>
-                  </button>
-                </li>
+            {navItems
+              .filter(
+                (item) =>
+                  item.id !== "debug" || appConfig.debug_console_enabled,
               )
-            })}
+              .map((item) => {
+                const Icon = item.icon
+                const isActive = effectiveActiveNavItem === item.id
+                return (
+                  <li key={item.id} className="flex-1">
+                    <button
+                      onClick={() => setActiveNavItem(item.id)}
+                      className={cn(
+                        "flex w-full flex-col items-center justify-center gap-1 py-2 transition-colors",
+                        isActive
+                          ? "text-primary"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <Icon className="h-5 w-5" />
+                      <span className="text-[10px] font-medium">
+                        {item.label}
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
           </ul>
         </nav>
       </div>

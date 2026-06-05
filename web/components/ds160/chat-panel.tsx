@@ -27,6 +27,7 @@ interface ChatPanelProps {
   messages: ChatMessage[]
   activityEvents?: SessionActivityEvent[]
   onSendMessage: (message: string, files?: File[]) => void
+  onRetryMessage?: (message: ChatMessage) => void
   userName: string
   userAvatarUrl: string
   isLoading?: boolean
@@ -42,6 +43,7 @@ export function ChatPanel({
   messages,
   activityEvents = [],
   onSendMessage,
+  onRetryMessage,
   userName,
   userAvatarUrl,
   isLoading = false,
@@ -405,9 +407,26 @@ export function ChatPanel({
                 ) : null}
                 {renderPublicReasoning(message)}
                 {message.role === "user" && message.status === "error" && (
-                  <div className="mt-1 flex items-center gap-1 text-xs text-destructive">
+                  <div className="mt-1 flex flex-wrap items-center justify-end gap-1.5 text-xs text-destructive">
                     <AlertCircle className="h-3 w-3" />
-                    <span>发送失败</span>
+                    <span>{message.error_detail ?? "发送失败"}</span>
+                    {message.content.trim() && onRetryMessage ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 rounded-full px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        disabled={isSending || isUploading || isSessionEnded}
+                        onClick={() => onRetryMessage(message)}
+                      >
+                        重试本条
+                      </Button>
+                    ) : null}
+                    {message.attachments?.length ? (
+                      <span className="text-[11px] text-muted-foreground">
+                        附件需重新上传
+                      </span>
+                    ) : null}
                   </div>
                 )}
               </div>

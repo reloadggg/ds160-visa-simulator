@@ -13,6 +13,8 @@ class ModelRuntimeError(RuntimeError):
         error_category: str | None = None,
         body: object | None = None,
         missing_env_vars: list[str] | None = None,
+        retry_attempts: int | None = None,
+        retry_exhausted: bool | None = None,
     ) -> None:
         self.detail = detail
         self.status_code = status_code
@@ -25,6 +27,8 @@ class ModelRuntimeError(RuntimeError):
         )
         self.body = body
         self.missing_env_vars = list(missing_env_vars or [])
+        self.retry_attempts = retry_attempts
+        self.retry_exhausted = retry_exhausted
         super().__init__(detail)
 
     @staticmethod
@@ -56,6 +60,8 @@ class ModelRuntimeError(RuntimeError):
             "provider": self.provider,
             "model": self.model,
             "missing_env_vars": self.missing_env_vars,
+            "retry_attempts": self.retry_attempts,
+            "retry_exhausted": self.retry_exhausted,
         }
         return {key: value for key, value in payload.items() if value not in (None, [], {})}
 

@@ -43,6 +43,109 @@ export interface ModelListResponse {
   models: ModelListItem[]
 }
 
+export interface AdminSettings {
+  show_github_link?: boolean
+  debug_console_enabled?: boolean
+  debug_material_enabled?: boolean
+  user_model_config_enabled?: boolean
+  rag_status_user_visible?: boolean
+  model_base_url?: string | null
+  model_name?: string | null
+  model_streaming_enabled?: boolean
+  model_api_key_configured?: boolean
+}
+
+export type AdminAccessKeyStatusFilter = "enabled" | "disabled" | "all"
+
+export interface AdminAccessKeyRecord {
+  key_id: string
+  label: string
+  masked_key_preview?: string | null
+  secret_available?: boolean
+  usage_limit: number
+  usage_count: number
+  remaining_uses: number
+  enabled: boolean
+  can_create_session?: boolean
+  created_at: string
+  expires_at?: string | null
+  last_used_at?: string | null
+  revoked_at?: string | null
+}
+
+export interface AdminAccessKeyListResponse {
+  keys: AdminAccessKeyRecord[]
+}
+
+export interface AdminAccessKeyCreateRequest {
+  label: string
+  usage_limit: number
+  expires_at: string | null
+  enabled: boolean
+}
+
+export interface AdminAccessKeyCreateResponse {
+  key: string
+  record: AdminAccessKeyRecord
+}
+
+export interface AdminAccessKeyPatchRequest {
+  label?: string
+  usage_limit?: number
+  expires_at?: string | null
+  enabled?: boolean
+}
+
+export interface AdminAccessKeyPatchResponse {
+  record: AdminAccessKeyRecord
+}
+
+export interface AdminAccessKeySecretResponse {
+  key_id: string
+  key: string | null
+  available: boolean
+  detail?: string | null
+}
+
+export interface AdminModelConfigModelsRequest {
+  base_url?: string
+  api_key?: string
+}
+
+export interface AdminModelConfigModelsResponse {
+  models: ModelListItem[]
+  source?: string
+}
+
+export interface AdminModelConfigTestRequest {
+  base_url?: string
+  api_key?: string
+  model?: string
+}
+
+export interface AdminRuntimeUpstreamPayload {
+  status?: number | null
+  detail?: string | null
+  error_category?: string | null
+  upstream_code?: string | null
+  provider?: string | null
+  model?: string | null
+  missing_env_vars?: string[]
+  retry_attempts?: number | null
+  retry_exhausted?: boolean | null
+}
+
+export interface AdminModelConfigTestResponse {
+  ok: boolean
+  latency_ms?: number | null
+  model?: string | null
+  base_url?: string | null
+  source?: string | null
+  detail?: string | null
+  provider?: string | null
+  upstream?: AdminRuntimeUpstreamPayload
+}
+
 export interface RagCollectionStatus {
   name: string
   source_type: string
@@ -100,6 +203,8 @@ export interface MessageStreamErrorPayload {
   provider?: string | null
   model?: string | null
   missing_env_vars?: string[]
+  retry_attempts?: number | null
+  retry_exhausted?: boolean | null
 }
 
 export interface RuntimeDebugEvent {
@@ -107,7 +212,13 @@ export interface RuntimeDebugEvent {
   session_id?: string
   phase: string
   step: string
-  status: "started" | "completed" | "failed" | "skipped" | "still_running" | string
+  status:
+    | "started"
+    | "completed"
+    | "failed"
+    | "skipped"
+    | "still_running"
+    | string
   summary?: string
   duration_ms?: number | null
   payload?: Record<string, unknown>
@@ -211,7 +322,11 @@ export interface DebugMaterialBundleResponse {
   }
 }
 
-export type MaterialPackageStatus = "ready" | "partial" | "failed" | (string & {})
+export type MaterialPackageStatus =
+  | "ready"
+  | "partial"
+  | "failed"
+  | (string & {})
 export type MaterialPackageImportStatus =
   | "imported"
   | "partial"
@@ -343,6 +458,9 @@ export interface ChatMessage {
   status?: "sending" | "sent" | "error"
   attachments?: ChatAttachment[]
   public_reasoning?: PublicReasoning | null
+  client_message_id?: string | null
+  retry_content?: string | null
+  error_detail?: string | null
 }
 
 export interface SessionActivityEvent {

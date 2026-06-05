@@ -103,6 +103,7 @@ class AccessKeyRecord(Base):
 
     key_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    key_display_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     label: Mapped[str] = mapped_column(String(160), default="")
     usage_limit: Mapped[int] = mapped_column(Integer, default=1)
     usage_count: Mapped[int] = mapped_column(Integer, default=0)

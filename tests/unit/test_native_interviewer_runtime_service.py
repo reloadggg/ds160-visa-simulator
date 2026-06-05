@@ -191,6 +191,7 @@ def test_openai_compatible_runner_uses_json_chat_without_agents(
         "api_key": "test-key",
         "base_url": "https://example.test/v1",
         "timeout": settings.openai_timeout_seconds,
+        "max_retries": 0,
         "default_headers": {"User-Agent": "curl/8.5.0"},
     }
     assert captured["completion_kwargs"]["model"] == "claude-sonnet-4-6"

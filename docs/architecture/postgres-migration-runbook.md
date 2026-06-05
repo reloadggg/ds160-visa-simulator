@@ -142,6 +142,36 @@ Rules:
 
 Do not point multiple production containers at the old SQLite file.
 
+## Additive Schema Patch: Access-Key Secret Retrieval
+
+Access keys created after the admin-console retrieval contract must persist the
+generated plaintext in backend-only nullable storage while authentication
+continues to use `key_hash`. For an existing Postgres database, run this
+additive patch before or during the app rollout:
+
+```sql
+ALTER TABLE access_keys ADD COLUMN IF NOT EXISTS key_display_value TEXT;
+```
+
+This column is intentionally nullable. Existing keys with `NULL` remain valid
+for login and linked-session history, but their plaintext cannot be revealed.
+Normal list APIs must keep returning metadata only; reveal the stored secret
+only through the admin-only per-key endpoint.
+
+## Runtime Model Config Persistence
+
+The admin console runtime model settings are stored in the DB-backed `demo`
+admin settings row. A fully saved admin runtime config (`model_base_url`,
+`model_api_key`, and `model_name`) overrides the deployment `.env` model
+settings for subsequent backend model calls. If the admin settings row is
+missing or incomplete, `.env` remains the fallback/default runtime source.
+
+Saving model settings never writes back to `.env`. Empty, omitted, or `null`
+API-key patches preserve the previously saved key; admin settings responses
+return only `model_api_key_configured`, never the raw key. In-flight message
+requests keep the runtime config they captured when the request started, so an
+admin save affects later model calls only.
+
 The guarded production helper wraps the backup, split Compose startup, dry-run,
 write migration, and smoke checks in one maintenance-window command:
 

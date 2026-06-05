@@ -499,6 +499,248 @@ def test_message_user_turn_commits_before_runtime_call(
     assert run_seen_user_turns == [1]
 
 
+
+
+def test_message_post_retries_transient_provider_failures_then_succeeds(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        if run_count < 3:
+            raise ModelRuntimeError(
+                detail="temporary provider connection failure",
+                status_code=502,
+                provider="openai_compatible",
+                model="gpt-5.4",
+                upstream_code="upstream_connection_error",
+                error_category="upstream_connection_error",
+            )
+        return {
+            "assistant_message": f"recovered after retries: {message_text}",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {"run_count": run_count},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "My parents will pay for my first year.",
+            "client_message_id": "client-provider-retry-success-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert run_count == 3
+    assert response.json()["assistant_message"].startswith("recovered after retries")
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert [turn.role for turn in turns] == ["user", "assistant"]
+    assert turns[0].client_message_id == "client-provider-retry-success-1"
+
+
+
+def test_message_post_retries_transient_rate_limit_429(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        if run_count == 1:
+            raise ModelRuntimeError(
+                detail="模型服务临时限流，请稍后重试。",
+                status_code=429,
+                provider="openai_compatible",
+                model="gpt-5.4",
+                upstream_code="rate_limit_exceeded",
+                body={"code": "rate_limit_exceeded"},
+            )
+        return {
+            "assistant_message": "rate limit recovered",
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {"decision": "continue_interview"},
+            "prompt_trace": {"run_count": run_count},
+        }
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My parents will sponsor me."},
+    )
+
+    assert response.status_code == 200
+    assert run_count == 2
+    assert response.json()["assistant_message"] == "rate limit recovered"
+
+def test_message_post_exhausted_transient_provider_failure_cleans_user_turn(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        raise ModelRuntimeError(
+            detail="temporary provider unavailable",
+            status_code=503,
+            provider="openai_compatible",
+            model="gpt-5.4",
+            upstream_code="service_unavailable",
+            error_category="upstream_model",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "My father owns a company.",
+            "client_message_id": "client-provider-retry-exhausted-1",
+        },
+    )
+
+    assert response.status_code == 503
+    assert run_count == 3
+    detail = response.json()["detail"]
+    assert detail["retry_attempts"] == 2
+    assert detail["retry_exhausted"] is True
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert turns == []
+
+
+def test_message_post_does_not_retry_quota_or_auth_provider_failures(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        raise ModelRuntimeError(
+            detail="当前对话模型额度已耗尽，请更换可用配置。",
+            status_code=429,
+            provider="openai_compatible",
+            model="gpt-5.4",
+            upstream_code="API_KEY_QUOTA_EXHAUSTED",
+            body={"code": "API_KEY_QUOTA_EXHAUSTED", "message": "余额不足"},
+        )
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My mother will sponsor me."},
+    )
+
+    assert response.status_code == 429
+    assert run_count == 1
+    detail = response.json()["detail"]
+    assert detail["upstream_code"] == "API_KEY_QUOTA_EXHAUSTED"
+    assert "retry_attempts" not in detail
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord).where(SessionTurnRecord.session_id == session_id)
+        ).all()
+    assert turns == []
+
+
+def test_message_post_does_not_retry_model_config_provider_failure(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text):
+        nonlocal run_count
+        run_count += 1
+        raise ModelRuntimeError(
+            detail="当前对话模型配置不可用，请检查模型设置。",
+            status_code=503,
+            provider="openai_compatible",
+            model="gpt-5.4",
+            upstream_code="model_config",
+            error_category="upstream_model",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "My father will sponsor me."},
+    )
+
+    assert response.status_code == 503
+    assert run_count == 1
+    detail = response.json()["detail"]
+    assert detail["upstream_code"] == "model_config"
+    assert "retry_attempts" not in detail
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord).where(SessionTurnRecord.session_id == session_id)
+        ).all()
+    assert turns == []
+
+
 def test_message_turn_records_interview_memory_for_answered_question(
     client: TestClient,
     db_session_factory,
@@ -881,18 +1123,23 @@ def test_messages_stream_model_error_exposes_public_cause(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text, user_turn=None):
+        nonlocal run_count
+        run_count += 1
+        raise ModelRuntimeError(
+            detail="上游模型请求超时，本轮面谈回复未生成。",
+            status_code=504,
+            provider="openai_compatible",
+            model="gpt-5.4",
+            upstream_code="upstream_timeout",
+            error_category="upstream_timeout",
+        )
+
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
-        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
-            ModelRuntimeError(
-                detail="上游模型请求超时，本轮面谈回复未生成。",
-                status_code=504,
-                provider="openai_compatible",
-                model="gpt-5.4",
-                upstream_code="upstream_timeout",
-                error_category="upstream_timeout",
-            )
-        ),
+        fake_run_turn,
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -905,7 +1152,18 @@ def test_messages_stream_model_error_exposes_public_cause(
             body = response.read().decode()
 
     assert response.status_code == 200
+    assert run_count == 3
     events = parse_sse_events(body)
+    debug_events = [payload for event, payload in events if event == "debug_event"]
+    retry_events = [
+        payload for payload in debug_events if payload["step"] == "provider_runtime_retry"
+    ]
+    assert any(
+        payload["status"] == "failed"
+        and payload["payload"]["attempt"] == 1
+        and payload["payload"]["will_retry"] is True
+        for payload in retry_events
+    )
     assert events[-1][0] == "error"
     assert events[-1][1] == {
         "status": 504,
@@ -914,6 +1172,8 @@ def test_messages_stream_model_error_exposes_public_cause(
         "upstream_code": "upstream_timeout",
         "provider": "openai_compatible",
         "model": "gpt-5.4",
+        "retry_attempts": 2,
+        "retry_exhausted": True,
     }
     assert any(
         record.message == "message model runtime failed"
@@ -921,6 +1181,12 @@ def test_messages_stream_model_error_exposes_public_cause(
         and getattr(record, "session_id", None) == session_id
         for record in caplog.records
     )
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord).where(SessionTurnRecord.session_id == session_id)
+        ).all()
+    assert turns == []
 
 
 def test_messages_stream_requires_switch_for_user_model_config(
@@ -1618,15 +1884,20 @@ def test_message_turn_keeps_user_turn_when_native_quality_guard_blocks_output(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph")
+    run_count = 0
+
+    def fake_run_turn(self, record, message_text, user_turn=None):
+        nonlocal run_count
+        run_count += 1
+        raise ModelRuntimeError(
+            detail="模型输出未通过连续面谈质量检查，已阻止发送重复或失真的面试问题。",
+            status_code=503,
+            upstream_code="native_quality_guard_failed",
+        )
+
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
-        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
-            ModelRuntimeError(
-                detail="模型输出未通过连续面谈质量检查，已阻止发送重复或失真的面试问题。",
-                status_code=503,
-                upstream_code="native_quality_guard_failed",
-            )
-        ),
+        fake_run_turn,
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -1641,6 +1912,7 @@ def test_message_turn_keeps_user_turn_when_native_quality_guard_blocks_output(
     )
 
     assert response.status_code == 503
+    assert run_count == 1
     detail = response.json()["detail"]
     assert detail["upstream_code"] == "native_quality_guard_failed"
     assert "质量检查" in detail["detail"]

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
 from app.core.settings import settings
 from app.db.models import AdminSettingRecord
+from app.agents.user_model_config import normalize_openai_base_url
 
 DEMO_SETTINGS_KEY = "demo"
 
@@ -32,6 +35,25 @@ class EffectiveModelConfig:
     source: str
 
 
+_admin_model_runtime_config: ContextVar[EffectiveModelConfig | None] = ContextVar(
+    "admin_model_runtime_config",
+    default=None,
+)
+
+
+@contextmanager
+def admin_model_runtime(config: EffectiveModelConfig | None) -> Iterator[None]:
+    token = _admin_model_runtime_config.set(config)
+    try:
+        yield
+    finally:
+        _admin_model_runtime_config.reset(token)
+
+
+def current_admin_model_runtime_config() -> EffectiveModelConfig | None:
+    return _admin_model_runtime_config.get()
+
+
 class AdminConfigService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -49,7 +71,22 @@ class AdminConfigService:
             if key not in patch:
                 continue
             value = patch[key]
-            if key == "model_api_key" and value is None:
+            if key == "model_api_key":
+                cleaned_key = _clean_string(value)
+                if cleaned_key is None:
+                    continue
+                current[key] = cleaned_key
+                continue
+            if key == "model_base_url":
+                cleaned_base_url = _clean_string(value)
+                current[key] = (
+                    normalize_openai_base_url(cleaned_base_url)
+                    if cleaned_base_url is not None
+                    else None
+                )
+                continue
+            if key == "model_name":
+                current[key] = _clean_string(value)
                 continue
             current[key] = value
         record = self.db.get(AdminSettingRecord, DEMO_SETTINGS_KEY)
@@ -70,7 +107,10 @@ class AdminConfigService:
                 current.get("debug_console_enabled")
                 and current.get("debug_material_enabled")
             ),
-            "user_model_config_enabled": bool(current.get("user_model_config_enabled")),
+            # Product rule: user-side BYOK is not part of normal operation.
+            # The admin DB flag can still guard legacy/internal endpoints, but
+            # public app config must not advertise user model controls.
+            "user_model_config_enabled": False,
             # Product rule for the online demo: RAG/knowledge-base status is an
             # admin-only operational surface. Keep the field for frontend
             # compatibility, but never expose it to the user workbench.
@@ -85,6 +125,10 @@ class AdminConfigService:
         return masked
 
     def effective_model_config(self) -> EffectiveModelConfig:
+        runtime_config = current_admin_model_runtime_config()
+        if runtime_config is not None:
+            return runtime_config
+
         current = self.get_settings()
         base_url = _clean_string(current.get("model_base_url"))
         api_key = _clean_string(current.get("model_api_key"))

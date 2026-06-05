@@ -54,6 +54,9 @@ AUTH_SESSION_COLUMN_DEFS = {
 AUTH_SESSION_NULLABLE_COLUMN_DEFS = {
     "access_key_id": "VARCHAR(32)",
 }
+ACCESS_KEY_NULLABLE_COLUMN_DEFS = {
+    "key_display_value": "TEXT",
+}
 SESSION_TURN_ORDER_INDEX_NAME = "ux_session_turns_session_id_turn_index"
 SESSION_TURN_CLIENT_MESSAGE_INDEX_NAME = "ux_session_turns_session_id_client_message_id"
 
@@ -156,6 +159,39 @@ def bootstrap_auth_sessions_table(db_engine: Engine) -> None:
         table_name="auth_sessions",
         column_defs=AUTH_SESSION_NULLABLE_COLUMN_DEFS,
     )
+
+
+def bootstrap_access_keys_table(db_engine: Engine) -> None:
+    inspector = inspect(db_engine)
+    if "access_keys" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("access_keys")}
+    missing_columns = [
+        column_name
+        for column_name in ACCESS_KEY_NULLABLE_COLUMN_DEFS
+        if column_name not in existing_columns
+    ]
+    if not missing_columns:
+        return
+
+    with db_engine.begin() as connection:
+        for column_name in missing_columns:
+            column_type = ACCESS_KEY_NULLABLE_COLUMN_DEFS[column_name]
+            if db_engine.dialect.name == "postgresql":
+                connection.execute(
+                    text(
+                        f"ALTER TABLE access_keys "
+                        f"ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+                    )
+                )
+            else:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE access_keys "
+                        f"ADD COLUMN {column_name} {column_type}"
+                    )
+                )
 
 
 def bootstrap_documents_table(db_engine: Engine) -> None:
@@ -342,6 +378,7 @@ app.middleware("http")(simple_auth_middleware)
 bootstrap_sqlite_runtime(engine)
 Base.metadata.create_all(bind=engine)
 bootstrap_auth_sessions_table(engine)
+bootstrap_access_keys_table(engine)
 bootstrap_sessions_table(engine)
 bootstrap_documents_table(engine)
 bootstrap_session_turns_table(engine)

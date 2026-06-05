@@ -234,6 +234,11 @@ function toRuntimeModelConfig(
   }
 }
 
+interface SendMessageOptions {
+  reuseMessageId?: string
+  clientMessageId?: string
+}
+
 function formatRequestedDocuments(labels: string[]): string {
   if (!labels.length) {
     return ""
@@ -801,7 +806,10 @@ function humanizeUploadStatus(
 }
 
 function describeMessageStreamError(error: MessageStreamErrorPayload): string {
-  const detail = error.detail?.trim() || "流式消息处理失败。"
+  const detail =
+    typeof error.detail === "string" && error.detail.trim()
+      ? error.detail.trim()
+      : "流式消息处理失败。"
   const categoryLabels: Record<string, string> = {
     model_config: "模型配置缺失",
     upstream_model: "上游模型服务错误",
@@ -815,25 +823,45 @@ function describeMessageStreamError(error: MessageStreamErrorPayload): string {
   const category = error.error_category
     ? categoryLabels[error.error_category] ?? error.error_category
     : null
+  const retryHint =
+    error.retry_exhausted && typeof error.retry_attempts === "number"
+      ? `已重试 ${error.retry_attempts} 次，可稍后重试本条。`
+      : null
   const modelContext = [error.provider, error.model].filter(Boolean).join("/")
   const suffixParts = [
     category,
     error.upstream_code ? `上游码：${error.upstream_code}` : null,
     modelContext ? `模型：${modelContext}` : null,
   ].filter(Boolean)
-  return suffixParts.length ? `${detail}（${suffixParts.join("；")}）` : detail
+  const message = retryHint ? `${detail} ${retryHint}` : detail
+  return suffixParts.length ? `${message}（${suffixParts.join("；")}）` : message
+}
+
+function isMessageStreamErrorPayload(value: unknown): value is MessageStreamErrorPayload {
+  if (typeof value !== "object" || value === null) {
+    return false
+  }
+  const candidate = value as Partial<MessageStreamErrorPayload>
+  return (
+    typeof candidate.detail === "string" ||
+    typeof candidate.error_category === "string" ||
+    typeof candidate.status === "number" ||
+    typeof candidate.upstream_code === "string" ||
+    typeof candidate.retry_exhausted === "boolean"
+  )
 }
 
 function messageStreamErrorFromUnknown(
   value: unknown,
 ): MessageStreamErrorPayload | null {
-  if (typeof value !== "object" || value === null) {
+  if (isMessageStreamErrorPayload(value)) {
+    return value
+  }
+  if (typeof value !== "object" || value === null || !("detail" in value)) {
     return null
   }
-  if (!("detail" in value) && !("error_category" in value) && !("status" in value)) {
-    return null
-  }
-  return value as MessageStreamErrorPayload
+  const detail = (value as { detail?: unknown }).detail
+  return isMessageStreamErrorPayload(detail) ? detail : null
 }
 
 function humanizeUnderstandingStatus(status?: string | null): string {
@@ -1778,18 +1806,28 @@ export function useSessionWorkbench() {
     [],
   )
 
-  const updateMessageStatus = useCallback(
-    (id: string, status: ChatMessage["status"]) => {
+  const updateMessagePatch = useCallback(
+    (id: string, patch: Partial<ChatMessage>) => {
       setMessages((prev) =>
-        prev.map((msg) => (msg.id === id ? { ...msg, status } : msg)),
+        prev.map((msg) => (msg.id === id ? { ...msg, ...patch } : msg)),
       )
     },
     [],
   )
 
-  const removeMessage = useCallback((id: string) => {
-    setMessages((prev) => prev.filter((msg) => msg.id !== id))
-  }, [])
+  const updateMessageStatus = useCallback(
+    (id: string, status: ChatMessage["status"]) => {
+      updateMessagePatch(id, { status })
+    },
+    [updateMessagePatch],
+  )
+
+  const updateMessageFailure = useCallback(
+    (id: string, errorDetail: string) => {
+      updateMessagePatch(id, { status: "error", error_detail: errorDetail })
+    },
+    [updateMessagePatch],
+  )
 
   const updateMessageAttachment = useCallback(
     (
@@ -2510,7 +2548,7 @@ export function useSessionWorkbench() {
   )
 
   const handleSendMessage = useCallback(
-    async (content: string, files?: File[]) => {
+    async (content: string, files?: File[], options?: SendMessageOptions) => {
       if (!sessionId || sendingRef.current || isSending || isUploading) {
         return
       }
@@ -2555,14 +2593,26 @@ export function useSessionWorkbench() {
           ? await createMessageAttachments(nextFiles)
           : []
         const clientMessageId = hasContent
-          ? createClientId("client-message")
+          ? options?.clientMessageId ?? createClientId("client-message")
           : undefined
-        userMsgId = appendMessage({
-          role: "user",
-          content: trimmedContent,
-          attachments: messageAttachments,
-          status: "sending",
-        })
+        if (options?.reuseMessageId) {
+          userMsgId = options.reuseMessageId
+          updateMessagePatch(userMsgId, {
+            status: "sending",
+            error_detail: null,
+            retry_content: trimmedContent,
+            client_message_id: clientMessageId ?? null,
+          })
+        } else {
+          userMsgId = appendMessage({
+            role: "user",
+            content: trimmedContent,
+            attachments: messageAttachments,
+            status: "sending",
+            client_message_id: clientMessageId ?? null,
+            retry_content: trimmedContent,
+          })
+        }
 
         setChatError(null)
 
@@ -2799,27 +2849,22 @@ export function useSessionWorkbench() {
           error instanceof ApiError
             ? messageStreamErrorFromUnknown(error.data)
             : null
+        const failureDetail = streamError
+          ? describeMessageStreamError(streamError)
+          : getErrorMessage(error, "发送失败，请重试。")
         if (userMsgId) {
-          if (streamAccepted && streamError) {
-            removeMessage(userMsgId)
-          } else {
-            updateMessageStatus(userMsgId, streamAccepted ? "sent" : "error")
-          }
+          updateMessageFailure(userMsgId, failureDetail)
         }
         if (streamAccepted && sessionId) {
           upsertStreamProgress(
             streamError
-              ? `处理失败：${describeMessageStreamError(streamError)}`
-              : "连接中断，但服务器已收到消息；已尝试刷新当前分析状态。",
+              ? `处理失败：${failureDetail}`
+              : "连接中断，但服务器已收到消息；请稍后重试本条或刷新当前分析状态。",
             "error",
           )
           await refreshReports(sessionId).catch(() => undefined)
         }
-        setChatError(
-          streamError
-            ? describeMessageStreamError(streamError)
-            : getErrorMessage(error, "发送失败，请重试。"),
-        )
+        setChatError(failureDetail)
       } finally {
         sendingRef.current = false
         setIsSending(false)
@@ -2839,16 +2884,32 @@ export function useSessionWorkbench() {
       refreshReports,
       refreshRuntimeDebugSnapshot,
       recordRuntimeDebugEvent,
-      removeMessage,
       sessionId,
       session,
       updateActivityEventContent,
       updateActivityEventStatus,
       updateMessageAttachment,
+      updateMessageFailure,
+      updateMessagePatch,
       updateMessageStatus,
       userModelConfig,
       userReport,
     ],
+  )
+
+  const handleRetryMessage = useCallback(
+    (message: ChatMessage) => {
+      const retryContent = (message.retry_content ?? message.content).trim()
+      if (!retryContent) {
+        setChatError("这条失败消息没有可重试的文本内容；附件请重新上传。")
+        return
+      }
+      void handleSendMessage(retryContent, undefined, {
+        reuseMessageId: message.id,
+        clientMessageId: message.client_message_id ?? undefined,
+      })
+    },
+    [handleSendMessage],
   )
 
   const handleContinueAnswer = useCallback(() => {
@@ -3557,6 +3618,7 @@ export function useSessionWorkbench() {
     handleComposerCommandHandled,
     handleVisaSelect,
     handleSendMessage,
+    handleRetryMessage,
     handleViewDetails,
     handleActionClick,
     handlePause,

@@ -15,7 +15,8 @@ interface AuthGuardProps {
 const previewPoints = ["真实面签节奏", "材料与风险联动", "Agent 2.0 测试环境"]
 
 export function AuthGuard({ children }: AuthGuardProps) {
-  const { isAuthenticated, isCheckingAuth, isLoggingIn, error, login } = useAuth()
+  const { isAuthenticated, isCheckingAuth, isLoggingIn, error, login } =
+    useAuth()
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -58,11 +59,13 @@ export function AuthGuard({ children }: AuthGuardProps) {
             <div className="relative z-10 space-y-8">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/8 px-3 py-1 text-xs font-medium text-sky-100 backdrop-blur">
                 <Sparkles className="h-3.5 w-3.5" />
-                Agent 2.0 Private Preview
+                Agent 2.0 内部预览
               </div>
 
               <div className="space-y-5">
-                <p className="text-sm uppercase tracking-[0.42em] text-sky-200/80">DS-160 Workbench</p>
+                <p className="text-sm uppercase tracking-[0.42em] text-sky-200/80">
+                  模拟面签 Workbench
+                </p>
                 <h1 className="max-w-xl text-5xl font-semibold tracking-[-0.04em] text-white">
                   面签模拟，不只是聊天。
                 </h1>
@@ -79,7 +82,9 @@ export function AuthGuard({ children }: AuthGuardProps) {
                   className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3 backdrop-blur"
                 >
                   <span className="text-sm text-slate-200">{point}</span>
-                  <span className="text-xs font-medium text-sky-200">0{index + 1}</span>
+                  <span className="text-xs font-medium text-sky-200">
+                    0{index + 1}
+                  </span>
                 </div>
               ))}
             </div>
@@ -90,10 +95,12 @@ export function AuthGuard({ children }: AuthGuardProps) {
               <div className="space-y-4 lg:hidden">
                 <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
                   <Sparkles className="h-3.5 w-3.5 text-sky-500" />
-                  Agent 2.0 Private Preview
+                  Agent 2.0 内部预览
                 </div>
                 <div>
-                  <p className="text-sm uppercase tracking-[0.32em] text-slate-500">DS-160 Workbench</p>
+                  <p className="text-sm uppercase tracking-[0.32em] text-slate-500">
+                    模拟面签 Workbench
+                  </p>
                   <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950 sm:text-4xl">
                     面签模拟工作台
                   </h1>
@@ -105,23 +112,31 @@ export function AuthGuard({ children }: AuthGuardProps) {
                   <LockKeyhole className="h-5 w-5" />
                 </div>
                 <div>
-                  <h2 className="text-2xl font-semibold tracking-[-0.03em] text-slate-950 sm:text-3xl">进入测试环境</h2>
+                  <h2 className="text-2xl font-semibold tracking-[-0.03em] text-slate-950 sm:text-3xl">
+                    进入模拟面签
+                  </h2>
                   <p className="mt-2 text-sm leading-6 text-slate-500">
-                    请输入后台发放的授权 Key。验证通过后会进入 DS-160 面签工作台。
+                    请输入后台发放的授权 Key。验证通过后会进入模拟面签工作台。
                   </p>
                 </div>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-5">
                 {error ? (
-                  <Alert variant="destructive" className="rounded-2xl border-red-200 bg-red-50 text-red-900">
+                  <Alert
+                    variant="destructive"
+                    className="rounded-2xl border-red-200 bg-red-50 text-red-900"
+                  >
                     <ShieldAlert className="h-4 w-4" />
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 ) : null}
 
                 <div className="space-y-2">
-                  <Label htmlFor="auth-display-name" className="text-sm font-medium text-slate-700">
+                  <Label
+                    htmlFor="auth-display-name"
+                    className="text-sm font-medium text-slate-700"
+                  >
                     用户名
                   </Label>
                   <Input
@@ -139,7 +154,10 @@ export function AuthGuard({ children }: AuthGuardProps) {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="auth-password" className="text-sm font-medium text-slate-700">
+                  <Label
+                    htmlFor="auth-password"
+                    className="text-sm font-medium text-slate-700"
+                  >
                     授权 Key
                   </Label>
                   <Input
@@ -169,7 +187,8 @@ export function AuthGuard({ children }: AuthGuardProps) {
               </form>
 
               <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-xs leading-5 text-slate-500">
-                这是临时公网 demo 入口。授权 Key 只用于当前演示额度；如页面无响应，请刷新后重试。
+                授权 Key
+                由后台统一发放并限定使用额度；如页面无响应，请刷新后重试或联系管理员。
               </div>
             </div>
           </div>

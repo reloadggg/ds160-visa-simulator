@@ -379,6 +379,7 @@ class OpenAIAgentsInterviewerRunner:
             api_key=api_key,
             base_url=base_url,
             timeout=settings.openai_timeout_seconds,
+            max_retries=0,
             default_headers=openai_compat_default_headers(),
         ).chat.completions.create(
             model=model_name,
@@ -408,6 +409,7 @@ class OpenAIAgentsInterviewerRunner:
             openai_client=AsyncOpenAI(
                 api_key=api_key,
                 base_url=base_url,
+                max_retries=0,
                 default_headers=openai_compat_default_headers(),
             ),
         )

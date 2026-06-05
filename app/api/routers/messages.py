@@ -16,6 +16,7 @@ from app.core.settings import settings
 from app.db.models import SessionRecord
 from app.db.session import get_db, session_factory_from_session
 from app.services.runtime_errors import ModelRuntimeError
+from app.services.admin_config_service import AdminConfigService, admin_model_runtime
 from app.services.message_service import (
     DuplicateTurnInProgressError,
     MessageService,
@@ -73,7 +74,8 @@ def post_message(
 ) -> dict:
     try:
         runtime_config = to_runtime_config(payload.user_model_config, db)
-        with user_model_runtime(runtime_config):
+        admin_runtime_config = AdminConfigService(db).effective_model_config()
+        with admin_model_runtime(admin_runtime_config), user_model_runtime(runtime_config):
             return MessageService(db).handle_user_turn(
                 session_id,
                 payload.content,
@@ -123,7 +125,6 @@ def _log_model_runtime_error(
             "provider": exc.provider,
             "model": exc.model,
         },
-        exc_info=True,
     )
 
 
@@ -140,6 +141,7 @@ def stream_message(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if runtime_config is not None and not settings.allow_user_model_streaming:
         raise HTTPException(status_code=403, detail="当前部署未启用用户模型流式输出。")
+    admin_runtime_config = AdminConfigService(db).effective_model_config()
     stream_session_factory = session_factory_from_session(db)
 
     def event_stream() -> Iterator[str]:
@@ -183,11 +185,14 @@ def stream_message(
                         },
                     )
                 )
-                with user_model_runtime(runtime_config):
+                with admin_model_runtime(admin_runtime_config), user_model_runtime(runtime_config):
                     result = MessageService(worker_db).handle_user_turn(
                         session_id,
                         payload.content,
                         client_message_id=payload.client_message_id,
+                        provider_retry_event_callback=lambda event: result_queue.put(
+                            ("debug_event", event)
+                        ),
                     )
                 result_queue.put(
                     (

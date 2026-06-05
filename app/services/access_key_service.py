@@ -6,7 +6,7 @@ import hashlib
 import secrets
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import AccessKeyRecord, AccessKeySessionRecord
@@ -16,6 +16,14 @@ ACCESS_KEY_PREFIX = "ds160"
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _to_utc_naive(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def hash_secret(value: str) -> str:
@@ -32,6 +40,14 @@ def history_namespace_for_key(key_id: str | None) -> str:
 class CreatedAccessKey:
     plaintext_key: str
     record: AccessKeyRecord
+
+
+@dataclass(frozen=True)
+class RevealedAccessKeySecret:
+    key_id: str
+    key: str | None
+    available: bool
+    detail: str | None = None
 
 
 class AccessKeyService:
@@ -54,10 +70,11 @@ class AccessKeyService:
         record = AccessKeyRecord(
             key_id=key_id,
             key_hash=hash_secret(plaintext_key),
+            key_display_value=plaintext_key,
             label=label.strip()[:160],
             usage_limit=normalized_limit,
             usage_count=0,
-            expires_at=expires_at,
+            expires_at=_to_utc_naive(expires_at),
             revoked_at=None if enabled else utcnow(),
             created_by_session_hash=created_by_session_hash,
         )
@@ -156,7 +173,7 @@ class AccessKeyService:
         if usage_limit is not None:
             record.usage_limit = max(1, int(usage_limit))
         if expires_at_set:
-            record.expires_at = expires_at
+            record.expires_at = _to_utc_naive(expires_at)
         if enabled is not None:
             record.revoked_at = None if enabled else utcnow()
         self.db.add(record)
@@ -164,10 +181,41 @@ class AccessKeyService:
         self.db.refresh(record)
         return record
 
-    def list_keys(self) -> list[dict[str, Any]]:
-        records = self.db.execute(
-            select(AccessKeyRecord).order_by(AccessKeyRecord.created_at.desc())
-        ).scalars().all()
+    def list_keys(
+        self,
+        *,
+        q: str | None = None,
+        status: str = "all",
+        expired: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        current_time = utcnow()
+        statement = select(AccessKeyRecord).order_by(AccessKeyRecord.created_at.desc())
+        if status == "enabled":
+            statement = statement.where(AccessKeyRecord.revoked_at.is_(None))
+        elif status == "disabled":
+            statement = statement.where(AccessKeyRecord.revoked_at.is_not(None))
+
+        if expired is True:
+            statement = statement.where(
+                AccessKeyRecord.expires_at.is_not(None),
+                AccessKeyRecord.expires_at <= current_time,
+            )
+        elif expired is False:
+            statement = statement.where(
+                or_(
+                    AccessKeyRecord.expires_at.is_(None),
+                    AccessKeyRecord.expires_at > current_time,
+                )
+            )
+
+        records = self.db.execute(statement).scalars().all()
+        search_text = q.strip().lower() if q else ""
+        if search_text:
+            records = [
+                record
+                for record in records
+                if self._record_matches_query(record, search_text)
+            ]
         return [self.public_payload(record) for record in records]
 
     @staticmethod
@@ -175,6 +223,8 @@ class AccessKeyService:
         return {
             "key_id": record.key_id,
             "label": record.label,
+            "masked_key_preview": AccessKeyService.masked_key_preview(record),
+            "secret_available": bool(record.key_display_value),
             "usage_limit": record.usage_limit,
             "usage_count": record.usage_count,
             "remaining_uses": max(0, record.usage_limit - record.usage_count),
@@ -185,3 +235,34 @@ class AccessKeyService:
             "enabled": record.revoked_at is None,
             "can_create_session": AccessKeyService.can_create_session(record),
         }
+
+    @staticmethod
+    def masked_key_preview(record: AccessKeyRecord) -> str:
+        return f"{ACCESS_KEY_PREFIX}_{record.key_id}_••••"
+
+    @staticmethod
+    def _record_matches_query(record: AccessKeyRecord, search_text: str) -> bool:
+        searchable_values = (
+            record.key_id,
+            record.label or "",
+            AccessKeyService.masked_key_preview(record),
+            "enabled" if record.revoked_at is None else "disabled",
+        )
+        return any(search_text in value.lower() for value in searchable_values)
+
+    def reveal_key_secret(self, key_id: str) -> RevealedAccessKeySecret:
+        record = self.db.get(AccessKeyRecord, key_id)
+        if record is None:
+            raise LookupError("access key not found")
+        if not record.key_display_value:
+            return RevealedAccessKeySecret(
+                key_id=record.key_id,
+                key=None,
+                available=False,
+                detail="该访问密钥是在密钥持久化启用前创建的，明文不可找回。",
+            )
+        return RevealedAccessKeySecret(
+            key_id=record.key_id,
+            key=record.key_display_value,
+            available=True,
+        )

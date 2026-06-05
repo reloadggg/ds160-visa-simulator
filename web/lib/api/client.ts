@@ -11,6 +11,18 @@ import {
 import type {
   AuthResponse,
   AuthStatusResponse,
+  AdminAccessKeyCreateRequest,
+  AdminAccessKeyCreateResponse,
+  AdminAccessKeyListResponse,
+  AdminAccessKeyPatchRequest,
+  AdminAccessKeyPatchResponse,
+  AdminAccessKeySecretResponse,
+  AdminAccessKeyStatusFilter,
+  AdminModelConfigModelsRequest,
+  AdminModelConfigModelsResponse,
+  AdminModelConfigTestRequest,
+  AdminModelConfigTestResponse,
+  AdminSettings,
   AppConfig,
   BackendFileUploadResponse,
   BackendInternalReport,
@@ -97,7 +109,10 @@ function getAuthHeaders(contentType?: string): HeadersInit {
   return headers
 }
 
-function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+function apiFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
   return fetch(input, {
     ...init,
     credentials: "include",
@@ -189,12 +204,16 @@ export async function listSessions(): Promise<BackendSessionListResponse> {
   return handleResponse<BackendSessionListResponse>(response)
 }
 
-export async function getRequiredPackage(sessionId: string): Promise<RequiredPackage> {
+export async function getRequiredPackage(
+  sessionId: string,
+): Promise<RequiredPackage> {
   const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/required-package`),
-    { headers: getAuthHeaders() }
+    { headers: getAuthHeaders() },
   )
-  return mapRequiredPackage(await handleResponse<BackendRequiredPackage>(response))
+  return mapRequiredPackage(
+    await handleResponse<BackendRequiredPackage>(response),
+  )
 }
 
 export async function sendMessage(
@@ -203,26 +222,34 @@ export async function sendMessage(
   modelConfig?: UserModelRuntimeConfig | null,
   clientMessageId?: string,
 ): Promise<MessageResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
-    method: "POST",
-    headers: getAuthHeaders("application/json"),
-    body: JSON.stringify({
-      role: "user",
-      content,
-      client_message_id: clientMessageId,
-      model_config: toBackendModelConfig(modelConfig),
-    }),
-  })
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/messages`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify({
+        role: "user",
+        content,
+        client_message_id: clientMessageId,
+        model_config: toBackendModelConfig(modelConfig),
+      }),
+    },
+  )
 
-  return mapMessageResponse(await handleResponse<BackendMessageResponse>(response))
+  return mapMessageResponse(
+    await handleResponse<BackendMessageResponse>(response),
+  )
 }
 
 export async function fetchSessionMessages(
   sessionId: string,
 ): Promise<BackendSessionMessagesResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages`), {
-    headers: getAuthHeaders(),
-  })
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/messages`),
+    {
+      headers: getAuthHeaders(),
+    },
+  )
   return handleResponse<BackendSessionMessagesResponse>(response)
 }
 
@@ -233,19 +260,24 @@ export async function sendMessageStream(
   clientMessageId: string | undefined,
   onEvent: (event: MessageStreamEvent) => void,
 ): Promise<MessageResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/messages/stream`), {
-    method: "POST",
-    headers: getAuthHeaders("application/json"),
-    body: JSON.stringify({
-      role: "user",
-      content,
-      client_message_id: clientMessageId,
-      model_config: toBackendModelConfig(modelConfig),
-    }),
-  })
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/messages/stream`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify({
+        role: "user",
+        content,
+        client_message_id: clientMessageId,
+        model_config: toBackendModelConfig(modelConfig),
+      }),
+    },
+  )
 
   if (!response.ok) {
-    return mapMessageResponse(await handleResponse<BackendMessageResponse>(response))
+    return mapMessageResponse(
+      await handleResponse<BackendMessageResponse>(response),
+    )
   }
   if (!response.body) {
     throw new ApiError("当前浏览器不支持读取流式响应。", 0)
@@ -270,7 +302,11 @@ export async function sendMessageStream(
         finalPayload = parsed.data
       }
       if (parsed.event === "error") {
-        throw new ApiError(parsed.data.detail ?? "流式消息处理失败。", parsed.data.status ?? 500, parsed.data)
+        throw new ApiError(
+          parsed.data.detail ?? "流式消息处理失败。",
+          parsed.data.status ?? 500,
+          parsed.data,
+        )
       }
     }
   }
@@ -290,7 +326,9 @@ export async function sendMessageStream(
   return mapMessageResponse(finalPayload)
 }
 
-function parseRawSseEvent(rawEvent: string): { event: string; data: unknown } | null {
+function parseRawSseEvent(
+  rawEvent: string,
+): { event: string; data: unknown } | null {
   const eventLine = rawEvent
     .split("\n")
     .find((line) => line.startsWith("event:"))
@@ -326,7 +364,9 @@ function parseSseEvent(rawEvent: string): MessageStreamEvent | null {
   return null
 }
 
-function parseDebugMaterialBundleSseEvent(rawEvent: string): DebugMaterialBundleStreamEvent | null {
+function parseDebugMaterialBundleSseEvent(
+  rawEvent: string,
+): DebugMaterialBundleStreamEvent | null {
   const parsed = parseRawSseEvent(rawEvent)
   if (!parsed) {
     return null
@@ -404,23 +444,27 @@ export async function uploadRagFile(
 export async function getUserReport(sessionId: string): Promise<UserReport> {
   const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/reports/user`),
-    { headers: getAuthHeaders() }
+    { headers: getAuthHeaders() },
   )
   return mapUserReport(await handleResponse<BackendUserReport>(response))
 }
 
-export async function getInternalReport(sessionId: string): Promise<InternalReport> {
+export async function getInternalReport(
+  sessionId: string,
+): Promise<InternalReport> {
   const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/reports/internal`),
-    { headers: getAuthHeaders() }
+    { headers: getAuthHeaders() },
   )
   return handleResponse<BackendInternalReport>(response)
 }
 
-export async function exportSession(sessionId: string): Promise<SessionExportPayload> {
+export async function exportSession(
+  sessionId: string,
+): Promise<SessionExportPayload> {
   const response = await apiFetch(
     buildApiUrl(`/v1/sessions/${sessionId}/reports/export`),
-    { headers: getAuthHeaders() }
+    { headers: getAuthHeaders() },
   )
   return handleResponse<SessionExportPayload>(response)
 }
@@ -435,26 +479,36 @@ export async function getRuntimeDebugSnapshot(
   return handleResponse<RuntimeDebugSnapshot>(response)
 }
 
-export async function generateInterviewReview(sessionId: string): Promise<InterviewReviewResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/reports/review`), {
-    method: "POST",
-    headers: getAuthHeaders(),
-  })
-  return mapInterviewReviewResponse(await handleResponse<InterviewReviewResponse>(response))
+export async function generateInterviewReview(
+  sessionId: string,
+): Promise<InterviewReviewResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/reports/review`),
+    {
+      method: "POST",
+      headers: getAuthHeaders(),
+    },
+  )
+  return mapInterviewReviewResponse(
+    await handleResponse<InterviewReviewResponse>(response),
+  )
 }
 
 export async function debugFillCurrentGap(
   sessionId: string,
   scenario = "normal",
 ): Promise<DebugFillResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/fill-current-gap`), {
-    method: "POST",
-    headers: {
-      ...getAuthHeaders(),
-      "Content-Type": "application/json",
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/debug/fill-current-gap`),
+    {
+      method: "POST",
+      headers: {
+        ...getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ scenario }),
     },
-    body: JSON.stringify({ scenario }),
-  })
+  )
   return handleResponse<DebugFillResponse>(response)
 }
 
@@ -465,16 +519,19 @@ export async function createDebugMaterialBundle(
   seedText?: string | null,
   generationMode = "ai_if_available",
 ): Promise<DebugMaterialBundleResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles`), {
-    method: "POST",
-    headers: getAuthHeaders("application/json"),
-    body: JSON.stringify({
-      scenario,
-      include_synthetic_user_turns: includeSyntheticUserTurns,
-      seed_text: seedText,
-      generation_mode: generationMode,
-    }),
-  })
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify({
+        scenario,
+        include_synthetic_user_turns: includeSyntheticUserTurns,
+        seed_text: seedText,
+        generation_mode: generationMode,
+      }),
+    },
+  )
   return handleResponse<DebugMaterialBundleResponse>(response)
 }
 
@@ -486,16 +543,19 @@ export async function createDebugMaterialBundleStream(
   seedText?: string | null,
   generationMode = "ai_if_available",
 ): Promise<DebugMaterialBundleResponse> {
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles/stream`), {
-    method: "POST",
-    headers: getAuthHeaders("application/json"),
-    body: JSON.stringify({
-      scenario,
-      include_synthetic_user_turns: includeSyntheticUserTurns,
-      seed_text: seedText,
-      generation_mode: generationMode,
-    }),
-  })
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles/stream`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify({
+        scenario,
+        include_synthetic_user_turns: includeSyntheticUserTurns,
+        seed_text: seedText,
+        generation_mode: generationMode,
+      }),
+    },
+  )
 
   if (!response.ok) {
     return handleResponse<DebugMaterialBundleResponse>(response)
@@ -565,7 +625,9 @@ export async function importMaterialPackage(
   packageId: string,
 ): Promise<MaterialPackageImportResponse> {
   const response = await apiFetch(
-    buildApiUrl(`/v1/sessions/${sessionId}/material-packages/${packageId}/import`),
+    buildApiUrl(
+      `/v1/sessions/${sessionId}/material-packages/${packageId}/import`,
+    ),
     {
       method: "POST",
       headers: getAuthHeaders("application/json"),
@@ -585,19 +647,134 @@ export async function uploadFile(
     formData.append("context_text", contextText)
   }
 
-  const response = await apiFetch(buildApiUrl(`/v1/sessions/${sessionId}/files`), {
-    method: "POST",
-    headers: getAuthHeaders(),
-    body: formData,
-  })
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/files`),
+    {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: formData,
+    },
+  )
 
   return mapFileUploadResponse(
     await handleResponse<BackendFileUploadResponse>(response),
   )
 }
 
-export function getFileContentUrl(sessionId: string, documentId: string): string {
+export function getFileContentUrl(
+  sessionId: string,
+  documentId: string,
+): string {
   return buildApiUrl(`/v1/sessions/${sessionId}/files/${documentId}/content`)
 }
 
 export { ApiError }
+
+export async function getAdminSettings(): Promise<AdminSettings> {
+  const response = await apiFetch(buildApiUrl("/v1/admin/settings"), {
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<AdminSettings>(response)
+}
+
+export async function updateAdminSettings(
+  patch: Partial<AdminSettings> & { model_api_key?: string | undefined },
+): Promise<AdminSettings> {
+  const response = await apiFetch(buildApiUrl("/v1/admin/settings"), {
+    method: "PATCH",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify(patch),
+  })
+  return handleResponse<AdminSettings>(response)
+}
+
+export async function listAdminAccessKeys(
+  params: {
+    q?: string
+    status?: AdminAccessKeyStatusFilter
+    expired?: boolean | null
+  } = {},
+): Promise<AdminAccessKeyListResponse> {
+  const search = new URLSearchParams()
+  const q = params.q?.trim()
+  if (q) {
+    search.set("q", q)
+  }
+  if (params.status && params.status !== "all") {
+    search.set("status", params.status)
+  }
+  if (typeof params.expired === "boolean") {
+    search.set("expired", String(params.expired))
+  }
+  const suffix = search.toString() ? `?${search.toString()}` : ""
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/access-keys${suffix}`),
+    {
+      headers: getAuthHeaders(),
+    },
+  )
+  return handleResponse<AdminAccessKeyListResponse>(response)
+}
+
+export async function createAdminAccessKey(
+  payload: AdminAccessKeyCreateRequest,
+): Promise<AdminAccessKeyCreateResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/admin/access-keys"), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify(payload),
+  })
+  return handleResponse<AdminAccessKeyCreateResponse>(response)
+}
+
+export async function updateAdminAccessKey(
+  keyId: string,
+  patch: AdminAccessKeyPatchRequest,
+): Promise<AdminAccessKeyPatchResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/access-keys/${keyId}`),
+    {
+      method: "PATCH",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify(patch),
+    },
+  )
+  return handleResponse<AdminAccessKeyPatchResponse>(response)
+}
+
+export async function revealAdminAccessKeySecret(
+  keyId: string,
+): Promise<AdminAccessKeySecretResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/access-keys/${keyId}/secret`),
+    {
+      headers: getAuthHeaders(),
+    },
+  )
+  return handleResponse<AdminAccessKeySecretResponse>(response)
+}
+
+export async function fetchAdminModelConfigModels(
+  payload: AdminModelConfigModelsRequest = {},
+): Promise<AdminModelConfigModelsResponse> {
+  const response = await apiFetch(
+    buildApiUrl("/v1/admin/model-config/models"),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify(payload),
+    },
+  )
+  return handleResponse<AdminModelConfigModelsResponse>(response)
+}
+
+export async function testAdminModelConfig(
+  payload: AdminModelConfigTestRequest = {},
+): Promise<AdminModelConfigTestResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/admin/model-config/test"), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify(payload),
+  })
+  return handleResponse<AdminModelConfigTestResponse>(response)
+}

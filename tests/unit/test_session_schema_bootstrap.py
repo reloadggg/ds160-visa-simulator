@@ -1,8 +1,9 @@
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
-from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
+from app.db.models import AccessKeyRecord, DocumentRecord, SessionRecord, SessionTurnRecord
 from app.main import (
+    bootstrap_access_keys_table,
     bootstrap_documents_table,
     bootstrap_session_turns_table,
     bootstrap_sessions_table,
@@ -418,3 +419,56 @@ def test_bootstrap_documents_table_adds_missing_raw_bytes_column(tmp_path) -> No
 
     assert record is not None
     assert record.raw_bytes == b""
+
+
+def test_bootstrap_access_keys_table_adds_missing_display_value_column(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy-access-keys.sqlite3"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE access_keys (
+                    key_id VARCHAR(32) PRIMARY KEY,
+                    key_hash VARCHAR(64),
+                    label VARCHAR(160),
+                    usage_limit INTEGER,
+                    usage_count INTEGER,
+                    created_at DATETIME,
+                    expires_at DATETIME,
+                    last_used_at DATETIME,
+                    revoked_at DATETIME,
+                    created_by_session_hash VARCHAR(64)
+                )
+                """
+            )
+        )
+
+    bootstrap_access_keys_table(engine)
+    bootstrap_access_keys_table(engine)
+
+    columns = {column["name"] for column in inspect(engine).get_columns("access_keys")}
+    assert "key_display_value" in columns
+
+    with Session(engine) as db:
+        db.add(
+            AccessKeyRecord(
+                key_id="legacy-key",
+                key_hash="hash-value",
+                key_display_value=None,
+                label="legacy",
+                usage_limit=1,
+                usage_count=0,
+            )
+        )
+        db.commit()
+        record = db.get(AccessKeyRecord, "legacy-key")
+
+    assert record is not None
+    assert record.key_display_value is None

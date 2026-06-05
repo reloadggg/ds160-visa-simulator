@@ -1,11 +1,13 @@
 from hashlib import sha256
+import json
 import logging
+from collections.abc import Callable
 from typing import Literal
 
 from sqlalchemy.orm import Session
 
 from app.core.settings import settings
-from app.db.models import SessionTurnRecord
+from app.db.models import SessionRecord, SessionTurnRecord
 from app.domain.runtime import GateOverallStatus
 from app.platform.turn_record import TurnRecord
 from app.repositories.session_repo import SessionRepository
@@ -53,6 +55,46 @@ class SessionClosedError(RuntimeError):
 
 
 PublicRuntimeMode = Literal["legacy", "native_interviewer"]
+ProviderRetryEventCallback = Callable[[dict], None]
+PROVIDER_RUNTIME_MAX_ATTEMPTS = 3
+_QUOTA_EXHAUSTION_MARKERS = (
+    "insufficient_quota",
+    "quota_exhausted",
+    "api_key_quota_exhausted",
+    "quota exhausted",
+    "quota_exceeded",
+    "billing",
+    "balance",
+    "额度",
+    "配额",
+    "余额",
+    "已用完",
+    "已耗尽",
+)
+_TRANSIENT_RATE_LIMIT_MARKERS = (
+    "rate_limit",
+    "rate limit",
+    "rate_limit_exceeded",
+    "too_many_requests",
+    "too many requests",
+    "temporarily_rate_limited",
+    "temporarily rate limited",
+    "request limit",
+    "限流",
+    "频率",
+    "请求过于频繁",
+)
+_DETERMINISTIC_AUTH_CONFIG_MARKERS = (
+    "model_config",
+    "missing_model_config",
+    "expired_key",
+    "key_expired",
+    "expired customer key",
+    "customer_key_expired",
+    "invalid_api_key",
+    "invalid api key",
+    "permission_denied",
+)
 
 
 def _explicit_list_field(
@@ -84,6 +126,7 @@ class MessageService:
         message_text: str,
         *,
         client_message_id: str | None = None,
+        provider_retry_event_callback: ProviderRetryEventCallback | None = None,
     ) -> dict:
         committed_user_turn: SessionTurnRecord | None = None
         record = self.session_repo.get(session_id)
@@ -154,11 +197,13 @@ class MessageService:
                 return response
 
             runtime_mode = self._select_public_runtime(record.session_id)
-            response = self._run_public_runtime(
+            record, user_turn, response = self._run_public_runtime_with_provider_retry(
                 runtime_mode,
                 record,
                 message_text,
                 user_turn,
+                client_message_id=client_message_id,
+                provider_retry_event_callback=provider_retry_event_callback,
             )
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
@@ -237,7 +282,7 @@ class MessageService:
     def _should_keep_user_turn_on_error(self, exc: Exception) -> bool:
         return (
             isinstance(exc, ModelRuntimeError)
-            and exc.upstream_code == "native_quality_guard_failed"
+            and (exc.upstream_code or "").lower() == "native_quality_guard_failed"
         )
 
     def _latest_unanswered_user_turn(
@@ -488,6 +533,243 @@ class MessageService:
             return True
         bucket = int(sha256(session_id.encode("utf-8")).hexdigest()[:8], 16) % 100
         return bucket < percent
+
+    def _run_public_runtime_with_provider_retry(
+        self,
+        runtime_mode: PublicRuntimeMode,
+        record: SessionRecord,
+        message_text: str,
+        user_turn: SessionTurnRecord,
+        *,
+        client_message_id: str | None,
+        provider_retry_event_callback: ProviderRetryEventCallback | None,
+    ) -> tuple[SessionRecord, SessionTurnRecord, dict]:
+        session_id = record.session_id
+        user_turn_id = user_turn.turn_id
+        current_record = record
+        current_user_turn = user_turn
+
+        for attempt in range(1, PROVIDER_RUNTIME_MAX_ATTEMPTS + 1):
+            self._emit_provider_retry_event(
+                provider_retry_event_callback,
+                session_id=session_id,
+                attempt=attempt,
+                max_attempts=PROVIDER_RUNTIME_MAX_ATTEMPTS,
+                status="started",
+                error=None,
+                will_retry=False,
+            )
+            try:
+                response = self._run_public_runtime(
+                    runtime_mode,
+                    current_record,
+                    message_text,
+                    current_user_turn,
+                )
+                if attempt > 1:
+                    self._emit_provider_retry_event(
+                        provider_retry_event_callback,
+                        session_id=session_id,
+                        attempt=attempt,
+                        max_attempts=PROVIDER_RUNTIME_MAX_ATTEMPTS,
+                        status="completed",
+                        error=None,
+                        will_retry=False,
+                    )
+                return current_record, current_user_turn, response
+            except ModelRuntimeError as exc:
+                retryable = self._is_retryable_provider_failure(exc)
+                will_retry = retryable and attempt < PROVIDER_RUNTIME_MAX_ATTEMPTS
+                retry_attempts = attempt - 1
+                if not will_retry and (retryable or retry_attempts > 0):
+                    exc.retry_attempts = retry_attempts
+                    exc.retry_exhausted = (
+                        retryable and attempt >= PROVIDER_RUNTIME_MAX_ATTEMPTS
+                    )
+
+                self._log_provider_retry_attempt(
+                    exc,
+                    session_id=session_id,
+                    client_message_id=client_message_id,
+                    attempt=attempt,
+                    max_attempts=PROVIDER_RUNTIME_MAX_ATTEMPTS,
+                    will_retry=will_retry,
+                    retry_exclusion_reason=(
+                        None
+                        if retryable
+                        else self._provider_retry_exclusion_reason(exc)
+                    ),
+                )
+                self._emit_provider_retry_event(
+                    provider_retry_event_callback,
+                    session_id=session_id,
+                    attempt=attempt,
+                    max_attempts=PROVIDER_RUNTIME_MAX_ATTEMPTS,
+                    status="failed",
+                    error=exc,
+                    will_retry=will_retry,
+                )
+
+                if not will_retry:
+                    raise
+
+                self.db.rollback()
+                refreshed_record = self.session_repo.get(session_id)
+                refreshed_user_turn = self.db.get(SessionTurnRecord, user_turn_id)
+                if refreshed_record is None or refreshed_user_turn is None:
+                    raise
+                current_record = refreshed_record
+                current_user_turn = refreshed_user_turn
+
+        raise RuntimeError("provider retry loop exited unexpectedly")
+
+    def _is_retryable_provider_failure(self, exc: ModelRuntimeError) -> bool:
+        return self._provider_retry_exclusion_reason(exc) is None
+
+    def _provider_retry_exclusion_reason(self, exc: ModelRuntimeError) -> str | None:
+        marker_text = self._model_runtime_error_marker_text(exc)
+        upstream_code = (exc.upstream_code or "").lower()
+        error_category = exc.error_category
+
+        if upstream_code == "native_quality_guard_failed":
+            return "native_quality_guard_failed"
+        if error_category == "model_config" or upstream_code in {
+            "model_config",
+            "missing_model_config",
+        }:
+            return "model_config"
+        if exc.status_code in {401, 403}:
+            return "auth_or_permission"
+        if any(marker in marker_text for marker in _DETERMINISTIC_AUTH_CONFIG_MARKERS):
+            return "auth_or_config"
+        if any(marker in marker_text for marker in _QUOTA_EXHAUSTION_MARKERS):
+            return "quota_or_billing_exhausted"
+        if exc.status_code == 429:
+            if any(marker in marker_text for marker in _TRANSIENT_RATE_LIMIT_MARKERS):
+                return None
+            return "non_transient_429"
+        if error_category in {"upstream_timeout", "upstream_connection_error"}:
+            return None
+        if exc.status_code in {500, 502, 503, 504} and error_category in {
+            "upstream_model",
+            "upstream_timeout",
+            "upstream_connection_error",
+            "model_runtime",
+        }:
+            return None
+        return "deterministic_or_unknown_model_error"
+
+    def _model_runtime_error_marker_text(self, exc: ModelRuntimeError) -> str:
+        parts = [
+            exc.upstream_code or "",
+            exc.error_category or "",
+            exc.detail or "",
+        ]
+        if exc.body is not None:
+            try:
+                parts.append(json.dumps(exc.body, ensure_ascii=False, sort_keys=True))
+            except TypeError:
+                parts.append(str(exc.body))
+        return " ".join(parts).lower()
+
+    def _log_provider_retry_attempt(
+        self,
+        exc: ModelRuntimeError,
+        *,
+        session_id: str,
+        client_message_id: str | None,
+        attempt: int,
+        max_attempts: int,
+        will_retry: bool,
+        retry_exclusion_reason: str | None,
+    ) -> None:
+        logger.warning(
+            "message provider runtime attempt failed",
+            extra={
+                "session_id": session_id,
+                "client_message_id": client_message_id,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "will_retry": will_retry,
+                "retry_exclusion_reason": retry_exclusion_reason,
+                "status_code": exc.status_code,
+                "error_category": exc.error_category,
+                "upstream_code": exc.upstream_code,
+                "provider": exc.provider,
+                "model": exc.model,
+            },
+        )
+
+    def _emit_provider_retry_event(
+        self,
+        callback: ProviderRetryEventCallback | None,
+        *,
+        session_id: str,
+        attempt: int,
+        max_attempts: int,
+        status: str,
+        error: ModelRuntimeError | None,
+        will_retry: bool,
+    ) -> None:
+        if callback is None:
+            return
+        retry_count = max(attempt - 1, 0)
+        payload = {
+            "session_id": session_id,
+            "phase": "message_turn",
+            "step": "provider_runtime_retry",
+            "status": status,
+            "summary": self._provider_retry_event_summary(
+                status=status,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                will_retry=will_retry,
+            ),
+            "payload": {
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "retry_count": retry_count,
+                "will_retry": will_retry,
+            },
+        }
+        if error is not None:
+            payload["payload"].update(
+                {
+                    "status_code": error.status_code,
+                    "error_category": error.error_category,
+                    "upstream_code": error.upstream_code,
+                    "provider": error.provider,
+                    "model": error.model,
+                }
+            )
+        try:
+            callback(payload)
+        except Exception:
+            logger.exception(
+                "failed to emit provider retry debug event",
+                extra={"session_id": session_id, "attempt": attempt},
+            )
+
+    def _provider_retry_event_summary(
+        self,
+        *,
+        status: str,
+        attempt: int,
+        max_attempts: int,
+        will_retry: bool,
+    ) -> str:
+        if status == "started":
+            if attempt == 1:
+                return "开始调用模型服务。"
+            return f"模型服务第 {attempt} 次尝试开始。"
+        if status == "completed":
+            return f"模型服务第 {attempt} 次尝试成功。"
+        if will_retry:
+            return f"模型服务第 {attempt} 次尝试失败，将自动重试。"
+        retry_count = max(attempt - 1, 0)
+        if retry_count > 0:
+            return f"模型服务暂时不可用，已重试 {retry_count} 次。"
+        return "模型服务调用失败。"
 
     def _run_public_runtime(
         self,

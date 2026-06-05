@@ -16,7 +16,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
 import { PROJECT_INFO } from "@/lib/project-info"
 import { appVersionDetailLabel } from "@/lib/app-version"
 import {
@@ -25,7 +24,19 @@ import {
   getDefaultDebugMaterialBundleScenarioForVisaFamily,
   getDebugMaterialBundleOption,
 } from "@/lib/debug-material-bundles"
-import { RotateCcw, Copy, Trash2, Settings2, Download, FlaskConical, Camera, RefreshCw, Upload, Github, ExternalLink } from "lucide-react"
+import {
+  RotateCcw,
+  Copy,
+  Trash2,
+  Settings2,
+  Download,
+  FlaskConical,
+  Camera,
+  RefreshCw,
+  Upload,
+  Github,
+  ExternalLink,
+} from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,10 +51,8 @@ import {
 import type {
   DebugMaterialBundleScenario,
   MaterialPackageArchiveItem,
-  ModelListItem,
   RagStatus,
   RagUploadMetadata,
-  UserModelConfig,
   VisaFamily,
 } from "@/lib/api/types"
 
@@ -75,16 +84,11 @@ interface SettingsPanelProps {
   materialPackages?: MaterialPackageArchiveItem[]
   isLoadingMaterialPackages?: boolean
   isImportingMaterialPackage?: boolean
-  userModelConfig: UserModelConfig
-  availableModels: ModelListItem[]
-  isLoadingModels: boolean
   modelConfigError?: string | null
   ragStatus: RagStatus | null
   isLoadingRagStatus: boolean
   isUploadingRagFile: boolean
   ragError?: string | null
-  onUserModelConfigChange: (config: UserModelConfig) => void
-  onFetchUserModels: () => void
   onUploadRagFile: (file: File, metadata?: RagUploadMetadata) => void
   onRefreshRagStatus: () => void
   onCopySessionId: () => void
@@ -116,16 +120,11 @@ export function SettingsPanel({
   materialPackages = [],
   isLoadingMaterialPackages = false,
   isImportingMaterialPackage = false,
-  userModelConfig,
-  availableModels,
-  isLoadingModels,
   modelConfigError,
   ragStatus,
   isLoadingRagStatus,
   isUploadingRagFile,
   ragError,
-  onUserModelConfigChange,
-  onFetchUserModels,
   onUploadRagFile,
   onRefreshRagStatus,
   onCopySessionId,
@@ -145,7 +144,9 @@ export function SettingsPanel({
   const [ragUploadFile, setRagUploadFile] = useState<File | null>(null)
   const [ragUploadForm, setRagUploadForm] = useState(EMPTY_RAG_UPLOAD_FORM)
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
-    useState<DebugMaterialBundleScenario>(DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO)
+    useState<DebugMaterialBundleScenario>(
+      DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO,
+    )
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
   const materialSeedText = materialSeedOverride
   const debugBundleOptions = useMemo(
@@ -160,13 +161,9 @@ export function SettingsPanel({
   const selectedDebugBundleOption = getDebugMaterialBundleOption(
     activeDebugBundleScenario,
   )
-  const updateModelConfig = (patch: Partial<UserModelConfig>) => {
-    onUserModelConfigChange({
-      ...userModelConfig,
-      ...patch,
-    })
-  }
-  const updateRagUploadForm = (patch: Partial<typeof EMPTY_RAG_UPLOAD_FORM>) => {
+  const updateRagUploadForm = (
+    patch: Partial<typeof EMPTY_RAG_UPLOAD_FORM>,
+  ) => {
     setRagUploadForm((current) => ({
       ...current,
       ...patch,
@@ -219,7 +216,7 @@ export function SettingsPanel({
       return "已关闭"
     }
     if (ragStatus.skip_reason === "missing_siliconflow_api_key") {
-      return "未配置 API Key"
+      return "未配置服务密钥"
     }
     if (ragStatus.skip_reason === "mock_mode") {
       return "Mock 模式"
@@ -227,14 +224,15 @@ export function SettingsPanel({
     return "不可用"
   })()
 
-  const indexedChunkCount = ragStatus?.collections.reduce(
-    (total, collection) => total + collection.count,
-    0,
-  ) ?? 0
+  const indexedChunkCount =
+    ragStatus?.collections.reduce(
+      (total, collection) => total + collection.count,
+      0,
+    ) ?? 0
   const canUploadRagFile = Boolean(
     ragStatus &&
-      ragStatus.enabled &&
-      (ragStatus.ready || ragStatus.skip_reason === "index_empty"),
+    ragStatus.enabled &&
+    (ragStatus.ready || ragStatus.skip_reason === "index_empty"),
   )
 
   return (
@@ -250,7 +248,9 @@ export function SettingsPanel({
           <CardContent className="space-y-4 px-5">
             <div className="flex items-center justify-between rounded-xl border border-border bg-muted/20 px-4 py-3">
               <div>
-                <div className="text-sm font-medium text-foreground">Mock 模式</div>
+                <div className="text-sm font-medium text-foreground">
+                  Mock 模式
+                </div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   通过 `NEXT_PUBLIC_MOCK` 控制，运行时不可直接切换。
                 </div>
@@ -259,21 +259,27 @@ export function SettingsPanel({
             </div>
 
             <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="text-sm font-medium text-foreground">前端版本</div>
+              <div className="text-sm font-medium text-foreground">
+                前端版本
+              </div>
               <div className="mt-1 break-all font-mono text-xs leading-6 text-muted-foreground">
                 {appVersionDetailLabel()}
               </div>
             </div>
 
             <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="text-sm font-medium text-foreground">API 地址</div>
+              <div className="text-sm font-medium text-foreground">
+                API 地址
+              </div>
               <div className="mt-1 break-all text-xs leading-6 text-muted-foreground">
                 {apiBaseUrl || "未配置"}
               </div>
             </div>
 
             <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="text-sm font-medium text-foreground">当前会话 ID</div>
+              <div className="text-sm font-medium text-foreground">
+                当前会话 ID
+              </div>
               <div className="mt-1 break-all text-xs leading-6 text-muted-foreground">
                 {sessionId ?? "当前没有进行中的会话"}
               </div>
@@ -281,288 +287,247 @@ export function SettingsPanel({
           </CardContent>
         </Card>
 
-        {showRagStatus ? <Card className="py-4">
-          <CardHeader className="px-5 pb-3">
-            <CardTitle className="text-base">知识库 / RAG 状态</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4 px-5">
-            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-foreground">服务端知识库</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                    RAG 使用后端通用知识库和向量检索配置，不使用前端自带模型 API Key。
+        {showRagStatus ? (
+          <Card className="py-4">
+            <CardHeader className="px-5 pb-3">
+              <CardTitle className="text-base">知识库 / RAG 状态</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 px-5">
+              <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">
+                      服务端知识库
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                      RAG
+                      使用后端通用知识库和向量检索配置，不依赖用户侧模型凭据。
+                    </div>
                   </div>
+                  <Badge variant={ragStatus?.ready ? "default" : "outline"}>
+                    {isLoadingRagStatus ? "检查中" : ragStatusLabel}
+                  </Badge>
                 </div>
-                <Badge variant={ragStatus?.ready ? "default" : "outline"}>
-                  {isLoadingRagStatus ? "检查中" : ragStatusLabel}
-                </Badge>
+
+                <div className="mt-3 grid gap-2 text-xs leading-5 text-muted-foreground">
+                  <div>Embedding：{ragStatus?.embedding_model ?? "未获取"}</div>
+                  <div>Rerank：{ragStatus?.rerank_model ?? "未获取"}</div>
+                  <div>索引版本：{ragStatus?.index_version ?? "未获取"}</div>
+                  <div>已索引分块：{indexedChunkCount}</div>
+                </div>
               </div>
 
-              <div className="mt-3 grid gap-2 text-xs leading-5 text-muted-foreground">
-                <div>Embedding：{ragStatus?.embedding_model ?? "未获取"}</div>
-                <div>Rerank：{ragStatus?.rerank_model ?? "未获取"}</div>
-                <div>索引版本：{ragStatus?.index_version ?? "未获取"}</div>
-                <div>已索引分块：{indexedChunkCount}</div>
-              </div>
-            </div>
-
-            {ragStatus?.collections.length ? (
-              <div className="space-y-2 rounded-xl border border-border bg-muted/20 px-4 py-3">
-                {ragStatus.collections.map((collection) => (
-                  <div key={collection.name} className="flex items-center justify-between gap-3 text-xs">
-                    <span className="min-w-0 truncate text-muted-foreground">{collection.source_type}</span>
-                    <span className="font-medium text-foreground">{collection.count}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            <input
-              ref={ragFileInputRef}
-              type="file"
-              className="hidden"
-              accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg"
-              onChange={handleRagFileChange}
-            />
-
-            <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-foreground">上传资料</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                    可直接上传案例文件；下方标签全是选填，只用于检索过滤和排序。
-                  </div>
-                </div>
-                <Badge variant="outline">third_party_reference</Badge>
-              </div>
-
-              <div className="grid gap-3">
-                <div className="grid gap-2">
-                  <Label htmlFor="rag-upload-title">标题</Label>
-                  <Input
-                    id="rag-upload-title"
-                    value={ragUploadForm.title}
-                    onChange={(event) => updateRagUploadForm({ title: event.target.value })}
-                    placeholder="默认使用文件名"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="rag-upload-url">来源链接</Label>
-                  <Input
-                    id="rag-upload-url"
-                    value={ragUploadForm.url}
-                    onChange={(event) => updateRagUploadForm({ url: event.target.value })}
-                    placeholder="https://..."
-                  />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="grid gap-2">
-                    <Label htmlFor="rag-upload-visa-family">签证类型</Label>
-                    <Select
-                      value={ragUploadForm.visaFamily || "unspecified"}
-                      onValueChange={(value) => updateRagUploadForm({
-                        visaFamily: value === "unspecified" ? "" : value,
-                      })}
+              {ragStatus?.collections.length ? (
+                <div className="space-y-2 rounded-xl border border-border bg-muted/20 px-4 py-3">
+                  {ragStatus.collections.map((collection) => (
+                    <div
+                      key={collection.name}
+                      className="flex items-center justify-between gap-3 text-xs"
                     >
-                      <SelectTrigger id="rag-upload-visa-family" className="w-full">
-                        <SelectValue placeholder="不指定" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="unspecified">不指定</SelectItem>
-                        {VISA_FAMILY_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        {collection.source_type}
+                      </span>
+                      <span className="font-medium text-foreground">
+                        {collection.count}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <input
+                ref={ragFileInputRef}
+                type="file"
+                className="hidden"
+                accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg"
+                onChange={handleRagFileChange}
+              />
+
+              <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">
+                      上传资料
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                      可直接上传案例文件；下方标签全是选填，只用于检索过滤和排序。
+                    </div>
                   </div>
+                  <Badge variant="outline">third_party_reference</Badge>
+                </div>
+
+                <div className="grid gap-3">
                   <div className="grid gap-2">
-                    <Label htmlFor="rag-upload-country">国家</Label>
+                    <Label htmlFor="rag-upload-title">标题</Label>
                     <Input
-                      id="rag-upload-country"
-                      value={ragUploadForm.country}
-                      onChange={(event) => updateRagUploadForm({ country: event.target.value })}
-                      placeholder="例：china"
+                      id="rag-upload-title"
+                      value={ragUploadForm.title}
+                      onChange={(event) =>
+                        updateRagUploadForm({ title: event.target.value })
+                      }
+                      placeholder="默认使用文件名"
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="rag-upload-post">领馆/地区</Label>
+                    <Label htmlFor="rag-upload-url">来源链接</Label>
                     <Input
-                      id="rag-upload-post"
-                      value={ragUploadForm.post}
-                      onChange={(event) => updateRagUploadForm({ post: event.target.value })}
-                      placeholder="例：uk"
+                      id="rag-upload-url"
+                      value={ragUploadForm.url}
+                      onChange={(event) =>
+                        updateRagUploadForm({ url: event.target.value })
+                      }
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="grid gap-2">
+                      <Label htmlFor="rag-upload-visa-family">签证类型</Label>
+                      <Select
+                        value={ragUploadForm.visaFamily || "unspecified"}
+                        onValueChange={(value) =>
+                          updateRagUploadForm({
+                            visaFamily: value === "unspecified" ? "" : value,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          id="rag-upload-visa-family"
+                          className="w-full"
+                        >
+                          <SelectValue placeholder="不指定" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="unspecified">不指定</SelectItem>
+                          {VISA_FAMILY_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="rag-upload-country">国家</Label>
+                      <Input
+                        id="rag-upload-country"
+                        value={ragUploadForm.country}
+                        onChange={(event) =>
+                          updateRagUploadForm({ country: event.target.value })
+                        }
+                        placeholder="例：china"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="rag-upload-post">领馆/地区</Label>
+                      <Input
+                        id="rag-upload-post"
+                        value={ragUploadForm.post}
+                        onChange={(event) =>
+                          updateRagUploadForm({ post: event.target.value })
+                        }
+                        placeholder="例：uk"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="rag-upload-notes">备注</Label>
+                    <Textarea
+                      id="rag-upload-notes"
+                      value={ragUploadForm.notes}
+                      onChange={(event) =>
+                        updateRagUploadForm({ notes: event.target.value })
+                      }
+                      placeholder="可记录来源分类、案例批次或其它检索备注"
+                      rows={3}
                     />
                   </div>
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="rag-upload-notes">备注</Label>
-                  <Textarea
-                    id="rag-upload-notes"
-                    value={ragUploadForm.notes}
-                    onChange={(event) => updateRagUploadForm({ notes: event.target.value })}
-                    placeholder="可记录来源分类、案例批次或其它检索备注"
-                    rows={3}
-                  />
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="justify-start"
+                    onClick={() => ragFileInputRef.current?.click()}
+                    disabled={!canUploadRagFile || isUploadingRagFile}
+                  >
+                    <Upload className="h-4 w-4" />
+                    {ragUploadFile ? "更换文件" : "选择文件"}
+                  </Button>
+                  <Button
+                    type="button"
+                    className="justify-start"
+                    onClick={handleRagUploadSubmit}
+                    disabled={
+                      !canUploadRagFile || !ragUploadFile || isUploadingRagFile
+                    }
+                  >
+                    <Upload className="h-4 w-4" />
+                    {isUploadingRagFile ? "写入中" : "写入知识库"}
+                  </Button>
+                </div>
+                <div className="min-h-5 truncate text-xs text-muted-foreground">
+                  {ragUploadFile ? ragUploadFile.name : "尚未选择文件"}
                 </div>
               </div>
 
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="grid gap-2 sm:grid-cols-2">
                 <Button
                   type="button"
                   variant="outline"
                   className="justify-start"
-                  onClick={() => ragFileInputRef.current?.click()}
-                  disabled={!canUploadRagFile || isUploadingRagFile}
+                  onClick={onRefreshRagStatus}
+                  disabled={isLoadingRagStatus}
                 >
-                  <Upload className="h-4 w-4" />
-                  {ragUploadFile ? "更换文件" : "选择文件"}
-                </Button>
-                <Button
-                  type="button"
-                  className="justify-start"
-                  onClick={handleRagUploadSubmit}
-                  disabled={!canUploadRagFile || !ragUploadFile || isUploadingRagFile}
-                >
-                  <Upload className="h-4 w-4" />
-                  {isUploadingRagFile ? "写入中" : "写入知识库"}
-                </Button>
-              </div>
-              <div className="min-h-5 truncate text-xs text-muted-foreground">
-                {ragUploadFile ? ragUploadFile.name : "尚未选择文件"}
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button
-                type="button"
-                variant="outline"
-                className="justify-start"
-                onClick={onRefreshRagStatus}
-                disabled={isLoadingRagStatus}
-              >
-                <RefreshCw className={isLoadingRagStatus ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                刷新状态
-              </Button>
-            </div>
-
-            {ragError ? (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {ragError}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card> : null}
-
-        {showUserModelConfig ? <Card className="py-4">
-          <CardHeader className="px-5 pb-3">
-            <CardTitle className="text-base">自带模型配置</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4 px-5">
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div>
-                <div className="text-sm font-medium text-foreground">启用前端模型设置</div>
-                <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                  需要后端开启 ALLOW_USER_MODEL_CONFIG；聊天、材料和报告仍保存在后端数据库。
-                </div>
-              </div>
-              <Switch
-                checked={userModelConfig.enabled}
-                onCheckedChange={(checked) => updateModelConfig({ enabled: checked })}
-                aria-label="启用自带模型配置"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="model-base-url">Base URL</Label>
-              <Input
-                id="model-base-url"
-                value={userModelConfig.baseUrl}
-                onChange={(event) => updateModelConfig({ baseUrl: event.target.value })}
-                placeholder="https://api.openai.com/v1"
-                autoComplete="off"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="model-api-key">API Key</Label>
-              <Input
-                id="model-api-key"
-                type="password"
-                value={userModelConfig.apiKey}
-                onChange={(event) => updateModelConfig({ apiKey: event.target.value })}
-                placeholder="sk-..."
-                autoComplete="off"
-              />
-              <div className="text-xs leading-5 text-muted-foreground">
-                API Key 只保存在当前页面内存中，刷新页面后需要重新填写。
-              </div>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-              <div className="space-y-2">
-                <Label htmlFor="model-name">Model</Label>
-                {availableModels.length ? (
-                  <Select
-                    value={userModelConfig.model}
-                    onValueChange={(value) => updateModelConfig({ model: value })}
-                  >
-                    <SelectTrigger id="model-name" className="w-full">
-                      <SelectValue placeholder="选择模型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableModels.map((model) => (
-                        <SelectItem key={model.id} value={model.id}>
-                          {model.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    id="model-name"
-                    value={userModelConfig.model}
-                    onChange={(event) => updateModelConfig({ model: event.target.value })}
-                    placeholder="gpt-4.1-mini"
-                    autoComplete="off"
+                  <RefreshCw
+                    className={
+                      isLoadingRagStatus ? "h-4 w-4 animate-spin" : "h-4 w-4"
+                    }
                   />
-                )}
+                  刷新状态
+                </Button>
+              </div>
+
+              {ragError ? (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {ragError}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {showUserModelConfig ? (
+          <Card className="py-4 opacity-75">
+            <CardHeader className="px-5 pb-3">
+              <CardTitle className="text-base">模型运行配置</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 px-5">
+              <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+                <div className="text-sm font-medium text-foreground">
+                  由后台统一配置
+                </div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  当前产品不向普通用户开放自带模型参数；如需调整模型来源，请联系管理员在后台控制台处理。
+                </div>
               </div>
               <Button
                 type="button"
                 variant="outline"
-                className="self-end"
-                onClick={onFetchUserModels}
-                disabled={isLoadingModels}
+                className="w-full justify-start"
+                disabled
               >
-                <RefreshCw className={isLoadingModels ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                拉取模型
+                <RefreshCw className="h-4 w-4" />
+                模型列表仅管理员可维护
               </Button>
-            </div>
-
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div>
-                <div className="text-sm font-medium text-foreground">事件式流式输出</div>
-                <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                  先流式显示处理阶段，最终回复仍由后端结构化评估完成后返回。
+              {modelConfigError ? (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {modelConfigError}
                 </div>
-              </div>
-              <Switch
-                checked={userModelConfig.streamingEnabled}
-                onCheckedChange={(checked) => updateModelConfig({ streamingEnabled: checked })}
-                aria-label="启用事件式流式输出"
-              />
-            </div>
-
-            {modelConfigError ? (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {modelConfigError}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card> : null}
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card className="py-4">
           <CardHeader className="px-5 pb-3">
@@ -596,159 +561,198 @@ export function SettingsPanel({
               导出完整会话长截图
             </Button>
             {showDebugTools ? (
-            <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-foreground">材料包</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                    选择一组可写入材料库的合成材料，用来测试核验、追问和报告。
-                  </div>
-                </div>
-                <Badge variant="outline">synthetic</Badge>
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="debug-material-bundle-scenario">场景</Label>
-                <Select
-                  value={activeDebugBundleScenario}
-                  onValueChange={(value) =>
-                    setSelectedDebugBundleScenario(value as DebugMaterialBundleScenario)
-                  }
-                >
-                  <SelectTrigger id="debug-material-bundle-scenario" className="w-full">
-                    <SelectValue placeholder="选择材料包场景" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {debugBundleOptions.map((option) => (
-                      <SelectItem key={option.scenario} value={option.scenario}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="min-h-10 text-xs leading-5 text-muted-foreground">
-                  {selectedDebugBundleOption.description}
-                </div>
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="debug-material-seed">材料生成依据</Label>
-                <Textarea
-                  id="debug-material-seed"
-                  value={materialSeedText}
-                  onChange={(event) => setMaterialSeedOverride(event.target.value)}
-                  placeholder="例如：我会去 UC Irvine 读 Data Science，父母资助，第一年费用约 8 万美元。"
-                  className="min-h-24 resize-y"
-                />
-                <div className="text-xs leading-5 text-muted-foreground">
-                  这里是唯一生成依据，必填；生成失败不会写入材料。
-                </div>
-              </div>
-
-              <Button
-                variant="outline"
-                className="w-full justify-start"
-                onClick={handleDebugBundleSubmit}
-                disabled={
-                  !sessionId || isDebugBundleGenerating || !materialSeedText.trim()
-                }
-              >
-                <FlaskConical className={isDebugBundleGenerating ? "h-4 w-4 animate-pulse" : "h-4 w-4"} />
-                {isDebugBundleGenerating ? "正在生成材料包" : `生成${selectedDebugBundleOption.shortLabel}`}
-              </Button>
-
-              {debugBundleProgress.length ? (
-                <div className="max-h-44 overflow-y-auto rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
-                  {debugBundleProgress.slice(-8).map((line, index) => (
-                    <div key={`${line}-${index}`} className="break-words">
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
-                <div className="flex items-center justify-between gap-2">
+              <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-foreground">存档</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      已生成且写入后端的材料包可直接导入当前会话。
+                    <div className="text-sm font-medium text-foreground">
+                      材料包
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                      选择一组可写入材料库的合成材料，用来测试核验、追问和报告。
                     </div>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={onRefreshMaterialPackages}
-                    disabled={isLoadingMaterialPackages}
-                  >
-                    <RefreshCw className={isLoadingMaterialPackages ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-                    刷新
-                  </Button>
+                  <Badge variant="outline">synthetic</Badge>
                 </div>
 
-                {materialPackages.length ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="debug-material-bundle-scenario">场景</Label>
                   <Select
-                    onValueChange={handleImportPackage}
-                    disabled={
-                      !sessionId ||
-                      isLoadingMaterialPackages ||
-                      isImportingMaterialPackage
+                    value={activeDebugBundleScenario}
+                    onValueChange={(value) =>
+                      setSelectedDebugBundleScenario(
+                        value as DebugMaterialBundleScenario,
+                      )
                     }
                   >
-                    <SelectTrigger className="w-full">
-                      <SelectValue
-                        placeholder={
-                          isImportingMaterialPackage
-                            ? "正在导入材料包"
-                            : "选择存档材料包导入"
-                        }
-                      />
+                    <SelectTrigger
+                      id="debug-material-bundle-scenario"
+                      className="w-full"
+                    >
+                      <SelectValue placeholder="选择材料包场景" />
                     </SelectTrigger>
                     <SelectContent>
-                      {materialPackages.map((item) => (
+                      {debugBundleOptions.map((option) => (
                         <SelectItem
-                          key={item.package_id}
-                          value={item.package_id}
-                          disabled={item.status === "failed"}
+                          key={option.scenario}
+                          value={option.scenario}
                         >
-                          {item.label} · {item.document_count} 份 · {item.status_label}
+                          {option.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                ) : (
-                  <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                    {isLoadingMaterialPackages ? "正在读取材料包存档..." : "暂无可导入的材料包存档。"}
+                  <div className="min-h-10 text-xs leading-5 text-muted-foreground">
+                    {selectedDebugBundleOption.description}
                   </div>
-                )}
+                </div>
 
-                {materialPackages.slice(0, 3).map((item) => (
-                  <div
-                    key={`${item.package_id}-summary`}
-                    className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-foreground">
-                        {item.label}
-                      </div>
-                      <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                        {item.document_count} 份材料
-                        {item.source_session_id ? ` / ${item.source_session_id}` : ""}
-                      </div>
-                      {item.warning ? (
-                        <div className="mt-1 text-[11px] leading-4 text-amber-700">
-                          {item.warning}
-                        </div>
-                      ) : null}
-                    </div>
-                    <Badge variant={item.status === "ready" ? "secondary" : "outline"}>
-                      {item.status_label}
-                    </Badge>
+                <div className="grid gap-2">
+                  <Label htmlFor="debug-material-seed">材料生成依据</Label>
+                  <Textarea
+                    id="debug-material-seed"
+                    value={materialSeedText}
+                    onChange={(event) =>
+                      setMaterialSeedOverride(event.target.value)
+                    }
+                    placeholder="例如：我会去 UC Irvine 读 Data Science，父母资助，第一年费用约 8 万美元。"
+                    className="min-h-24 resize-y"
+                  />
+                  <div className="text-xs leading-5 text-muted-foreground">
+                    这里是唯一生成依据，必填；生成失败不会写入材料。
                   </div>
-                ))}
+                </div>
+
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={handleDebugBundleSubmit}
+                  disabled={
+                    !sessionId ||
+                    isDebugBundleGenerating ||
+                    !materialSeedText.trim()
+                  }
+                >
+                  <FlaskConical
+                    className={
+                      isDebugBundleGenerating
+                        ? "h-4 w-4 animate-pulse"
+                        : "h-4 w-4"
+                    }
+                  />
+                  {isDebugBundleGenerating
+                    ? "正在生成材料包"
+                    : `生成${selectedDebugBundleOption.shortLabel}`}
+                </Button>
+
+                {debugBundleProgress.length ? (
+                  <div className="max-h-44 overflow-y-auto rounded-md border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+                    {debugBundleProgress.slice(-8).map((line, index) => (
+                      <div key={`${line}-${index}`} className="break-words">
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">
+                        存档
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        已生成且写入后端的材料包可直接导入当前会话。
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={onRefreshMaterialPackages}
+                      disabled={isLoadingMaterialPackages}
+                    >
+                      <RefreshCw
+                        className={
+                          isLoadingMaterialPackages
+                            ? "h-4 w-4 animate-spin"
+                            : "h-4 w-4"
+                        }
+                      />
+                      刷新
+                    </Button>
+                  </div>
+
+                  {materialPackages.length ? (
+                    <Select
+                      onValueChange={handleImportPackage}
+                      disabled={
+                        !sessionId ||
+                        isLoadingMaterialPackages ||
+                        isImportingMaterialPackage
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue
+                          placeholder={
+                            isImportingMaterialPackage
+                              ? "正在导入材料包"
+                              : "选择存档材料包导入"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {materialPackages.map((item) => (
+                          <SelectItem
+                            key={item.package_id}
+                            value={item.package_id}
+                            disabled={item.status === "failed"}
+                          >
+                            {item.label} · {item.document_count} 份 ·{" "}
+                            {item.status_label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                      {isLoadingMaterialPackages
+                        ? "正在读取材料包存档..."
+                        : "暂无可导入的材料包存档。"}
+                    </div>
+                  )}
+
+                  {materialPackages.slice(0, 3).map((item) => (
+                    <div
+                      key={`${item.package_id}-summary`}
+                      className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium text-foreground">
+                          {item.label}
+                        </div>
+                        <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                          {item.document_count} 份材料
+                          {item.source_session_id
+                            ? ` / ${item.source_session_id}`
+                            : ""}
+                        </div>
+                        {item.warning ? (
+                          <div className="mt-1 text-[11px] leading-4 text-amber-700">
+                            {item.warning}
+                          </div>
+                        ) : null}
+                      </div>
+                      <Badge
+                        variant={
+                          item.status === "ready" ? "secondary" : "outline"
+                        }
+                      >
+                        {item.status_label}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
             ) : null}
             <Button
               variant="outline"
@@ -777,7 +781,9 @@ export function SettingsPanel({
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
-                  <AlertDialogCancel className="rounded-xl">取消</AlertDialogCancel>
+                  <AlertDialogCancel className="rounded-xl">
+                    取消
+                  </AlertDialogCancel>
                   <AlertDialogAction
                     onClick={onClearHistory}
                     className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -796,29 +802,35 @@ export function SettingsPanel({
           </CardContent>
         </Card>
 
-        {showGithub ? <Card className="py-4">
-          <CardHeader className="px-5 pb-3">
-            <CardTitle className="text-base">项目信息</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 px-5">
-            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="text-sm font-medium text-foreground">项目创建者</div>
-              <div className="mt-1 text-sm text-muted-foreground">{PROJECT_INFO.creatorName}</div>
-            </div>
-            <a
-              href={PROJECT_INFO.githubUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40"
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <Github className="h-4 w-4 shrink-0 text-primary" />
-                <span className="truncate">GitHub 仓库</span>
-              </span>
-              <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
-            </a>
-          </CardContent>
-        </Card> : null}
+        {showGithub ? (
+          <Card className="py-4">
+            <CardHeader className="px-5 pb-3">
+              <CardTitle className="text-base">项目信息</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 px-5">
+              <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+                <div className="text-sm font-medium text-foreground">
+                  项目创建者
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {PROJECT_INFO.creatorName}
+                </div>
+              </div>
+              <a
+                href={PROJECT_INFO.githubUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <Github className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="truncate">GitHub 仓库</span>
+                </span>
+                <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
+              </a>
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
     </ScrollArea>
   )

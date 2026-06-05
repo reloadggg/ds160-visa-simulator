@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 import hmac
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette import status
@@ -23,8 +23,11 @@ from app.core.simple_auth import (
 )
 from app.db.models import AccessKeySessionRecord, AuthSessionRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
+from app.agents.user_model_config import normalize_openai_base_url
 from app.services.access_key_service import AccessKeyService
 from app.services.admin_config_service import AdminConfigService
+from app.services.admin_model_config_service import AdminModelConfigService
+from app.services.runtime_errors import ModelRuntimeError
 from app.services.visa_policy_ingest_service import PolicyKnowledgeIngestService
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -59,6 +62,45 @@ class AdminSettingsPatch(BaseModel):
     debug_console_enabled: bool | None = None
     debug_material_enabled: bool | None = None
     rag_status_user_visible: bool | None = None
+
+    @field_validator("model_base_url")
+    @classmethod
+    def validate_model_base_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return normalize_openai_base_url(value)
+
+
+class AdminModelConfigDraft(BaseModel):
+    base_url: str | None = None
+    api_key: SecretStr | None = None
+    model: str | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return normalize_openai_base_url(value)
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def empty_api_key_as_omitted(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @property
+    def api_key_value(self) -> str | None:
+        return self.api_key.get_secret_value() if self.api_key is not None else None
 
 
 def require_admin_session(
@@ -141,10 +183,19 @@ def create_access_key(
 
 @router.get("/access-keys")
 def list_access_keys(
+    q: str | None = None,
+    status: Literal["enabled", "disabled", "all"] = "all",
+    expired: bool | None = None,
     _: AuthSessionRecord = Depends(require_admin_session),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return {"keys": AccessKeyService(db).list_keys()}
+    return {
+        "keys": AccessKeyService(db).list_keys(
+            q=q,
+            status=status,
+            expired=expired,
+        )
+    }
 
 
 @router.patch("/access-keys/{key_id}")
@@ -167,6 +218,26 @@ def update_access_key(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"record": AccessKeyService.public_payload(record)}
+
+
+@router.get("/access-keys/{key_id}/secret")
+def reveal_access_key_secret(
+    key_id: str,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        revealed = AccessKeyService(db).reveal_key_secret(key_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    payload: dict[str, Any] = {
+        "key_id": revealed.key_id,
+        "key": revealed.key,
+        "available": revealed.available,
+    }
+    if revealed.detail is not None:
+        payload["detail"] = revealed.detail
+    return payload
 
 
 @router.get("/access-keys/{key_id}/sessions")
@@ -250,6 +321,39 @@ def update_admin_settings(
     service = AdminConfigService(db)
     service.update_settings(patch)
     return service.admin_payload()
+
+
+@router.post("/model-config/models")
+def list_admin_model_config_models(
+    payload: AdminModelConfigDraft | None = Body(default=None),
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    draft = payload or AdminModelConfigDraft()
+    try:
+        return AdminModelConfigService(db).list_models(
+            base_url=draft.base_url,
+            api_key=draft.api_key_value,
+        )
+    except ModelRuntimeError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.to_public_payload(),
+        ) from exc
+
+
+@router.post("/model-config/test")
+def test_admin_model_config(
+    payload: AdminModelConfigDraft | None = Body(default=None),
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    draft = payload or AdminModelConfigDraft()
+    return AdminModelConfigService(db).test_model(
+        base_url=draft.base_url,
+        api_key=draft.api_key_value,
+        model=draft.model,
+    )
 
 
 @router.get("/rag/status")
