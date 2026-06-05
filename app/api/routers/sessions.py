@@ -3,10 +3,11 @@ import json
 from queue import Empty, Queue
 from threading import Thread
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.core.settings import settings
 from app.core.visa_families import validate_declared_family
 from app.db.session import get_db, session_factory_from_session
 from app.core.dependencies import get_session_repo, require_session_access
@@ -16,10 +17,18 @@ from app.services.debug_material_bundle_service import DebugMaterialBundleServic
 from app.services.gate_service import GateService
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotService
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import SessionRecord, SessionTurnRecord
+from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
+from app.db.models import (
+    AccessKeySessionRecord,
+    CaseMemorySnapshotRecord,
+    DocumentRecord,
+    JobRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.services.access_key_service import AccessKeyService
 from app.services.admin_config_service import AdminConfigService
 
@@ -88,6 +97,35 @@ def create_session(
         "gate_status": record.gate_status_json,
     }
 
+def _delete_session_records(db: Session, session_ids: list[str]) -> int:
+    if not session_ids:
+        return 0
+
+    db.execute(
+        delete(EvidenceItemRecord).where(EvidenceItemRecord.session_id.in_(session_ids))
+    )
+    db.execute(
+        delete(DocumentChunkRecord).where(DocumentChunkRecord.session_id.in_(session_ids))
+    )
+    db.execute(
+        delete(CaseMemorySnapshotRecord).where(
+            CaseMemorySnapshotRecord.session_id.in_(session_ids)
+        )
+    )
+    db.execute(delete(JobRecord).where(JobRecord.session_id.in_(session_ids)))
+    db.execute(delete(DocumentRecord).where(DocumentRecord.session_id.in_(session_ids)))
+    db.execute(
+        delete(SessionTurnRecord).where(SessionTurnRecord.session_id.in_(session_ids))
+    )
+    db.execute(
+        delete(AccessKeySessionRecord).where(
+            AccessKeySessionRecord.session_id.in_(session_ids)
+        )
+    )
+    db.execute(delete(SessionRecord).where(SessionRecord.session_id.in_(session_ids)))
+    db.commit()
+    return len(session_ids)
+
 
 @router.get("")
 def list_sessions(
@@ -125,6 +163,44 @@ def list_sessions(
             }
             for record in records
         ]
+    }
+
+
+@router.delete("")
+def clear_account_sessions(
+    request: Request,
+    exclude_session_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.core.simple_auth import get_current_admin_session, get_current_auth_session
+
+    normalized_exclude = exclude_session_id.strip() if exclude_session_id else None
+
+    if not settings.app_auth_enabled:
+        return {"deleted_count": 0, "remaining_session_id": normalized_exclude}
+
+    if get_current_admin_session(request, db, touch=False) is not None:
+        return {"deleted_count": 0, "remaining_session_id": normalized_exclude}
+
+    current_auth = get_current_auth_session(request, db, touch=False)
+    if current_auth is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+
+    if not current_auth.access_key_id:
+        return {"deleted_count": 0, "remaining_session_id": normalized_exclude}
+
+    statement = select(AccessKeySessionRecord.session_id).where(
+        AccessKeySessionRecord.key_id == current_auth.access_key_id
+    )
+    if normalized_exclude:
+        statement = statement.where(
+            AccessKeySessionRecord.session_id != normalized_exclude
+        )
+    session_ids = list(db.scalars(statement).all())
+    deleted_count = _delete_session_records(db, session_ids)
+    return {
+        "deleted_count": deleted_count,
+        "remaining_session_id": normalized_exclude,
     }
 
 

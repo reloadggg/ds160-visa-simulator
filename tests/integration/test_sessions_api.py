@@ -166,6 +166,13 @@ def test_create_session_returns_initial_phase(client: TestClient) -> None:
     }
 
 
+def test_clear_account_sessions_is_noop_without_auth(client: TestClient) -> None:
+    response = client.delete("/v1/sessions")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_count": 0, "remaining_session_id": None}
+
+
 def test_create_session_uses_family_default_scenario(client: TestClient) -> None:
     response = client.post("/v1/sessions", json={"declared_family": "j1"})
 

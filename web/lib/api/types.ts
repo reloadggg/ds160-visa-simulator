@@ -906,6 +906,11 @@ export interface BackendSessionListResponse {
   sessions: BackendSessionListItem[]
 }
 
+export interface ClearSessionsResponse {
+  deleted_count: number
+  remaining_session_id?: string | null
+}
+
 export interface BackendSessionGateStatus {
   declared_family?: string | null
   scenario_key?: string | null

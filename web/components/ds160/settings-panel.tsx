@@ -770,14 +770,14 @@ export function SettingsPanel({
                   className="w-full justify-start text-destructive hover:text-destructive"
                 >
                   <Trash2 className="h-4 w-4" />
-                  清空本地历史记录（{historyCount}）
+                  清理本账号的会话历史记录（{historyCount}）
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent className="rounded-2xl">
                 <AlertDialogHeader>
-                  <AlertDialogTitle>确认清空历史记录？</AlertDialogTitle>
+                  <AlertDialogTitle>确认清理本账号的会话历史记录？</AlertDialogTitle>
                   <AlertDialogDescription>
-                    此操作将永久删除保存在本浏览器中的所有历史会话摘要、消息记录和归档材料，且无法撤销。
+                    此操作将删除本账号下已保存的历史会话摘要、消息记录和归档材料，并同步清理旧版本 Kit 留在本浏览器中的会话历史；当前进行中的会话会保留。
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>

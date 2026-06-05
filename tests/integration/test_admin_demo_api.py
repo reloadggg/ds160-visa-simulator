@@ -10,7 +10,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import settings as settings_module
 from app.db.base import Base
-from app.db.models import AccessKeyRecord, SessionRecord
+from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
+from app.db.models import (
+    AccessKeyRecord,
+    AccessKeySessionRecord,
+    CaseMemorySnapshotRecord,
+    DocumentRecord,
+    JobRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.db.session import get_db
 from app.main import app
 from app.services.access_key_service import hash_secret
@@ -148,6 +157,141 @@ def test_admin_key_quota_and_session_ownership_flow(client: TestClient) -> None:
     assert client.post("/v1/auth/login", json={"password": plaintext_key}).status_code == 200
     resumed_create = client.post("/v1/sessions", json={"declared_family": "f1"})
     assert resumed_create.status_code == 201
+
+
+def test_user_can_clear_own_session_history_without_removing_current_session(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    assert client.post("/v1/admin/login", json={"password": "admin-pass"}).status_code == 200
+    first_key = client.post(
+        "/v1/admin/access-keys",
+        json={"label": "first customer", "usage_limit": 3},
+    ).json()["key"]
+    second_key = client.post(
+        "/v1/admin/access-keys",
+        json={"label": "second customer", "usage_limit": 1},
+    ).json()["key"]
+
+    client.post("/v1/admin/logout")
+    assert client.post("/v1/auth/login", json={"password": first_key}).status_code == 200
+    old_session = client.post("/v1/sessions", json={"declared_family": "f1"}).json()[
+        "session_id"
+    ]
+    current_session = client.post(
+        "/v1/sessions",
+        json={"declared_family": "f1"},
+    ).json()["session_id"]
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/auth/login", json={"password": second_key}).status_code == 200
+    second_session = client.post("/v1/sessions", json={"declared_family": "f1"}).json()[
+        "session_id"
+    ]
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/auth/login", json={"password": first_key}).status_code == 200
+
+    with db_session_factory() as db:
+        db.add(
+            SessionTurnRecord(
+                turn_id="turn-clear-old",
+                turn_index=0,
+                session_id=old_session,
+                role="user",
+                content="hello",
+                source="test",
+                metadata_json={},
+                client_message_id="client-clear-old",
+            )
+        )
+        db.add(
+            DocumentRecord(
+                document_id="doc-clear-old",
+                session_id=old_session,
+                filename="old.pdf",
+                status="parsed",
+                artifact_json={},
+                raw_bytes=b"pdf",
+                raw_text="old document",
+            )
+        )
+        db.add(
+            JobRecord(
+                job_id="job-clear-old",
+                session_id=old_session,
+                kind="case_understanding",
+                status="done",
+                payload_json={},
+            )
+        )
+        db.add(
+            DocumentChunkRecord(
+                chunk_id="chunk-clear-old",
+                document_id="doc-clear-old",
+                session_id=old_session,
+                ordinal=0,
+                page_number=1,
+                text="old chunk",
+                metadata_json={},
+            )
+        )
+        db.add(
+            EvidenceItemRecord(
+                evidence_id="evidence-clear-old",
+                session_id=old_session,
+                document_id="doc-clear-old",
+                chunk_id="chunk-clear-old",
+                evidence_type="identity",
+                field_path="/identity/name",
+                value="old",
+                excerpt="old chunk",
+                confidence=1.0,
+                metadata_json={},
+            )
+        )
+        db.add(
+            CaseMemorySnapshotRecord(
+                session_id=old_session,
+                snapshot_json={"session_id": old_session},
+            )
+        )
+        db.commit()
+
+    clear_response = client.delete(
+        f"/v1/sessions?exclude_session_id={current_session}"
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.json() == {
+        "deleted_count": 1,
+        "remaining_session_id": current_session,
+    }
+    session_list = client.get("/v1/sessions")
+    assert session_list.status_code == 200
+    assert [item["session_id"] for item in session_list.json()["sessions"]] == [
+        current_session
+    ]
+
+    with db_session_factory() as db:
+        assert db.get(SessionRecord, old_session) is None
+        assert db.get(SessionTurnRecord, "turn-clear-old") is None
+        assert db.get(DocumentRecord, "doc-clear-old") is None
+        assert db.get(JobRecord, "job-clear-old") is None
+        assert db.get(DocumentChunkRecord, "chunk-clear-old") is None
+        assert db.get(EvidenceItemRecord, "evidence-clear-old") is None
+        assert db.get(CaseMemorySnapshotRecord, old_session) is None
+        assert db.get(SessionRecord, current_session) is not None
+        assert db.get(SessionRecord, second_session) is not None
+        assert (
+            db.query(AccessKeySessionRecord)
+            .filter(AccessKeySessionRecord.session_id == old_session)
+            .one_or_none()
+            is None
+        )
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/auth/login", json={"password": second_key}).status_code == 200
+    assert client.get("/v1/sessions").json()["sessions"][0]["session_id"] == second_session
 
 
 def test_access_key_secret_storage_list_masking_legacy_and_filters(

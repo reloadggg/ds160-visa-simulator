@@ -12,6 +12,7 @@ import { toPng } from "html-to-image"
 
 import {
   ApiError,
+  clearAccountSessions,
   createSession,
   createDebugMaterialBundleStream,
   exportSession,
@@ -95,6 +96,7 @@ import type {
 
 const HISTORY_NAMESPACE_KEY = "auth_history_namespace"
 const HISTORY_STORAGE_PREFIX = "ds160-web-history-v2:"
+const LEGACY_HISTORY_STORAGE_KEYS = ["ds160-web-history-v1"]
 const MODEL_CONFIG_STORAGE_KEY = "ds160-user-model-config-v1"
 const MAX_PERSISTED_PREVIEW_BYTES = 2 * 1024 * 1024
 const MAX_RUNTIME_DEBUG_EVENTS = 160
@@ -737,6 +739,9 @@ function removeHistoryEntries(): void {
   cachedHistoryKey = null
   cachedHistoryEntries = EMPTY_HISTORY_ENTRIES
   window.localStorage.removeItem(currentHistoryStorageKey())
+  for (const legacyKey of LEGACY_HISTORY_STORAGE_KEYS) {
+    window.localStorage.removeItem(legacyKey)
+  }
   historyStoreListeners.forEach((listener) => listener())
 }
 
@@ -2317,16 +2322,19 @@ export function useSessionWorkbench() {
     return buildHistoryEntry("active")
   }, [buildHistoryEntry, sessionId, visaType])
 
-  const sessionHistory = useMemo(() => {
-    const mergedHistory = [
-      ...serverHistoryEntries,
-      ...historyStore.filter(
+  const localHistoryEntries = useMemo(
+    () =>
+      historyStore.filter(
         (entry) =>
           !serverHistoryEntries.some(
             (serverEntry) => serverEntry.session_id === entry.session_id,
           ),
       ),
-    ]
+    [historyStore, serverHistoryEntries],
+  )
+
+  const sessionHistory = useMemo(() => {
+    const mergedHistory = [...serverHistoryEntries, ...localHistoryEntries]
     if (!activeHistoryEntry) {
       return mergedHistory
     }
@@ -2334,11 +2342,21 @@ export function useSessionWorkbench() {
       activeHistoryEntry,
       ...mergedHistory.filter((entry) => entry.id !== activeHistoryEntry.id),
     ]
-  }, [activeHistoryEntry, historyStore, serverHistoryEntries])
+  }, [activeHistoryEntry, localHistoryEntries, serverHistoryEntries])
+
+  const browserHistorySnapshot = useMemo(() => {
+    if (!activeHistoryEntry) {
+      return localHistoryEntries
+    }
+    return [
+      activeHistoryEntry,
+      ...localHistoryEntries.filter((entry) => entry.id !== activeHistoryEntry.id),
+    ]
+  }, [activeHistoryEntry, localHistoryEntries])
 
   useEffect(() => {
-    writeHistoryEntries(sessionHistory)
-  }, [sessionHistory])
+    writeHistoryEntries(browserHistorySnapshot)
+  }, [browserHistorySnapshot])
 
   const clearCurrentSessionState = useCallback(() => {
     setSession(null)
@@ -3508,10 +3526,35 @@ export function useSessionWorkbench() {
     [runDebugMaterialBundle],
   )
 
-  const handleClearHistory = useCallback(() => {
+  const handleClearHistory = useCallback(async () => {
     removeHistoryEntries()
-    setSettingsFeedback("本地历史记录已清空。")
-  }, [])
+
+    if (mockMode) {
+      setServerHistoryEntries([])
+      setSettingsFeedback("本账号的会话历史记录已清理。")
+      return
+    }
+
+    try {
+      const result = await clearAccountSessions(sessionId)
+      await refreshServerHistory()
+      const preservedCurrentSession = sessionId
+        ? "，当前进行中的会话已保留"
+        : ""
+      const deletedSummary =
+        result.deleted_count > 0 ? `，已删除 ${result.deleted_count} 条账号记录` : ""
+      setSettingsFeedback(
+        `本账号的会话历史记录已清理${deletedSummary}${preservedCurrentSession}。`,
+      )
+    } catch (error) {
+      setSettingsFeedback(
+        `旧版本和本浏览器会话记录已清理；账号记录清理失败：${getErrorMessage(
+          error,
+          "请稍后重试。",
+        )}`,
+      )
+    }
+  }, [getErrorMessage, mockMode, refreshServerHistory, sessionId])
 
   const handleRestoreSession = useCallback((entry: SessionHistoryEntry) => {
     setSession({

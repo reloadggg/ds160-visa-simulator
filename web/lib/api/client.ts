@@ -30,6 +30,7 @@ import type {
   BackendRequiredPackage,
   BackendSession,
   BackendSessionListResponse,
+  ClearSessionsResponse,
   BackendSessionMessagesResponse,
   BackendUserReport,
   DebugMaterialBundleResponse,
@@ -202,6 +203,19 @@ export async function listSessions(): Promise<BackendSessionListResponse> {
     headers: getAuthHeaders(),
   })
   return handleResponse<BackendSessionListResponse>(response)
+}
+
+export async function clearAccountSessions(
+  excludeSessionId?: string | null,
+): Promise<ClearSessionsResponse> {
+  const path = excludeSessionId
+    ? `/v1/sessions?exclude_session_id=${encodeURIComponent(excludeSessionId)}`
+    : "/v1/sessions"
+  const response = await apiFetch(buildApiUrl(path), {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<ClearSessionsResponse>(response)
 }
 
 export async function getRequiredPackage(
