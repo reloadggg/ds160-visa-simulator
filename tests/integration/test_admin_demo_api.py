@@ -87,6 +87,18 @@ def test_admin_key_quota_and_session_ownership_flow(client: TestClient) -> None:
     user_login = client.post("/v1/auth/login", json={"password": plaintext_key})
     assert user_login.status_code == 200
     assert user_login.json()["history_namespace"] == f"key_{key_id}"
+    assert user_login.json()["access_key_quota"] == {
+        "key_id": key_id,
+        "label": "demo customer",
+        "usage_limit": 1,
+        "usage_count": 0,
+        "remaining_uses": 1,
+        "can_create_session": True,
+        "expires_at": None,
+        "revoked": False,
+        "revoked_at": None,
+    }
+    assert plaintext_key not in user_login.text
     user_reveal = client.get(f"/v1/admin/access-keys/{key_id}/secret")
     assert user_reveal.status_code == 401
 
@@ -103,6 +115,12 @@ def test_admin_key_quota_and_session_ownership_flow(client: TestClient) -> None:
     assert [item["session_id"] for item in session_list.json()["sessions"]] == [
         session_id
     ]
+    quota_status = client.get("/v1/auth/me")
+    assert quota_status.status_code == 200
+    assert quota_status.json()["access_key_quota"]["usage_count"] == 1
+    assert quota_status.json()["access_key_quota"]["remaining_uses"] == 0
+    assert quota_status.json()["access_key_quota"]["can_create_session"] is False
+    assert plaintext_key not in quota_status.text
 
     client.post("/v1/auth/logout")
     client.post("/v1/admin/login", json={"password": "admin-pass"})

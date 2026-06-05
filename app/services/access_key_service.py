@@ -237,6 +237,21 @@ class AccessKeyService:
         }
 
     @staticmethod
+    def quota_payload(record: AccessKeyRecord) -> dict[str, Any]:
+        """Return normal-user-visible quota metadata without secret material."""
+        return {
+            "key_id": record.key_id,
+            "label": record.label,
+            "usage_limit": record.usage_limit,
+            "usage_count": record.usage_count,
+            "remaining_uses": max(0, record.usage_limit - record.usage_count),
+            "can_create_session": AccessKeyService.can_create_session(record),
+            "expires_at": record.expires_at.isoformat() + "Z" if record.expires_at else None,
+            "revoked": record.revoked_at is not None,
+            "revoked_at": record.revoked_at.isoformat() + "Z" if record.revoked_at else None,
+        }
+
+    @staticmethod
     def masked_key_preview(record: AccessKeyRecord) -> str:
         return f"{ACCESS_KEY_PREFIX}_{record.key_id}_••••"
 

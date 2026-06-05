@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.settings import settings
 from app.core.simple_auth import (
+    AccessKeyQuotaResponse,
     AuthStatusResponse,
     LoginRequest,
     LoginResponse,
@@ -13,9 +14,24 @@ from app.core.simple_auth import (
     set_auth_cookie,
 )
 from app.db.session import get_db
+from app.services.access_key_service import AccessKeyService
 
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
+
+
+def _access_key_quota(
+    db: Session,
+    access_key_id: str | None,
+) -> AccessKeyQuotaResponse | None:
+    if not access_key_id:
+        return None
+    from app.db.models import AccessKeyRecord
+
+    key_record = db.get(AccessKeyRecord, access_key_id)
+    if key_record is None:
+        return None
+    return AccessKeyQuotaResponse(**AccessKeyService.quota_payload(key_record))
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -34,6 +50,7 @@ def login(
             if auth_session.access_key_id
             else "local-dev"
         ),
+        access_key_quota=_access_key_quota(db, auth_session.access_key_id),
     )
 
 
@@ -55,6 +72,7 @@ def me(
             if record.access_key_id
             else "local-dev"
         ),
+        access_key_quota=_access_key_quota(db, record.access_key_id),
     )
 
 

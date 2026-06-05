@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { getAuthStatus, login as apiLogin, logout as apiLogout } from "@/lib/api/client"
+import type { AccessKeyQuota } from "@/lib/api/types"
 
 const AUTH_USER_KEY = "auth_user"
 const AUTH_HISTORY_NAMESPACE_KEY = "auth_history_namespace"
@@ -100,6 +101,7 @@ export function useAuth() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [userProfile, setUserProfile] = useState<AuthUserProfile | null>(null)
+  const [accessKeyQuota, setAccessKeyQuota] = useState<AccessKeyQuota | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -114,6 +116,7 @@ export function useAuth() {
           clearStoredUserProfile()
           clearHistoryNamespace()
           setUserProfile(null)
+          setAccessKeyQuota(null)
           setIsAuthenticated(false)
           return
         }
@@ -121,12 +124,14 @@ export function useAuth() {
         const profile = readStoredUserProfile() ?? buildUserProfile()
         writeStoredUserProfile(profile)
         setUserProfile(profile)
+        setAccessKeyQuota(status.access_key_quota ?? null)
         setIsAuthenticated(true)
       } catch {
         if (!cancelled) {
           clearStoredUserProfile()
           clearHistoryNamespace()
           setUserProfile(null)
+          setAccessKeyQuota(null)
           setIsAuthenticated(false)
         }
       } finally {
@@ -140,6 +145,7 @@ export function useAuth() {
       clearStoredUserProfile()
       clearHistoryNamespace()
       setUserProfile(null)
+      setAccessKeyQuota(null)
       setIsAuthenticated(false)
       setError("会话已过期，请重新登录")
     }
@@ -161,6 +167,7 @@ export function useAuth() {
       const profile = buildUserProfile(displayName)
       writeStoredUserProfile(profile)
       setUserProfile(profile)
+      setAccessKeyQuota(response.access_key_quota ?? null)
       setIsAuthenticated(true)
       return true
     } catch (err) {
@@ -177,6 +184,7 @@ export function useAuth() {
     clearStoredUserProfile()
     clearHistoryNamespace()
     setUserProfile(null)
+    setAccessKeyQuota(null)
     setIsAuthenticated(false)
   }, [])
 
@@ -186,6 +194,7 @@ export function useAuth() {
     isLoggingIn,
     error,
     userProfile,
+    accessKeyQuota,
     login,
     logout,
   }

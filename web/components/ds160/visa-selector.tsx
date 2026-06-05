@@ -2,11 +2,21 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Spinner } from "@/components/ui/spinner"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
-import { VISA_FAMILIES, type VisaFamily } from "@/lib/api/types"
+import { VISA_FAMILIES, type AccessKeyQuota, type VisaFamily } from "@/lib/api/types"
 import { GraduationCap, Users, Briefcase, Building2 } from "lucide-react"
 
 interface VisaSelectorProps {
@@ -15,6 +25,7 @@ interface VisaSelectorProps {
   error?: string | null
   mockMode?: boolean
   embedded?: boolean
+  accessKeyQuota?: AccessKeyQuota | null
 }
 
 const visaIcons: Record<VisaFamily, React.ComponentType<{ className?: string }>> = {
@@ -30,12 +41,29 @@ export function VisaSelector({
   error,
   mockMode = false,
   embedded = false,
+  accessKeyQuota = null,
 }: VisaSelectorProps) {
   const [selectedVisa, setSelectedVisa] = useState<VisaFamily | null>(null)
+  const [pendingVisa, setPendingVisa] = useState<VisaFamily | null>(null)
+
+  const quotaBlocksSession =
+    Boolean(accessKeyQuota) && !accessKeyQuota?.can_create_session
+  const quotaLabel = accessKeyQuota
+    ? `剩余 ${accessKeyQuota.remaining_uses}/${accessKeyQuota.usage_limit} 次`
+    : mockMode
+      ? "Mock 模式不会消耗额度"
+      : "当前登录方式不限制创建额度"
 
   const handleStart = () => {
-    if (selectedVisa) {
-      onSelect(selectedVisa)
+    if (selectedVisa && !quotaBlocksSession) {
+      setPendingVisa(selectedVisa)
+    }
+  }
+
+  const handleConfirmStart = () => {
+    if (pendingVisa) {
+      onSelect(pendingVisa)
+      setPendingVisa(null)
     }
   }
 
@@ -57,8 +85,11 @@ export function VisaSelector({
             面签模拟器
           </h1>
           <p className="text-muted-foreground">
-            选择您要模拟的签证类型，开始练习面签
+            选择您要模拟的签证类型，确认后会创建一个新的面签会话
           </p>
+          <div className="mt-3 inline-flex rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+            创建额度：{quotaLabel}
+          </div>
           {mockMode && (
             <div className="mt-3 inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800">
               开发模式：当前使用 Mock 数据
@@ -131,7 +162,7 @@ export function VisaSelector({
               )}
               <Button
                 onClick={handleStart}
-                disabled={!selectedVisa || isLoading}
+                disabled={!selectedVisa || isLoading || quotaBlocksSession}
                 className="w-full"
                 size="lg"
               >
@@ -141,13 +172,42 @@ export function VisaSelector({
                     正在初始化会话...
                   </>
                 ) : (
-                  "开始模拟面签"
+                  quotaBlocksSession ? "创建额度已用尽" : "开始模拟面签"
                 )}
               </Button>
+              {quotaBlocksSession ? (
+                <div className="mt-3 rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                  这个访问 key 已不能再创建新会话，请联系管理员增加额度或使用已有历史会话。
+                </div>
+              ) : null}
             </div>
           </CardContent>
         </Card>
       </div>
+
+      <AlertDialog open={pendingVisa !== null} onOpenChange={(open) => !open && setPendingVisa(null)}>
+        <AlertDialogContent className="rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认创建新的面签会话？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {accessKeyQuota
+                ? `创建后会消耗 1 次访问 key 创建额度。当前已用 ${accessKeyQuota.usage_count}/${accessKeyQuota.usage_limit} 次，创建后剩余 ${Math.max(0, accessKeyQuota.remaining_uses - 1)} 次。`
+                : mockMode
+                  ? "这会创建一个 Mock 会话，不会消耗访问 key 额度。"
+                  : "这会创建一个新的面签会话。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="rounded-xl">取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmStart}
+              className="rounded-xl"
+            >
+              确认创建
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

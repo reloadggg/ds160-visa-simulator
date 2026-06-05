@@ -51,7 +51,7 @@ export default function DS160Workbench() {
 function Workbench() {
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG)
-  const { userProfile } = useAuth()
+  const { userProfile, accessKeyQuota } = useAuth()
 
   const {
     apiBaseUrl,
@@ -218,6 +218,7 @@ function Workbench() {
           isLoading={isInitializing}
           error={initError}
           mockMode={mockMode}
+          accessKeyQuota={accessKeyQuota}
         />
       )
     }

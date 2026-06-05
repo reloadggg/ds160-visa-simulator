@@ -115,6 +115,7 @@ def test_login_sets_cookie_and_allows_business_api(
         "authenticated": True,
         "expires_in": 3600,
         "history_namespace": "local-dev",
+        "access_key_quota": None,
     }
     cookie_header = response.headers["set-cookie"]
     assert settings_module.settings.app_auth_cookie_name in cookie_header
@@ -227,6 +228,7 @@ def test_me_reports_cookie_session_status(
         "authenticated": False,
         "expires_at": None,
         "history_namespace": None,
+        "access_key_quota": None,
     }
 
     login(client)
@@ -357,6 +359,7 @@ def test_auth_is_disabled_without_password(client: TestClient) -> None:
         "authenticated": True,
         "expires_at": None,
         "history_namespace": None,
+        "access_key_quota": None,
     }
 
 

@@ -863,10 +863,23 @@ export interface ComposerCommand {
   token: number
 }
 
+export interface AccessKeyQuota {
+  key_id: string
+  label?: string
+  usage_limit: number
+  usage_count: number
+  remaining_uses: number
+  can_create_session: boolean
+  expires_at?: string | null
+  revoked?: boolean
+  revoked_at?: string | null
+}
+
 export interface AuthResponse {
   authenticated: boolean
   expires_in: number
   history_namespace?: string
+  access_key_quota?: AccessKeyQuota | null
 }
 
 export interface LoginPayload {
@@ -877,6 +890,7 @@ export interface AuthStatusResponse {
   authenticated: boolean
   expires_at?: string | null
   history_namespace?: string | null
+  access_key_quota?: AccessKeyQuota | null
 }
 
 export interface AppConfig {

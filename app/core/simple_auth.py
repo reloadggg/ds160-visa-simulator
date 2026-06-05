@@ -42,16 +42,30 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AccessKeyQuotaResponse(BaseModel):
+    key_id: str
+    label: str = ""
+    usage_limit: int
+    usage_count: int
+    remaining_uses: int
+    can_create_session: bool
+    expires_at: str | None = None
+    revoked: bool = False
+    revoked_at: str | None = None
+
+
 class LoginResponse(BaseModel):
     authenticated: bool = True
     expires_in: int
     history_namespace: str = "local-dev"
+    access_key_quota: AccessKeyQuotaResponse | None = None
 
 
 class AuthStatusResponse(BaseModel):
     authenticated: bool
     expires_at: str | None = None
     history_namespace: str | None = None
+    access_key_quota: AccessKeyQuotaResponse | None = None
 
 
 @dataclass(frozen=True)
