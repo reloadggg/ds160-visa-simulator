@@ -13,7 +13,7 @@ from starlette import status
 from starlette.responses import JSONResponse
 
 from app.core.settings import settings
-from app.db.models import AuthSessionRecord
+from app.db.models import AuthLoginEventRecord, AuthSessionRecord
 from app.db.session import SessionLocal
 from app.services.access_key_service import AccessKeyService
 
@@ -76,6 +76,15 @@ class CreatedAuthSession:
     access_key_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ClientRequestMetadata:
+    client_ip: str
+    client_ip_source: str
+    user_agent: str | None = None
+    cf_ray: str | None = None
+    cf_country: str | None = None
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -84,11 +93,47 @@ def _hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _first_header_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    first_value = value.split(",", 1)[0].strip()
+    return first_value or None
+
+
+def request_metadata(request: Request) -> ClientRequestMetadata:
+    """Extract client metadata for auth, audit, and rate limiting."""
+
+    cf_connecting_ip = _first_header_value(request.headers.get("cf-connecting-ip"))
+    forwarded_for = _first_header_value(request.headers.get("x-forwarded-for"))
+    real_ip = _first_header_value(request.headers.get("x-real-ip"))
+
+    if cf_connecting_ip:
+        client_ip = cf_connecting_ip
+        client_ip_source = "cf-connecting-ip"
+    elif forwarded_for:
+        client_ip = forwarded_for
+        client_ip_source = "x-forwarded-for"
+    elif real_ip:
+        client_ip = real_ip
+        client_ip_source = "x-real-ip"
+    elif request.client and request.client.host:
+        client_ip = request.client.host
+        client_ip_source = "direct"
+    else:
+        client_ip = "unknown"
+        client_ip_source = "unknown"
+
+    return ClientRequestMetadata(
+        client_ip=client_ip,
+        client_ip_source=client_ip_source,
+        user_agent=request.headers.get("user-agent"),
+        cf_ray=request.headers.get("cf-ray"),
+        cf_country=request.headers.get("cf-ipcountry"),
+    )
+
+
 def _client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
+    return request_metadata(request).client_ip
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -127,12 +172,41 @@ def _clear_login_failures(request: Request) -> None:
 
 
 def _request_fingerprint(request: Request) -> tuple[str | None, str | None]:
-    user_agent = request.headers.get("user-agent")
-    ip = _client_ip(request)
+    metadata = request_metadata(request)
     return (
-        _hash_secret(user_agent) if user_agent else None,
-        _hash_secret(ip) if ip else None,
+        _hash_secret(metadata.user_agent) if metadata.user_agent else None,
+        _hash_secret(metadata.client_ip) if metadata.client_ip else None,
     )
+
+
+def record_login_audit_event(
+    db: Session,
+    request: Request,
+    *,
+    session_kind: str,
+    outcome: str,
+    occurred_at: datetime | None = None,
+    access_key_id: str | None = None,
+    session_id_hash: str | None = None,
+    failure_reason: str | None = None,
+) -> AuthLoginEventRecord:
+    metadata = request_metadata(request)
+    user_agent_hash = _hash_secret(metadata.user_agent) if metadata.user_agent else None
+    record = AuthLoginEventRecord(
+        occurred_at=occurred_at or _utcnow(),
+        session_kind=session_kind,
+        outcome=outcome,
+        client_ip=metadata.client_ip,
+        client_ip_source=metadata.client_ip_source,
+        access_key_id=access_key_id,
+        session_id_hash=session_id_hash,
+        failure_reason=failure_reason,
+        user_agent_hash=user_agent_hash,
+        cf_ray=metadata.cf_ray,
+        cf_country=metadata.cf_country,
+    )
+    db.add(record)
+    return record
 
 
 def create_auth_session(
@@ -174,9 +248,11 @@ def authenticate_access_key(
     db: Session,
     *,
     now: datetime | None = None,
+    skip_rate_limit_check: bool = False,
 ) -> CreatedAuthSession | None:
     current_time = now or _utcnow()
-    _check_login_rate_limit(request, current_time)
+    if not skip_rate_limit_check:
+        _check_login_rate_limit(request, current_time)
     record = AccessKeyService(db).lookup_login_key(access_key)
     if record is None:
         return None
@@ -198,13 +274,52 @@ def authenticate_password(
     now: datetime | None = None,
 ) -> CreatedAuthSession:
     current_time = now or _utcnow()
-    access_key_session = authenticate_access_key(password, request, db, now=current_time)
+    try:
+        _check_login_rate_limit(request, current_time)
+    except HTTPException:
+        record_login_audit_event(
+            db,
+            request,
+            session_kind="user",
+            outcome="failure",
+            occurred_at=current_time,
+            failure_reason="rate_limited",
+        )
+        db.commit()
+        raise
+
+    access_key_session = authenticate_access_key(
+        password,
+        request,
+        db,
+        now=current_time,
+        skip_rate_limit_check=True,
+    )
     if access_key_session is not None:
+        record_login_audit_event(
+            db,
+            request,
+            session_kind="user",
+            outcome="success",
+            occurred_at=current_time,
+            access_key_id=access_key_session.access_key_id,
+            session_id_hash=_hash_secret(access_key_session.session_id),
+        )
+        db.commit()
         return access_key_session
 
     configured_password = settings.app_auth_password
     if not configured_password:
         _record_login_failure(request, current_time)
+        record_login_audit_event(
+            db,
+            request,
+            session_kind="user",
+            outcome="failure",
+            occurred_at=current_time,
+            failure_reason="invalid_access_key",
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid access key",
@@ -215,13 +330,32 @@ def authenticate_password(
         or not hmac.compare_digest(password, configured_password)
     ):
         _record_login_failure(request, current_time)
+        record_login_audit_event(
+            db,
+            request,
+            session_kind="user",
+            outcome="failure",
+            occurred_at=current_time,
+            failure_reason="invalid_credentials",
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid credentials",
         )
 
     _clear_login_failures(request)
-    return create_auth_session(db, request, now=current_time)
+    auth_session = create_auth_session(db, request, now=current_time)
+    record_login_audit_event(
+        db,
+        request,
+        session_kind="user",
+        outcome="success",
+        occurred_at=current_time,
+        session_id_hash=_hash_secret(auth_session.session_id),
+    )
+    db.commit()
+    return auth_session
 
 
 def _get_auth_session(
@@ -252,7 +386,6 @@ def _get_auth_session(
         db.add(record)
         db.commit()
     return record
-
 
 def _should_touch_auth_session(
     record: AuthSessionRecord,

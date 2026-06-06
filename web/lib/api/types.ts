@@ -73,6 +73,37 @@ export interface AdminAccessKeyRecord {
   revoked_at?: string | null
 }
 
+
+export type AdminLoginAuditKindFilter = "user" | "admin" | "all"
+export type AdminLoginAuditOutcomeFilter = "success" | "failure" | "all"
+
+export interface AdminLoginAuditEvent {
+  id: number
+  occurred_at: string
+  session_kind: "user" | "admin" | string
+  outcome: "success" | "failure" | string
+  client_ip: string
+  client_ip_source: string
+  access_key_id?: string | null
+  failure_reason?: string | null
+  user_agent_hash?: string | null
+  cf_ray?: string | null
+  cf_country?: string | null
+}
+
+export interface AdminLoginAuditIpStat {
+  client_ip: string
+  total_count: number
+  success_count: number
+  failure_count: number
+  last_seen_at?: string | null
+}
+
+export interface AdminLoginAuditResponse {
+  events: AdminLoginAuditEvent[]
+  ip_stats: AdminLoginAuditIpStat[]
+}
+
 export interface AdminAccessKeyListResponse {
   keys: AdminAccessKeyRecord[]
 }

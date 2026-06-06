@@ -20,11 +20,14 @@ import type {
   AdminAccessKeyPatchResponse,
   AdminAccessKeySecretResponse,
   AdminAccessKeyStatusFilter,
+  AdminLoginAuditKindFilter,
+  AdminLoginAuditOutcomeFilter,
   AdminModelConfigModelsRequest,
   AdminModelConfigModelsResponse,
   AdminModelConfigTestRequest,
   AdminModelConfigTestResponse,
   AdminSettings,
+  AdminLoginAuditResponse,
   AppConfig,
   BackendFileUploadResponse,
   BackendInternalReport,
@@ -706,6 +709,35 @@ export async function updateAdminSettings(
     body: JSON.stringify(patch),
   })
   return handleResponse<AdminSettings>(response)
+}
+
+
+export async function getAdminLoginAudit(
+  params: {
+    session_kind?: AdminLoginAuditKindFilter
+    outcome?: AdminLoginAuditOutcomeFilter
+    access_key_id?: string | null
+    limit?: number
+  } = {},
+): Promise<AdminLoginAuditResponse> {
+  const search = new URLSearchParams()
+  if (params.session_kind && params.session_kind !== "all") {
+    search.set("session_kind", params.session_kind)
+  }
+  if (params.outcome && params.outcome !== "all") {
+    search.set("outcome", params.outcome)
+  }
+  if (params.access_key_id) {
+    search.set("access_key_id", params.access_key_id)
+  }
+  if (params.limit) {
+    search.set("limit", String(params.limit))
+  }
+  const suffix = search.toString() ? `?${search.toString()}` : ""
+  const response = await apiFetch(buildApiUrl(`/v1/admin/login-audit${suffix}`), {
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<AdminLoginAuditResponse>(response)
 }
 
 export async function listAdminAccessKeys(

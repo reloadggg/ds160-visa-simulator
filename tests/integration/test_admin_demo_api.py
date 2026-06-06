@@ -773,3 +773,52 @@ def test_terminal_session_rejects_more_messages_and_uploads(
     )
     assert upload_response.status_code == 409
     assert "已结束" in upload_response.json()["detail"]
+
+
+def test_admin_login_audit_api_shows_exact_ips_and_counts(client: TestClient) -> None:
+    failed_admin = client.post(
+        "/v1/admin/login",
+        json={"password": "wrong"},
+        headers={"CF-Connecting-IP": "203.0.113.10"},
+    )
+    assert failed_admin.status_code == 401
+
+    login = client.post(
+        "/v1/admin/login",
+        json={"password": "admin-pass"},
+        headers={"CF-Connecting-IP": "203.0.113.10", "CF-IPCountry": "US"},
+    )
+    assert login.status_code == 200
+
+    response = client.get("/v1/admin/login-audit")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert [event["client_ip"] for event in payload["events"][:2]] == [
+        "203.0.113.10",
+        "203.0.113.10",
+    ]
+    assert payload["events"][0]["outcome"] == "success"
+    assert payload["events"][0]["client_ip_source"] == "cf-connecting-ip"
+    assert payload["events"][0]["cf_country"] == "US"
+    [stat] = [
+        item for item in payload["ip_stats"] if item["client_ip"] == "203.0.113.10"
+    ]
+    assert stat["total_count"] == 2
+    assert stat["success_count"] == 1
+    assert stat["failure_count"] == 1
+
+
+def test_user_session_cannot_read_admin_login_audit(client: TestClient) -> None:
+    client.post("/v1/admin/login", json={"password": "admin-pass"})
+    created = client.post(
+        "/v1/admin/access-keys",
+        json={"label": "audit", "usage_limit": 1},
+    )
+    access_key = created.json()["key"]
+    client.post("/v1/admin/logout")
+
+    assert client.post("/v1/auth/login", json={"password": access_key}).status_code == 200
+    response = client.get("/v1/admin/login-audit")
+
+    assert response.status_code == 401

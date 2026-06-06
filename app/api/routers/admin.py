@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, SecretStr, field_validator
-from sqlalchemy import select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.orm import Session
 from starlette import status
 
@@ -15,13 +15,22 @@ from app.core.simple_auth import (
     AuthStatusResponse,
     LoginRequest,
     LoginResponse,
+    _hash_secret,
+    _utcnow,
     clear_admin_auth_cookie,
     create_auth_session,
     get_current_admin_session,
+    record_login_audit_event,
     revoke_current_admin_session,
     set_admin_auth_cookie,
 )
-from app.db.models import AccessKeySessionRecord, AuthSessionRecord, SessionRecord, SessionTurnRecord
+from app.db.models import (
+    AccessKeySessionRecord,
+    AuthLoginEventRecord,
+    AuthSessionRecord,
+    SessionRecord,
+    SessionTurnRecord,
+)
 from app.db.session import get_db
 from app.agents.user_model_config import normalize_openai_base_url
 from app.services.access_key_service import AccessKeyService
@@ -121,14 +130,34 @@ def admin_login(
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     configured_password = settings.effective_admin_auth_password
+    current_time = _utcnow()
     if not configured_password or not hmac.compare_digest(payload.password, configured_password):
+        record_login_audit_event(
+            db,
+            request,
+            session_kind="admin",
+            outcome="failure",
+            occurred_at=current_time,
+            failure_reason="invalid_credentials",
+        )
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     auth_session = create_auth_session(
         db,
         request,
+        now=current_time,
         session_kind="admin",
         ttl_seconds=settings.admin_auth_session_ttl_seconds,
     )
+    record_login_audit_event(
+        db,
+        request,
+        session_kind="admin",
+        outcome="success",
+        occurred_at=current_time,
+        session_id_hash=_hash_secret(auth_session.session_id),
+    )
+    db.commit()
     set_admin_auth_cookie(response, auth_session.session_id, auth_session.expires_at)
     return LoginResponse(
         expires_in=settings.admin_auth_session_ttl_seconds,
@@ -179,6 +208,89 @@ def create_access_key(
         key=created.plaintext_key,
         record=AccessKeyService.public_payload(created.record),
     )
+
+
+def _iso_z(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() + "Z"
+
+
+@router.get("/login-audit")
+def get_login_audit(
+    session_kind: Literal["user", "admin", "all"] = "all",
+    outcome: Literal["success", "failure", "all"] = "all",
+    access_key_id: str | None = None,
+    limit: int = 100,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    event_limit = max(1, min(limit, 500))
+    filters = []
+    if session_kind != "all":
+        filters.append(AuthLoginEventRecord.session_kind == session_kind)
+    if outcome != "all":
+        filters.append(AuthLoginEventRecord.outcome == outcome)
+    if access_key_id:
+        filters.append(AuthLoginEventRecord.access_key_id == access_key_id)
+
+    events_statement = (
+        select(AuthLoginEventRecord)
+        .where(*filters)
+        .order_by(AuthLoginEventRecord.occurred_at.desc(), AuthLoginEventRecord.id.desc())
+        .limit(event_limit)
+    )
+    events = db.scalars(events_statement).all()
+
+    success_count = func.sum(
+        case((AuthLoginEventRecord.outcome == "success", 1), else_=0)
+    )
+    failure_count = func.sum(
+        case((AuthLoginEventRecord.outcome == "failure", 1), else_=0)
+    )
+    stats_statement = (
+        select(
+            AuthLoginEventRecord.client_ip,
+            func.count(AuthLoginEventRecord.id).label("total_count"),
+            success_count.label("success_count"),
+            failure_count.label("failure_count"),
+            func.max(AuthLoginEventRecord.occurred_at).label("last_seen_at"),
+        )
+        .where(*filters)
+        .group_by(AuthLoginEventRecord.client_ip)
+        .order_by(desc("last_seen_at"))
+        .limit(50)
+    )
+    stats = db.execute(stats_statement).all()
+
+    return {
+        "events": [
+            {
+                "id": event.id,
+                "occurred_at": _iso_z(event.occurred_at),
+                "session_kind": event.session_kind,
+                "outcome": event.outcome,
+                "client_ip": event.client_ip,
+                "client_ip_source": event.client_ip_source,
+                "access_key_id": event.access_key_id,
+                "failure_reason": event.failure_reason,
+                "user_agent_hash": event.user_agent_hash,
+                "cf_ray": event.cf_ray,
+                "cf_country": event.cf_country,
+            }
+            for event in events
+        ],
+        "ip_stats": [
+            {
+                "client_ip": row.client_ip,
+                "total_count": int(row.total_count or 0),
+                "success_count": int(row.success_count or 0),
+                "failure_count": int(row.failure_count or 0),
+                "last_seen_at": _iso_z(row.last_seen_at),
+            }
+            for row in stats
+        ],
+    }
 
 
 @router.get("/access-keys")

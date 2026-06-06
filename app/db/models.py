@@ -98,6 +98,27 @@ class AuthSessionRecord(Base):
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class AuthLoginEventRecord(Base):
+    __tablename__ = "auth_login_events"
+    __table_args__ = (
+        Index("ix_auth_login_events_ip_outcome", "client_ip", "outcome"),
+        Index("ix_auth_login_events_kind_time", "session_kind", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utc_now_naive, index=True)
+    session_kind: Mapped[str] = mapped_column(String(16), default="user", index=True)
+    outcome: Mapped[str] = mapped_column(String(16), index=True)
+    client_ip: Mapped[str] = mapped_column(String(64), index=True)
+    client_ip_source: Mapped[str] = mapped_column(String(32), default="unknown")
+    access_key_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    session_id_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cf_ray: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cf_country: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
+
 class AccessKeyRecord(Base):
     __tablename__ = "access_keys"
 

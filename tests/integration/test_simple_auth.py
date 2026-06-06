@@ -375,3 +375,73 @@ def test_debug_fill_is_disabled_by_default(
 
     assert response.status_code == 403
     assert response.json() == {"detail": "debug fill is disabled"}
+
+
+def test_login_audit_records_cloudflare_ip_for_user_success_and_failure(
+    client: TestClient,
+    db_session_factory,
+    enabled_auth: None,
+) -> None:
+    success = client.post(
+        "/v1/auth/login",
+        json={"password": "test-password"},
+        headers={
+            "Origin": ORIGIN,
+            "CF-Connecting-IP": "203.0.113.9",
+            "X-Forwarded-For": "198.51.100.7, 10.0.0.1",
+            "CF-Ray": "abc123-SJC",
+            "CF-IPCountry": "US",
+        },
+    )
+    assert success.status_code == 200
+    client.post("/v1/auth/logout", headers={"Origin": ORIGIN})
+
+    failure = client.post(
+        "/v1/auth/login",
+        json={"password": "wrong"},
+        headers={
+            "Origin": ORIGIN,
+            "CF-Connecting-IP": "203.0.113.9",
+            "X-Forwarded-For": "198.51.100.7, 10.0.0.1",
+        },
+    )
+    assert failure.status_code == 401
+
+    from app.db.models import AuthLoginEventRecord
+
+    with db_session_factory() as db:
+        events = db.query(AuthLoginEventRecord).order_by(AuthLoginEventRecord.id).all()
+
+    assert [(event.outcome, event.client_ip) for event in events] == [
+        ("success", "203.0.113.9"),
+        ("failure", "203.0.113.9"),
+    ]
+    assert events[0].client_ip_source == "cf-connecting-ip"
+    assert events[0].cf_ray == "abc123-SJC"
+    assert events[0].cf_country == "US"
+    assert events[1].failure_reason == "invalid_credentials"
+
+
+def test_login_audit_ip_resolution_falls_back_to_forwarded_for(
+    client: TestClient,
+    db_session_factory,
+    enabled_auth: None,
+) -> None:
+    response = client.post(
+        "/v1/auth/login",
+        json={"password": "test-password"},
+        headers={
+            "Origin": ORIGIN,
+            "X-Forwarded-For": "198.51.100.77, 10.0.0.2",
+            "X-Real-IP": "192.0.2.55",
+        },
+    )
+    assert response.status_code == 200
+
+    from app.db.models import AuthLoginEventRecord
+
+    with db_session_factory() as db:
+        [event] = db.query(AuthLoginEventRecord).all()
+
+    assert event.client_ip == "198.51.100.77"
+    assert event.client_ip_source == "x-forwarded-for"
