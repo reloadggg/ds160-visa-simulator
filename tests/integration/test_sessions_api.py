@@ -17,41 +17,19 @@ from app.services.native_interviewer_runtime_service import NativeInterviewerOut
 def install_material_refresh_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
 
-    def fake_refresh_after_material_change(self, record, *, reason: str) -> dict:
+    def fake_run_material_change(self, record, *, reason: str) -> dict:
         calls.append(reason)
-        record.phase_state = "interview"
-        record.current_governor_decision = "continue_interview"
-        record.current_focus_json = {
-            "owner": "interviewer_runtime_service",
+        current_focus = {
+            "owner": "native_interviewer_runtime",
             "kind": "interview_question",
             "question": "Please continue with your study plan.",
         }
-        record.interviewer_state_json = {
-            "owner": "interviewer_runtime_service",
-            "status": "continue_interview",
-            "public_status": "continue_interview",
-            "decision": "continue_interview",
-            "governor_decision": "continue_interview",
-            "next_action": "answer_question",
-            "decision_hint": "continue_interview",
-            "current_key_question": "Please continue with your study plan.",
-            "current_key_proof": None,
-            "current_risk_code": None,
-            "risk_level": "none",
-            "allowed_next_actions": ["answer_question", "continue_interview"],
-            "requested_documents": [],
-            "remaining_required_documents": [],
+        advisory_context = {
+            "score_summary": {},
             "risk_codes": [],
-            "history_turn_count": 0,
-            "document_review": {},
-            "advisory_context": {
-                "score_summary": {},
-                "risk_codes": [],
-                "missing_evidence": [],
-                "risk_level": "none",
-                "missing_evidence_summary": None,
-            },
-            "prompt_trace": {},
+            "missing_evidence": [],
+            "risk_level": "none",
+            "missing_evidence_summary": None,
         }
         return {
             "assistant_message": "Please continue with your study plan.",
@@ -61,40 +39,46 @@ def install_material_refresh_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             "remaining_required_documents": [],
             "turn_decision": {
                 "decision": "continue_interview",
+                "assistant_message_author": "native_interviewer",
+                "next_safe_action": "continue_interview",
                 "requested_documents": [],
                 "remaining_required_documents": [],
                 "current_key_question": "Please continue with your study plan.",
             },
-            "advisory_context": {
-                "score_summary": {},
-                "risk_codes": [],
-                "missing_evidence": [],
-                "risk_level": "none",
-                "missing_evidence_summary": None,
+            "advisory_context": advisory_context,
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.native_interviewer",
+                "prompt_version": "native-test-stub",
+                "native_trigger": "material_change",
+                "material_change_reason": reason,
             },
-            "prompt_trace": {},
-            "turn_record": {
-                "turn_id": f"{record.session_id}:debug-refresh",
-                "session_id": record.session_id,
-                "user_input": reason,
+            "document_review": {},
+            "runtime_view_state": {
                 "decision": "continue_interview",
-                "assistant_message": "Please continue with your study plan.",
+                "governor_decision": "continue_interview",
+                "public_status": "continue_interview",
+                "current_focus": current_focus,
+                "current_key_question": "Please continue with your study plan.",
+                "current_key_proof": None,
+                "current_risk_code": None,
                 "requested_documents": [],
                 "remaining_required_documents": [],
-                "focus": record.current_focus_json,
-                "trace_refs": [],
-                "artifacts": [],
-                "advisory_summary": {
-                    "risk_codes": [],
-                    "missing_evidence": [],
-                    "risk_level": "none",
+                "allowed_next_actions": ["answer_question", "continue_interview"],
+                "risk_level": "none",
+                "advisory_context": advisory_context,
+                "document_review": {},
+                "prompt_trace": {
+                    "prompt_pack_id": "ds160.native_interviewer",
+                    "prompt_version": "native-test-stub",
+                    "native_trigger": "material_change",
+                    "material_change_reason": reason,
                 },
             },
         }
 
     monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
-        fake_refresh_after_material_change,
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_material_change",
+        fake_run_material_change,
     )
     return calls
 
@@ -363,7 +347,7 @@ def test_debug_fill_current_gap_creates_relationship_proof(
     assert payload["filled_document_type"] == "relationship_proof_between_applicant_and_sponsors"
     assert payload["document_id"].startswith("doc-")
     assert refresh_calls == [
-        "debug_fill:relationship_proof_between_applicant_and_sponsors"
+        "material_added:relationship_proof_between_applicant_and_sponsors"
     ]
     assert payload["assistant_message"] == "Please continue with your study plan."
     assert payload["governor_decision"] == "continue_interview"
@@ -379,7 +363,7 @@ def test_debug_fill_current_gap_creates_relationship_proof(
         assert record.gate_status_json["status"] == "pending_documents"
         assert record.current_governor_decision == "continue_interview"
         assert record.current_focus_json == {
-            "owner": "interviewer_runtime_service",
+            "owner": "native_interviewer_runtime",
             "kind": "interview_question",
             "question": "Please continue with your study plan.",
         }
@@ -441,7 +425,7 @@ def test_debug_fill_current_gap_supports_normal_school_data(
     assert payload["fill_scenario"] == "normal"
     assert payload["filled_document_type"] == "i20"
     assert payload["fill_scenario_label"] == "生成当前缺口参考材料"
-    assert refresh_calls == ["debug_fill:i20"]
+    assert refresh_calls == ["material_added:i20"]
     assert payload["assistant_message"] == "Please continue with your study plan."
     assert payload["requested_documents"] == []
 
@@ -498,7 +482,7 @@ def test_debug_fill_current_gap_supports_generic_school_mismatch(
     payload = response.json()
     assert payload["fill_scenario"] == "school_mismatch"
     assert payload["filled_document_type"] == "i20"
-    assert refresh_calls == ["debug_fill:i20"]
+    assert refresh_calls == ["material_added:i20"]
     assert payload["assistant_message"] == "Please continue with your study plan."
     assert payload["requested_documents"] == []
 
@@ -533,7 +517,7 @@ def test_debug_fill_current_gap_supports_sponsor_equity_gap(
     assert payload["fill_scenario"] == "sponsor_equity_gap"
     assert payload["filled_document_type"] == "funding_proof"
     assert "股权" in payload["fill_scenario_label"]
-    assert refresh_calls == ["debug_fill:funding_proof"]
+    assert refresh_calls == ["material_added:funding_proof"]
     assert payload["assistant_message"] == "Please continue with your study plan."
     assert payload["requested_documents"] == []
 
@@ -605,7 +589,7 @@ def test_debug_fill_current_gap_refreshes_state_without_assistant_turn(
     )
 
     assert response.status_code == 200
-    assert refresh_calls == ["debug_fill:ds160"]
+    assert refresh_calls == ["material_added:ds160"]
     assert response.json()["assistant_message"] == "Please continue with your study plan."
 
     with db_session_factory() as db:
@@ -676,6 +660,9 @@ def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "material_change",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph",
@@ -701,7 +688,16 @@ def test_debug_fill_current_gap_graph_failure_does_not_fail_open_to_legacy(
             RuntimeError("native material refresh exploded")
         ),
     )
-    refresh_calls = install_material_refresh_stub(monkeypatch)
+    legacy_refresh_calls: list[str] = []
+
+    def legacy_refresh_must_not_run(self, record, *, reason: str) -> dict:
+        legacy_refresh_calls.append(reason)
+        raise AssertionError("legacy material refresh should not run after native failure")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.refresh_after_material_change",
+        legacy_refresh_must_not_run,
+    )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -712,7 +708,7 @@ def test_debug_fill_current_gap_graph_failure_does_not_fail_open_to_legacy(
 
     assert response.status_code == 200
     payload = response.json()
-    assert refresh_calls == []
+    assert legacy_refresh_calls == []
     assert payload["assistant_message"] is None
     assert payload["material_refresh"] == {}
     assert payload["main_flow_refresh_error"] == (
@@ -767,6 +763,9 @@ def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "material_change",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph_shadow",

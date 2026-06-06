@@ -124,6 +124,9 @@ def test_graph_response_mapper_returns_legacy_compatible_fields() -> None:
     assert payload["remaining_required_documents"] == []
     assert payload["gate_progress"] == {"overall_status": "ready_for_interview"}
     assert payload["agent_runtime"] == "graph"
+    assert payload["selected_public_runtime"] == "experimental_graph"
+    assert payload["runtime_role"] == "experimental"
+    assert payload["canonical"] is False
     assert payload["graph_run_id"] == "run-map"
     assert payload["graph_trace"]["event_count"] == 5
     assert payload["graph_trace"]["used_citation_ids"] == ["cite-i20-school"]

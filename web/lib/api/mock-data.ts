@@ -204,6 +204,8 @@ export const MOCK_USER_REPORT: UserReport = {
   ],
   requested_documents: [],
   requested_document_labels: [],
+  remaining_required_documents: ["funding_source_explanation"],
+  remaining_required_document_labels: ["资金承担人、金额和资金来源说明"],
   case_board: MOCK_CASE_BOARD,
   advisory_context: {
     score_summary: {
@@ -237,6 +239,7 @@ export const MOCK_INTERNAL_REPORT: InternalReport = {
     current_key_question: MOCK_USER_REPORT.current_key_question,
     current_key_proof: null,
     requested_documents: [],
+    remaining_required_documents: ["funding_source_explanation"],
     allowed_next_actions: ["answer_question", "upload_key_proof"],
     case_board: MOCK_CASE_BOARD,
   },

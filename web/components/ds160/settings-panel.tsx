@@ -74,6 +74,40 @@ const EMPTY_RAG_UPLOAD_FORM = {
   notes: "",
 }
 
+
+function isValidatedMaterialPackage(item: MaterialPackageArchiveItem): boolean {
+  return (
+    item.validation_status === "passed" ||
+    item.archive_source_reason === "validated_f1_demo_material_package" ||
+    item.demo_template_id === "f1_parent_sponsored_consistent_v1"
+  )
+}
+
+function isImportableMaterialPackage(item: MaterialPackageArchiveItem): boolean {
+  return item.status === "ready"
+}
+
+function materialPackageBadgeLabel(item: MaterialPackageArchiveItem): string {
+  if (isValidatedMaterialPackage(item)) {
+    return item.validation_status === "passed" ? "validated" : "template"
+  }
+  return item.validation_status ?? "archive"
+}
+
+function materialPackageMetaSummary(item: MaterialPackageArchiveItem): string {
+  const parts = [
+    item.visa_family ? item.visa_family.toUpperCase() : null,
+    item.intent,
+    item.demo_template_id ? `模板 ${item.demo_template_id}` : null,
+    item.source_validation_session_id
+      ? `验证会话 ${item.source_validation_session_id}`
+      : item.source_session_id
+        ? `来源 ${item.source_session_id}`
+        : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(" / ") : "未提供验证元数据"
+}
+
 interface SettingsPanelProps {
   mockMode: boolean
   apiBaseUrl: string
@@ -166,6 +200,21 @@ export function SettingsPanel({
     : getDefaultDebugMaterialBundleScenarioForVisaFamily(visaType)
   const selectedDebugBundleOption = getDebugMaterialBundleOption(
     activeDebugBundleScenario,
+  )
+  const sortedMaterialPackages = useMemo(
+    () =>
+      [...materialPackages].sort((left, right) => {
+        const validatedDelta = Number(isValidatedMaterialPackage(right)) - Number(isValidatedMaterialPackage(left))
+        if (validatedDelta !== 0) {
+          return validatedDelta
+        }
+        const readyDelta = Number(isImportableMaterialPackage(right)) - Number(isImportableMaterialPackage(left))
+        if (readyDelta !== 0) {
+          return readyDelta
+        }
+        return left.label.localeCompare(right.label, "zh-Hans-CN")
+      }),
+    [materialPackages],
   )
   const updateRagUploadForm = (
     patch: Partial<typeof EMPTY_RAG_UPLOAD_FORM>,
@@ -615,13 +664,13 @@ export function SettingsPanel({
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-medium text-foreground">
-                      材料包
+                      调试合成材料
                     </div>
                     <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                      选择一组可写入材料库的合成材料，用来测试核验、追问和报告。
+                      内部诊断用：生成合成材料来测试核验、追问和报告，不代表已验证案例模板。
                     </div>
                   </div>
-                  <Badge variant="outline">synthetic</Badge>
+                  <Badge variant="outline">internal diagnostic</Badge>
                 </div>
 
                 <div className="grid gap-2">
@@ -690,8 +739,8 @@ export function SettingsPanel({
                     }
                   />
                   {isDebugBundleGenerating
-                    ? "正在生成材料包"
-                    : `生成${selectedDebugBundleOption.shortLabel}`}
+                    ? "正在生成调试合成材料"
+                    : `生成调试${selectedDebugBundleOption.shortLabel}`}
                 </Button>
 
                 {debugBundleProgress.length ? (
@@ -708,10 +757,10 @@ export function SettingsPanel({
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <div className="text-sm font-medium text-foreground">
-                        存档
+                        已验证案例包 / 材料包
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        已生成且写入后端的材料包可直接导入当前会话。
+                        只应选择通过完整材料理解与面签验证的案例包；partial/failed 会被禁用。
                       </div>
                     </div>
                     <Button
@@ -745,20 +794,22 @@ export function SettingsPanel({
                         <SelectValue
                           placeholder={
                             isImportingMaterialPackage
-                              ? "正在导入材料包"
-                              : "选择存档材料包导入"
+                              ? "正在导入案例包"
+                              : "选择已验证案例包导入"
                           }
                         />
                       </SelectTrigger>
                       <SelectContent>
-                        {materialPackages.map((item) => (
+                        {sortedMaterialPackages.map((item) => (
                           <SelectItem
                             key={item.package_id}
                             value={item.package_id}
-                            disabled={item.status === "failed"}
+                            disabled={!isImportableMaterialPackage(item)}
                           >
+                            {isValidatedMaterialPackage(item) ? "✅ " : ""}
                             {item.label} · {item.document_count} 份 ·{" "}
                             {item.status_label}
+                            {!isImportableMaterialPackage(item) ? " · 不可导入" : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -766,12 +817,12 @@ export function SettingsPanel({
                   ) : (
                     <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
                       {isLoadingMaterialPackages
-                        ? "正在读取材料包存档..."
-                        : "暂无可导入的材料包存档。"}
+                        ? "正在读取已验证案例包..."
+                        : "暂无可导入的已验证案例包。"}
                     </div>
                   )}
 
-                  {materialPackages.slice(0, 3).map((item) => (
+                  {sortedMaterialPackages.slice(0, 3).map((item) => (
                     <div
                       key={`${item.package_id}-summary`}
                       className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
@@ -781,23 +832,30 @@ export function SettingsPanel({
                           {item.label}
                         </div>
                         <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                          {item.document_count} 份材料
-                          {item.source_session_id
-                            ? ` / ${item.source_session_id}`
-                            : ""}
+                          {item.document_count} 份材料 / {materialPackageMetaSummary(item)}
                         </div>
-                        {item.warning ? (
-                          <div className="mt-1 text-[11px] leading-4 text-amber-700">
-                            {item.warning}
+                        {item.warning || !isImportableMaterialPackage(item) ? (
+                          <div
+                            className={
+                              item.status === "failed"
+                                ? "mt-1 text-[11px] leading-4 text-destructive"
+                                : "mt-1 text-[11px] leading-4 text-amber-700"
+                            }
+                          >
+                            {item.warning ?? "该案例包尚未 ready，当前不可导入。"}
                           </div>
                         ) : null}
                       </div>
                       <Badge
                         variant={
-                          item.status === "ready" ? "secondary" : "outline"
+                          item.status === "failed"
+                            ? "destructive"
+                            : item.status === "ready"
+                              ? "secondary"
+                              : "outline"
                         }
                       >
-                        {item.status_label}
+                        {materialPackageBadgeLabel(item)} · {item.status_label}
                       </Badge>
                     </div>
                   ))}

@@ -10,6 +10,7 @@ from app.db.models import SessionRecord
 from app.domain.contracts import (
     ApplicantProfile,
     GovernorDecision,
+    RiskFlag,
     ScoreState,
 )
 from app.domain.document_types import normalize_document_type
@@ -40,6 +41,7 @@ class InterviewerRuntimeService:
             history_turns,
         )
         score = self._reconcile_score_with_gate(record, score)
+        score = self._preserve_unresolved_funding_claim(record, score)
         profile_json = profile.model_dump(mode="json")
         boundary, action, capability_tool_outputs = self._decide_and_build_action(
             record,
@@ -84,6 +86,9 @@ class InterviewerRuntimeService:
             "governor_decision": projection.response["governor_decision"],
             "score_summary": dict(projection.response["score_summary"]),
             "requested_documents": list(projection.response["requested_documents"]),
+            "remaining_required_documents": list(
+                projection.response.get("remaining_required_documents", [])
+            ),
             "turn_decision": dict(projection.response["turn_decision"]),
             "advisory_context": dict(projection.response["advisory_context"]),
             "prompt_trace": dict(projection.response["prompt_trace"]),
@@ -103,6 +108,7 @@ class InterviewerRuntimeService:
             reason=reason,
         )
         score = self._reconcile_score_with_gate(record, score)
+        score = self._preserve_unresolved_funding_claim(record, score)
         profile_json = profile.model_dump(mode="json")
         boundary, action, capability_tool_outputs = self._decide_and_build_action(
             record,
@@ -147,6 +153,9 @@ class InterviewerRuntimeService:
             "governor_decision": projection.response["governor_decision"],
             "score_summary": dict(projection.response["score_summary"]),
             "requested_documents": list(projection.response["requested_documents"]),
+            "remaining_required_documents": list(
+                projection.response.get("remaining_required_documents", [])
+            ),
             "turn_decision": dict(projection.response["turn_decision"]),
             "advisory_context": dict(projection.response["advisory_context"]),
             "prompt_trace": dict(projection.response["prompt_trace"]),
@@ -319,6 +328,124 @@ class InterviewerRuntimeService:
                 if flag.code != "supporting_evidence_missing"
             ]
         return next_score
+
+    def _preserve_unresolved_funding_claim(
+        self,
+        record: SessionRecord,
+        score: ScoreState,
+    ) -> ScoreState:
+        if not self._has_unresolved_funding_claim(record):
+            return score
+
+        next_score = score.model_copy(deep=True)
+        if "funding_proof" not in next_score.missing_evidence:
+            next_score.missing_evidence.append("funding_proof")
+        if not any(
+            flag.code == "supporting_evidence_missing"
+            for flag in next_score.risk_flags
+        ):
+            next_score.risk_flags.append(
+                RiskFlag(
+                    code="supporting_evidence_missing",
+                    severity="medium",
+                    status="supported",
+                    evidence_refs=[],
+                )
+            )
+        next_score.document_readiness = min(next_score.document_readiness, 40)
+        next_score.narrative_consistency = min(next_score.narrative_consistency, 55)
+        return next_score
+
+    def _has_unresolved_funding_claim(self, record: SessionRecord) -> bool:
+        profile_json = record.profile_json or {}
+        funding_state = (
+            profile_json.get("field_states", {})
+            .get("/funding/primary_source", {})
+            .get("state")
+        )
+        funding_evidence_refs = (
+            profile_json.get("field_provenance", {})
+            .get("/funding/primary_source", {})
+            .get("evidence_refs", [])
+        )
+        if funding_state == "documented" and funding_evidence_refs:
+            return False
+        if "funding_proof" in self._ready_gate_documents(record):
+            return False
+
+        field_history = profile_json.get("ds160_view", {}).get(
+            "field_claim_history",
+            {},
+        )
+        funding_history = field_history.get("/funding/primary_source", [])
+        if isinstance(funding_history, list) and any(
+            isinstance(item, dict) and str(item.get("value") or "").strip()
+            for item in funding_history
+        ):
+            return True
+
+        for turn in self.session_turn_repo.list_session_turns(record.session_id):
+            if getattr(turn, "role", None) != "user":
+                continue
+            if self._explicit_funding_source(str(getattr(turn, "content", "") or "")):
+                return True
+        return False
+
+    def _explicit_funding_source(self, message_text: str) -> str | None:
+        normalized = message_text.casefold()
+        parent_markers = (
+            "parents",
+            "parent",
+            "family",
+            "mother",
+            "father",
+            "父母",
+            "家里",
+            "家庭",
+            "爸爸",
+            "妈妈",
+            "父亲",
+            "母亲",
+        )
+        funding_markers = (
+            "pay",
+            "fund",
+            "sponsor",
+            "support",
+            "cover",
+            "finance",
+            "tuition",
+            "living expense",
+            "living expenses",
+            "bank",
+            "financial",
+            "资助",
+            "支付",
+            "付款",
+            "学费",
+            "生活费",
+            "资金",
+            "银行",
+        )
+        self_markers = (
+            "self-funded",
+            "self funded",
+            "myself",
+            "i will pay",
+            "i pay",
+            "自费",
+            "自己支付",
+            "自己承担",
+        )
+        if any(marker in normalized for marker in self_markers) and any(
+            marker in normalized for marker in funding_markers
+        ):
+            return "self"
+        if any(marker in normalized for marker in parent_markers) and any(
+            marker in normalized for marker in funding_markers
+        ):
+            return "parents"
+        return None
 
     def _ready_gate_documents(self, record: SessionRecord) -> set[str]:
         ready_documents: set[str] = set()

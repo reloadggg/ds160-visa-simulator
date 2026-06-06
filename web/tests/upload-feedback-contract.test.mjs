@@ -71,6 +71,44 @@ test("file upload mapper exposes case board refresh as frontend contract", () =>
   })
 })
 
+test("message mapper does not promote global missing docs into current upload request", () => {
+  const mapped = mappers.mapMessageResponse({
+    assistant_message: "Let's continue with your study plan.",
+    governor_decision: "continue_interview",
+    requested_documents: [],
+    remaining_required_documents: ["funding_proof"],
+    runtime_view_state: {
+      decision: "continue_interview",
+      current_focus: {
+        kind: "interview_question",
+      },
+      requested_documents: [],
+      remaining_required_documents: ["funding_proof"],
+      advisory_context: {
+        missing_evidence: ["funding_proof"],
+      },
+    },
+  })
+
+  assert.deepEqual(mapped.requested_documents, [])
+  assert.deepEqual(mapped.requested_document_labels, [])
+  assert.deepEqual(mapped.remaining_required_documents, ["funding_proof"])
+  assert.deepEqual(mapped.remaining_required_document_labels, ["资金证明"])
+})
+
+test("message mapper preserves explicit document request when backend asks for evidence", () => {
+  const mapped = mappers.mapMessageResponse({
+    assistant_message: "Please upload proof of funding.",
+    governor_decision: "need_more_evidence",
+    requested_documents: ["funding_proof"],
+    remaining_required_documents: ["funding_proof"],
+  })
+
+  assert.deepEqual(mapped.requested_documents, ["funding_proof"])
+  assert.deepEqual(mapped.requested_document_labels, ["资金证明"])
+  assert.deepEqual(mapped.remaining_required_documents, ["funding_proof"])
+})
+
 test("failed material understanding becomes an error activity", () => {
   const response = {
     understanding_status: "failed",
@@ -234,5 +272,32 @@ test("workbench upload branch appends activity instead of system transcript", ()
   assert.match(
     hookSource,
     /syncUploadedMaterialsFromRuntimeDebugSnapshot\(snapshot\)/,
+  )
+})
+
+test("workbench current-turn upload feedback is driven only by requested documents", () => {
+  const hookSource = readFileSync(
+    resolve(rootDir, "hooks/use-session-workbench.ts"),
+    "utf8",
+  )
+  const evidenceMessageStart = hookSource.indexOf(
+    "const requestedDocumentsMessage = buildEvidenceSuggestionMessage",
+  )
+  assert.notEqual(evidenceMessageStart, -1)
+  const evidenceMessageEnd = hookSource.indexOf(
+    "const gateProgressMessage = buildGateProgressMessage",
+    evidenceMessageStart,
+  )
+  assert.notEqual(evidenceMessageEnd, -1)
+  const evidenceMessageBranch = hookSource.slice(
+    evidenceMessageStart,
+    evidenceMessageEnd,
+  )
+
+  assert.match(evidenceMessageBranch, /response\.requested_document_labels/)
+  assert.match(evidenceMessageBranch, /response\.governor_decision/)
+  assert.doesNotMatch(
+    evidenceMessageBranch,
+    /remaining_required_document_labels|remaining_required_documents/,
   )
 })

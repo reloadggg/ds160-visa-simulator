@@ -93,8 +93,23 @@ def test_graph_runtime_adapter_builds_legacy_compatible_shadow_response(tmp_path
             )
 
         assert payload["agent_runtime"] == "graph"
+        assert payload["selected_public_runtime"] == "experimental_graph"
+        assert payload["runtime_role"] == "experimental"
+        assert payload["canonical"] is False
         assert payload["graph_runtime_engine"] == "langgraph"
         assert payload["graph_runtime_engine_class"] == "CompiledStateGraph"
+        assert payload["runtime_execution"] == {
+            "schema_version": "runtime.execution.v1",
+            "configured_runtime": "graph",
+            "requested_public_runtime": "experimental_graph",
+            "public_runtime": "experimental_graph",
+            "execution_runtime": "graph_runtime_adapter",
+            "runtime_engine": "langgraph",
+            "runtime_engine_class": "CompiledStateGraph",
+            "source": "user_turn",
+            "runtime_role": "experimental",
+            "canonical": False,
+        }
         assert payload["assistant_message"]
         assert payload["turn_decision"]["decision"] == "continue_interview"
         assert payload["runtime_view_state"]["decision"] == "continue_interview"
@@ -160,8 +175,13 @@ def test_graph_runtime_adapter_typed_adjudication_missing_model_falls_back(
             )
 
         assert payload["agent_runtime"] == "graph"
+        assert payload["selected_public_runtime"] == "experimental_graph"
+        assert payload["runtime_role"] == "experimental"
+        assert payload["canonical"] is False
         assert payload["graph_runtime_engine"] == "langgraph"
         assert payload["graph_runtime_engine_class"] == "CompiledStateGraph"
+        assert payload["runtime_execution"]["runtime_role"] == "experimental"
+        assert payload["runtime_execution"]["canonical"] is False
         assert payload["turn_decision"]["assistant_message_author"] == (
             "deterministic_safe_fallback"
         )
@@ -215,7 +235,13 @@ def test_graph_runtime_adapter_runs_material_change_without_user_turn(tmp_path) 
             )
 
         assert payload["agent_runtime"] == "graph"
+        assert payload["selected_public_runtime"] == "experimental_graph"
+        assert payload["runtime_role"] == "experimental"
+        assert payload["canonical"] is False
         assert payload["graph_runtime_engine"] == "langgraph"
+        assert payload["runtime_execution"]["source"] == "material_change"
+        assert payload["runtime_execution"]["runtime_role"] == "experimental"
+        assert payload["runtime_execution"]["canonical"] is False
         assert payload["turn_record"].get("user_turn_id") is None
         assert payload["turn_record"]["user_input"] == "debug_fill:i20"
         assert payload["prompt_trace"]["graph_trigger"] == "material_change"

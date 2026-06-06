@@ -31,6 +31,7 @@ function loadTypeScriptModule(relativePath, runtimeRequires = {}) {
 }
 
 const policy = loadTypeScriptModule("lib/case-board-presentation-policy.ts")
+const mappers = loadTypeScriptModule("lib/api/mappers.ts")
 const mockData = loadTypeScriptModule("lib/api/mock-data.ts", {
   "./config": {
     isMockModeEnabled: () => true,
@@ -234,6 +235,34 @@ test("mock report is driven by a resolvable case board", () => {
   assert.deepEqual(
     report.missing_evidence.map((item) => item.id),
     Array.from(openProofPointIds),
+  )
+})
+
+test("user report mapper keeps evidence gaps separate from current upload request", () => {
+  const report = mappers.mapUserReport({
+    session_id: "sess-contract",
+    governor_decision: "continue_interview",
+    interview_status: "continue_interview",
+    current_key_question: "Please explain who will pay for your study.",
+    current_key_proof: null,
+    missing_evidence: [
+      {
+        id: "funding-gap",
+        code: "funding_proof",
+        name: "Funding proof",
+        priority: "medium",
+      },
+    ],
+    remaining_required_documents: ["funding_proof"],
+    allowed_next_actions: ["answer_question"],
+  })
+
+  assert.deepEqual(report.requested_documents, [])
+  assert.deepEqual(report.remaining_required_documents, ["funding_proof"])
+  assert.equal(report.current_key_proof, null)
+  assert.deepEqual(
+    report.missing_evidence.map((item) => item.code),
+    ["funding_proof"],
   )
 })
 

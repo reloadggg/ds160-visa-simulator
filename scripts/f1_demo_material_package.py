@@ -39,7 +39,6 @@ from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, JobRecord, SessionRecord, SessionTurnRecord
 from app.db.session import DATABASE_URL, SessionLocal
 from app.repositories.document_repo import DocumentRepository
-from app.repositories.session_repo import SessionRepository
 from app.services.gate_service import GateService
 
 
@@ -614,6 +613,7 @@ def validate_run_payload(
     export_payload = run_payload.get("export") if isinstance(run_payload.get("export"), dict) else {}
     documents = export_payload.get("documents") if isinstance(export_payload, dict) else []
     documents_by_type: dict[str, dict[str, Any]] = {}
+    completed_document_types: set[str] = set()
     for document in documents if isinstance(documents, list) else []:
         artifact = document.get("artifact") if isinstance(document, dict) else {}
         if not isinstance(artifact, dict):
@@ -633,9 +633,14 @@ def validate_run_payload(
                         "understanding_status": understanding_status,
                     }
                 )
+            else:
+                completed_document_types.add(document_type)
     for required_type in required_document_types:
         if required_type not in documents_by_type:
             defects.append({"code": "missing_exported_document", "document_type": required_type})
+    all_required_documents_completed = all(
+        required_type in completed_document_types for required_type in required_document_types
+    )
 
     turns = run_payload.get("message_turns", [])
     if len(turns) < 5:
@@ -677,10 +682,20 @@ def validate_run_payload(
                     "detail": response.get("main_flow_refresh_error"),
                 }
             )
+        if all_required_documents_completed:
+            stale_requested_types = _requested_required_document_types(response, required_document_types)
+            if stale_requested_types:
+                defects.append(
+                    {
+                        "code": "stale_material_request",
+                        "turn_index": turn.get("turn_index"),
+                        "document_types": stale_requested_types,
+                    }
+                )
         assistant = str(response.get("assistant_message") or "").strip()
         if assistant:
             assistant_messages.append(_normalize_assistant_message(assistant))
-    if len(assistant_messages) >= 2 and len(set(assistant_messages)) <= max(1, len(assistant_messages) // 3):
+    if len(assistant_messages) >= 5 and len(set(assistant_messages)) <= 2:
         defects.append(
             {
                 "code": "repeated_template_replies",
@@ -691,8 +706,12 @@ def validate_run_payload(
 
     user_report = run_payload.get("user_report") if isinstance(run_payload.get("user_report"), dict) else {}
     internal_report = run_payload.get("internal_report") if isinstance(run_payload.get("internal_report"), dict) else {}
-    user_decision = user_report.get("governor_decision")
-    internal_decision = internal_report.get("governor_decision")
+    user_decisions = _report_decisions(user_report)
+    internal_decisions = _report_decisions(internal_report)
+    user_decision = user_decisions.get("governor_decision")
+    internal_decision = internal_decisions.get("turn_decision.governor_decision") or internal_decisions.get(
+        "governor_decision"
+    )
     if user_decision and internal_decision and user_decision != internal_decision:
         defects.append(
             {
@@ -701,16 +720,47 @@ def validate_run_payload(
                 "internal_governor_decision": internal_decision,
             }
         )
-    if user_decision in TERMINAL_RISK_DECISIONS or internal_decision in TERMINAL_RISK_DECISIONS:
+    terminal_internal_decisions = {
+        key: value for key, value in internal_decisions.items() if value in TERMINAL_RISK_DECISIONS
+    }
+    terminal_user_decisions = {
+        key: value for key, value in user_decisions.items() if value in TERMINAL_RISK_DECISIONS
+    }
+    if terminal_user_decisions or terminal_internal_decisions:
         defects.append(
             {
                 "code": "report_terminal_risk_state",
-                "user_governor_decision": user_decision,
-                "internal_governor_decision": internal_decision,
+                "user_decisions": terminal_user_decisions,
+                "internal_decisions": terminal_internal_decisions,
             }
         )
+
+    unresolved_required_evidence = _unresolved_required_evidence_types(
+        run_payload,
+        required_document_types,
+    )
+    if unresolved_required_evidence:
+        defects.append(
+            {
+                "code": "unresolved_required_evidence",
+                "document_types": unresolved_required_evidence,
+                "detail": (
+                    "Pass-oriented validation cannot pass while required "
+                    "evidence remains unresolved in reports or runtime state."
+                ),
+            }
+        )
+
     runtime = run_payload.get("runtime_debug")
-    if isinstance(runtime, dict) and runtime.get("status_code") in {401, 403, 404}:
+    if isinstance(runtime, dict) and runtime.get("status_code") in {403, 404}:
+        defects.append(
+            {
+                "code": "runtime_debug_unavailable",
+                "status_code": runtime.get("status_code"),
+                "detail": "Runtime debug endpoint is required for full validation.",
+            }
+        )
+    elif isinstance(runtime, dict) and runtime.get("status_code") == 401:
         warnings.append(
             {
                 "code": "runtime_debug_unavailable",
@@ -724,6 +774,147 @@ def validate_run_payload(
 def _normalize_assistant_message(message: str) -> str:
     normalized = re.sub(r"\s+", " ", message).strip().lower()
     return normalized[:240]
+
+
+def _report_decisions(report: dict[str, Any]) -> dict[str, str]:
+    decisions: dict[str, str] = {}
+    top_level = report.get("governor_decision")
+    if isinstance(top_level, str) and top_level.strip():
+        decisions["governor_decision"] = top_level.strip()
+    turn_decision = report.get("turn_decision")
+    if isinstance(turn_decision, dict):
+        value = turn_decision.get("governor_decision")
+        if isinstance(value, str) and value.strip():
+            decisions["turn_decision.governor_decision"] = value.strip()
+    interviewer_state = report.get("interviewer_state")
+    if isinstance(interviewer_state, dict):
+        value = interviewer_state.get("decision")
+        if isinstance(value, str) and value.strip():
+            decisions["interviewer_state.decision"] = value.strip()
+    return decisions
+
+
+def _iter_requested_document_values(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            yield stripped
+        return
+    if isinstance(value, dict):
+        for key in ("document_type", "type", "id", "code", "name", "label"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                yield item.strip()
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_requested_document_values(item)
+
+
+def _requested_required_document_types(
+    response: dict[str, Any],
+    required_document_types: Sequence[str],
+) -> list[str]:
+    required = set(required_document_types)
+    requested: set[str] = set()
+    for key in ("requested_documents", "remaining_required_documents"):
+        for item in _iter_requested_document_values(response.get(key)):
+            normalized = _normalize_document_type_text(item)
+            if normalized in required:
+                requested.add(normalized)
+    return sorted(requested)
+
+
+def _unresolved_required_evidence_types(
+    run_payload: dict[str, Any],
+    required_document_types: Sequence[str],
+) -> list[str]:
+    required = set(required_document_types)
+    unresolved: set[str] = set()
+    user_report = run_payload.get("user_report")
+    internal_report = run_payload.get("internal_report")
+    runtime = run_payload.get("runtime_debug")
+
+    if isinstance(user_report, dict):
+        _collect_unresolved_required_mentions(unresolved, required, user_report)
+    if isinstance(internal_report, dict):
+        _collect_unresolved_required_mentions(unresolved, required, internal_report)
+    if isinstance(runtime, dict):
+        payload = runtime.get("response") or runtime.get("payload") or runtime
+        if isinstance(payload, dict):
+            _collect_unresolved_required_mentions(unresolved, required, payload)
+    return sorted(unresolved)
+
+
+UNRESOLVED_EVIDENCE_KEYS = {
+    "missing_evidence",
+    "remaining_required_documents",
+    "requested_documents",
+    "current_key_proof",
+    "primary_document",
+}
+
+
+def _collect_unresolved_required_mentions(
+    output: set[str],
+    required: set[str],
+    value: Any,
+) -> None:
+    """Collect required docs only from fields that semantically mean unresolved.
+
+    Runtime/report payloads also contain prompt ids such as
+    ``ds160.native_interviewer`` and ready gate/document inventories.  A broad
+    recursive scan would turn those successful/diagnostic mentions into false
+    ``unresolved_required_evidence`` defects.
+    """
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in UNRESOLVED_EVIDENCE_KEYS:
+                _collect_required_mentions(output, required, item)
+                continue
+            if isinstance(item, dict):
+                _collect_unresolved_required_mentions(output, required, item)
+            elif isinstance(item, list) and key in {
+                "advisory_context",
+                "document_review",
+                "current_focus",
+                "turn_decision",
+                "runtime_view_state",
+                "interviewer_state",
+            }:
+                _collect_unresolved_required_mentions(output, required, item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                _collect_unresolved_required_mentions(output, required, item)
+
+
+def _collect_required_mentions(
+    output: set[str],
+    required: set[str],
+    value: Any,
+) -> None:
+    if isinstance(value, str):
+        normalized = _normalize_document_type_text(value)
+        if normalized in required:
+            output.add(normalized)
+            return
+        for document_type in required:
+            if document_type in normalized:
+                output.add(document_type)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _collect_required_mentions(output, required, item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_required_mentions(output, required, item)
+
+
+def _normalize_document_type_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
 def run_api_validation(
@@ -1074,57 +1265,73 @@ def publish_validated_archive(
     assert_template_contract(selected_template)
     session_id = validation_artifact["session_id"]
 
-    source_session = db.get(SessionRecord, session_id)
-    if source_session is None:
-        raise RuntimeError(f"validation session not found in current database: {session_id}")
-    source_documents = list(
-        db.scalars(
-            select(DocumentRecord)
-            .where(DocumentRecord.session_id == session_id)
-            .order_by(DocumentRecord.filename.asc(), DocumentRecord.document_id.asc())
-        )
-    )
-    source_by_type = {_document_type_from_artifact(document): document for document in source_documents}
-    missing = [item for item in required_document_types if item not in source_by_type]
-    if missing:
-        raise RuntimeError(f"validation session is missing required document types: {missing}")
-
-    existing = build_cleanup_plan(db, package_id=package_id)
-    if existing and not replace:
-        raise RuntimeError(
-            f"package {package_id!r} already exists; use --replace after taking a backup"
-        )
-    if existing:
-        apply_cleanup_plan(db, existing, commit=False)
-
-    archive_session = SessionRepository(db).create(
-        declared_family=selected_template.visa_family,
-        gate_status_json=GateService().initial_gate_status(selected_template.visa_family),
-    )
-    archive_session.profile_json = {
-        "template_id": selected_template.template_id,
-        "package_id": package_id,
-        "label": label,
-        "expected_facts": dict(selected_template.expected_facts),
-    }
-    db.add(archive_session)
-    db.flush()
-
-    created_documents: list[DocumentRecord] = []
-    for document_type in required_document_types:
-        created_documents.append(
-            _copy_validated_document_as_archive_source(
-                db,
-                source_by_type[document_type],
-                template=selected_template,
-                archive_session_id=archive_session.session_id,
-                package_id=package_id,
-                label=label,
-                source_validation_session_id=session_id,
-                document_type=document_type,
+    try:
+        source_session = db.get(SessionRecord, session_id)
+        if source_session is None:
+            raise RuntimeError(f"validation session not found in current database: {session_id}")
+        source_documents = list(
+            db.scalars(
+                select(DocumentRecord)
+                .where(DocumentRecord.session_id == session_id)
+                .order_by(DocumentRecord.filename.asc(), DocumentRecord.document_id.asc())
             )
         )
-    db.commit()
+        source_by_type = {
+            document_type: document
+            for document in source_documents
+            if (document_type := _document_type_from_artifact(document))
+        }
+        _validate_current_db_documents_for_publish(
+            db,
+            source_by_type=source_by_type,
+            required_document_types=required_document_types,
+        )
+
+        existing = build_cleanup_plan(db, package_id=package_id)
+        if existing and not replace:
+            raise RuntimeError(
+                f"package {package_id!r} already exists; use --replace after taking a backup"
+            )
+        if existing:
+            apply_cleanup_plan(db, existing, commit=False)
+
+        archive_session = SessionRecord(
+            session_id=f"sess-{uuid4().hex[:12]}",
+            declared_family=selected_template.visa_family,
+            gate_status_json=GateService().initial_gate_status(selected_template.visa_family),
+            runtime_trace_json=[],
+            score_history_json=[],
+            governor_history_json=[],
+            interviewer_state_json={},
+            current_focus_json={},
+        )
+        archive_session.profile_json = {
+            "template_id": selected_template.template_id,
+            "package_id": package_id,
+            "label": label,
+            "expected_facts": dict(selected_template.expected_facts),
+        }
+        db.add(archive_session)
+        db.flush()
+
+        created_documents: list[DocumentRecord] = []
+        for document_type in required_document_types:
+            created_documents.append(
+                _copy_validated_document_as_archive_source(
+                    db,
+                    source_by_type[document_type],
+                    template=selected_template,
+                    archive_session_id=archive_session.session_id,
+                    package_id=package_id,
+                    label=label,
+                    source_validation_session_id=session_id,
+                    document_type=document_type,
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {
         "schema_version": "ds160.material_archive_publish_result.v1",
         "published_at": datetime.now(UTC).isoformat(),
@@ -1143,6 +1350,70 @@ def _document_type_from_artifact(document: DocumentRecord) -> str | None:
     metadata = dict(artifact.get("metadata") or {})
     value = artifact.get("document_type") or metadata.get("document_type")
     return value if isinstance(value, str) and value else None
+
+
+def _validate_current_db_documents_for_publish(
+    db: Session,
+    *,
+    source_by_type: dict[str, DocumentRecord],
+    required_document_types: Sequence[str],
+) -> None:
+    problems: list[dict[str, Any]] = []
+    for document_type in required_document_types:
+        document = source_by_type.get(document_type)
+        if document is None:
+            problems.append({"document_type": document_type, "problem": "missing"})
+            continue
+        artifact = dict(document.artifact_json or {})
+        if document.status != "parsed":
+            problems.append(
+                {
+                    "document_type": document_type,
+                    "document_id": document.document_id,
+                    "problem": "document_not_parsed",
+                    "status": document.status,
+                }
+            )
+        if artifact.get("understanding_status") != "completed":
+            problems.append(
+                {
+                    "document_type": document_type,
+                    "document_id": document.document_id,
+                    "problem": "understanding_not_completed",
+                    "understanding_status": artifact.get("understanding_status"),
+                }
+            )
+        chunk_id = db.scalars(
+            select(DocumentChunkRecord.chunk_id).where(
+                DocumentChunkRecord.document_id == document.document_id
+            )
+        ).first()
+        if chunk_id is None:
+            problems.append(
+                {
+                    "document_type": document_type,
+                    "document_id": document.document_id,
+                    "problem": "missing_chunk",
+                }
+            )
+        evidence_id = db.scalars(
+            select(EvidenceItemRecord.evidence_id).where(
+                EvidenceItemRecord.document_id == document.document_id
+            )
+        ).first()
+        if evidence_id is None:
+            problems.append(
+                {
+                    "document_type": document_type,
+                    "document_id": document.document_id,
+                    "problem": "missing_evidence",
+                }
+            )
+    if problems:
+        raise RuntimeError(
+            "validation session has incomplete current DB documents: "
+            + json.dumps(problems, ensure_ascii=False)
+        )
 
 
 def _copy_validated_document_as_archive_source(

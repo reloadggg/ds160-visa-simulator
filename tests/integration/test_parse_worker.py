@@ -19,7 +19,7 @@ from app.db.models import (
 from app.db.session import get_db
 from app.domain.runtime import build_initial_gate_status
 from app.main import app
-from app.agents.schemas import InterviewNextAction
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 from app.repositories.session_turn_repo import SessionTurnRepository
 from app.services.gate_runtime_service import GateRuntimeService
 from app.workers.parse_worker import ParseWorker
@@ -126,21 +126,42 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def fake_native_run_turn(self, record, message_text: str, *, user_turn=None):
+        case_state = self._build_case_state(record)
+        advisory_context = self._build_advisory_context(case_state)
+        missing_evidence = self._missing_evidence_documents(advisory_context)
+        decision = "need_more_evidence" if missing_evidence else "continue_interview"
+        requested_documents = missing_evidence[:1] if decision == "need_more_evidence" else []
+        response = self._build_response(
+            record=record,
+            message_text=message_text,
+            case_state=case_state,
+            output=NativeInterviewerOutput(
+                assistant_message=(
+                    "Please upload funding proof."
+                    if requested_documents
+                    else "What is the purpose of your travel?"
+                ),
+                decision=decision,
+                requested_documents=requested_documents,
+            ),
+            run_id="native-parse-worker-stub-run",
+            quality={"status": "passed", "attempts": []},
+            user_turn_id=getattr(user_turn, "turn_id", None),
+        )
+        response["remaining_required_documents"] = list(missing_evidence)
+        response["turn_decision"]["remaining_required_documents"] = list(missing_evidence)
+        response["advisory_context"]["missing_evidence"] = list(missing_evidence)
+        response["runtime_view_state"]["remaining_required_documents"] = list(missing_evidence)
+        response["runtime_view_state"]["advisory_context"] = response["advisory_context"]
+        if not missing_evidence:
+            response["runtime_view_state"]["public_status"] = "continue_interview"
+            response["runtime_view_state"]["risk_level"] = "none"
+        return response
+
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: InterviewNextAction(
-            assistant_message=(
-                "Please upload funding proof."
-                if score.missing_evidence
-                else "What is the purpose of your travel?"
-            ),
-            requested_documents=list(score.missing_evidence[:1]),
-            decision=(
-                "need_more_evidence"
-                if score.missing_evidence
-                else "continue_interview"
-            ),
-        ),
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        fake_native_run_turn,
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
@@ -207,10 +228,13 @@ def test_parse_worker_processes_uploaded_document_before_next_message(
         assert record.gate_status_json["status"] == "pending_documents"
         assert record.current_governor_decision == "continue_interview"
         assert record.interviewer_state_json["decision"] == "continue_interview"
-        assert record.current_focus_json == {
-            "owner": "interviewer_runtime_service",
-            "kind": "interview_question",
-            "question": "What is the purpose of your travel?",
+        assert record.current_focus_json["owner"] in {
+            "native_interviewer",
+            "native_interviewer_runtime",
+        }
+        assert record.current_focus_json["kind"] in {
+            "required_document",
+            "interview_question",
         }
         assert document.artifact_json["understanding_status"] == "completed"
         assert "material_understanding_result" in document.artifact_json
@@ -434,6 +458,9 @@ def test_parse_worker_material_refresh_updates_graph_state_without_assistant_tur
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "material_change",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph",

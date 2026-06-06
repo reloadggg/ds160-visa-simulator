@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import inspect
 
 from fastapi.testclient import TestClient
 import pytest
@@ -45,6 +46,27 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
+def install_native_run_turn_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    run_turn,
+) -> None:
+    signature = inspect.signature(run_turn)
+    accepts_user_turn = "user_turn" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+    def native_run_turn(self, record, message_text, user_turn=None):
+        if accepts_user_turn:
+            return run_turn(self, record, message_text, user_turn=user_turn)
+        return run_turn(self, record, message_text)
+
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        native_run_turn,
+    )
+
+
 def install_native_interviewer_stub(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -71,13 +93,9 @@ def test_chat_completions_maps_to_domain_flow(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
-            assistant_message="Please explain your funding plan.",
-            requested_documents=[],
-            decision_hint="continue_interview",
-        ),
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="Please explain your funding plan.",
     )
 
     response = client.post(
@@ -260,6 +278,9 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "message_turn",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph_shadow",
@@ -322,6 +343,9 @@ def test_chat_completions_graph_mode_keeps_metadata_contract(
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "message_turn",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph",
@@ -588,10 +612,7 @@ def test_chat_completions_derives_idempotency_key_without_explicit_metadata_key(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     first_response = client.post(
         "/v1/chat/completions",
@@ -649,10 +670,7 @@ def test_chat_completions_supports_http_idempotency_key_for_new_session_replay(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     request_body = {
         "model": "visa-simulator-v1",
         "messages": [{"role": "user", "content": "New session retried request"}],
@@ -703,10 +721,7 @@ def test_chat_completions_honors_explicit_metadata_client_message_id(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     first_response = client.post(
         "/v1/chat/completions",
@@ -745,8 +760,8 @@ def test_chat_completions_imported_history_enters_case_and_interview_memory(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "handled",
             "governor_decision": "continue_interview",
@@ -855,8 +870,8 @@ def test_chat_completions_normalizes_oversized_client_message_id(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "handled",
             "governor_decision": "continue_interview",

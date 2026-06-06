@@ -13,7 +13,7 @@ from app.services.case_board_projection import (
 
 
 class GraphResponseMapper:
-    """Project graph facts into the legacy response contract."""
+    """Project experimental graph facts into a compatibility response shape."""
 
     def to_message_response(
         self,
@@ -83,6 +83,9 @@ class GraphResponseMapper:
             "runtime_view_state": runtime_view_state,
             "turn_record": turn_record,
             "agent_runtime": "graph",
+            "selected_public_runtime": "experimental_graph",
+            "runtime_role": "experimental",
+            "canonical": False,
             "graph_run_id": state.run_id,
             "graph_trace": graph_trace,
         }

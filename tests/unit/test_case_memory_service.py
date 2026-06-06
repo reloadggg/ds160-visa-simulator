@@ -22,6 +22,7 @@ from app.domain.case_memory import (
 )
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
+from app.services.case_board_projection import missing_evidence_from_case_board
 from app.services.case_memory_service import (
     CASE_MEMORY_USER_CLAIMS_KEY,
     CaseMemoryService,
@@ -751,6 +752,101 @@ def test_case_memory_service_merges_user_claims_and_material_conflicts(
                     "note": "applicant clarified sponsor wording",
                 }
             ]
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_case_memory_tracks_stated_funding_until_documented_proof_arrives(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-funding-gap.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-funding-gap", declared_family="f1"))
+            turn = SessionTurnRepository(db).append_user_turn(
+                session_id="sess-funding-gap",
+                content=(
+                    "My mother and father will cover all my tuition and living "
+                    "expenses."
+                ),
+                source="user_message",
+                commit=False,
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-bank",
+                    session_id="sess-funding-gap",
+                    filename="funding.pdf",
+                    artifact_json={"document_type": "funding_proof"},
+                    raw_bytes=b"bank",
+                )
+            )
+            db.commit()
+            turn_id = turn.turn_id
+
+        with testing_session_local() as db:
+            service = CaseMemoryService(db)
+            claims = service.extract_explicit_user_turn_claims(
+                turn_id=turn_id,
+                message_text=(
+                    "My mother and father will cover all my tuition and living "
+                    "expenses."
+                ),
+            )
+            snapshot = service.add_user_turn_claims(
+                session_id="sess-funding-gap",
+                turn_id=turn_id,
+                claims=claims,
+            )
+
+            assert [proof.proof_point_id for proof in snapshot.proof_points] == [
+                "funding_proof"
+            ]
+            assert snapshot.proof_points[0].status == "missing"
+            board = service.public_case_board("sess-funding-gap")
+            assert missing_evidence_from_case_board(board) == ["funding_proof"]
+
+            service.upsert_material_understanding(
+                document_id="doc-bank",
+                job=MaterialUnderstandingJob(
+                    job_id="job-bank",
+                    document_id="doc-bank",
+                    status="completed",
+                    result=MaterialUnderstandingResult(
+                        evidence_cards=[
+                            EvidenceCard(
+                                evidence_id="ev-bank",
+                                source_type="uploaded_file",
+                                document_id="doc-bank",
+                                excerpt="Sponsor: parents",
+                                claim_refs=["claim-bank-funding"],
+                                confidence=0.9,
+                            )
+                        ],
+                        extracted_claims=[
+                            CaseClaim(
+                                claim_id="claim-bank-funding",
+                                field_path="/funding/primary_source",
+                                value="parents",
+                                status="documented",
+                                supporting_evidence_ids=["ev-bank"],
+                                confidence=0.9,
+                            )
+                        ],
+                        confidence=0.9,
+                    ),
+                ),
+            )
+            board_after = service.public_case_board("sess-funding-gap")
+
+            assert missing_evidence_from_case_board(board_after) == []
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

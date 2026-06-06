@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import inspect
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -7,9 +8,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
+from app.core import settings as settings_module
 from app.db.models import CaseMemorySnapshotRecord, SessionRecord, SessionTurnRecord
 from app.db.session import get_db
 from app.main import app
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 
 
 @pytest.fixture()
@@ -42,17 +45,57 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     app.dependency_overrides.clear()
 
 
+def install_native_run_turn_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    run_turn,
+) -> None:
+    signature = inspect.signature(run_turn)
+    accepts_user_turn = "user_turn" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+    def native_run_turn(self, record, message_text, user_turn=None):
+        if accepts_user_turn:
+            return run_turn(self, record, message_text, user_turn=user_turn)
+        return run_turn(self, record, message_text)
+
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        native_run_turn,
+    )
+
+
+def install_native_interviewer_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    assistant_message: str = "Please explain your funding plan.",
+    decision: str = "continue_interview",
+) -> None:
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
+        lambda self, declared_family: {
+            "provider": "openai_compatible",
+            "model": "gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAIAgentsInterviewerRunner.run",
+        lambda self, **kwargs: NativeInterviewerOutput(
+            assistant_message=assistant_message,
+            decision=decision,
+        ),
+    )
+
+
 def test_responses_create_maps_to_domain_flow(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
-            assistant_message="Please explain your funding plan.",
-            requested_documents=[],
-            decision_hint="continue_interview",
-        ),
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="Please explain your funding plan.",
     )
 
     response = client.post(
@@ -74,6 +117,67 @@ def test_responses_create_maps_to_domain_flow(
     assert payload["metadata"]["session_id"].startswith("sess-")
     assert payload["metadata"]["context_mode"] == "new_session"
     assert isinstance(payload["metadata"]["runtime_view_state"], dict)
+
+
+def test_responses_metadata_includes_canonical_runtime_identity(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_shadow")
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="How will your parents fund the first year?",
+    )
+
+    def legacy_must_not_run(self, record, message_text: str) -> dict:
+        raise AssertionError("legacy runtime should not run in graph_shadow mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        legacy_must_not_run,
+    )
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "model": "visa-simulator-v1",
+            "input": "My parents will pay for my studies.",
+            "metadata": {"declared_family": "f1"},
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["metadata"]
+    assert metadata["agent_runtime"] == "graph_shadow"
+    assert metadata["selected_public_runtime"] == "native_interviewer"
+    assert metadata["native_run_id"].startswith("native-run-")
+    assert metadata["runtime_execution"] == {
+        "schema_version": "runtime.execution.v1",
+        "configured_runtime": "graph_shadow",
+        "requested_public_runtime": "native_interviewer",
+        "public_runtime": "native_interviewer",
+        "execution_runtime": "native_interviewer_runtime",
+        "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
+        "source": "message_turn",
+        "fail_open_to_legacy": False,
+        "compatibility_runtime_label": "graph_shadow",
+    }
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == metadata["session_id"],
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "native_interviewer_runtime"
 
 
 def test_responses_metadata_exposes_case_memory_evidence_graph(
@@ -194,10 +298,7 @@ def test_responses_previous_response_id_reuses_local_session_transcript(
             "prompt_trace": {"handled_messages": list(handled_messages)},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     first_response = client.post(
         "/v1/responses",
@@ -351,10 +452,7 @@ def test_responses_derives_idempotency_key_without_explicit_metadata_key(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     first_response = client.post(
         "/v1/responses",
@@ -409,10 +507,7 @@ def test_responses_supports_http_idempotency_key_for_new_session_replay(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     request_body = {
         "model": "visa-simulator-v1",
         "input": "This request may be retried.",
@@ -465,8 +560,8 @@ def test_responses_rejects_previous_response_id_without_matching_assistant_turn(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "handled",
             "governor_decision": "continue_interview",

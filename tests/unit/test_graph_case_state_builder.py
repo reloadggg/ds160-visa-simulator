@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
-from app.services.graph_case_state_builder import GraphCaseStateBuilder
+from app.services.interview_case_state_builder import InterviewCaseStateBuilder
 
 
 def test_graph_case_state_builder_normalizes_session_turns_and_materials() -> None:
@@ -113,7 +113,7 @@ def test_graph_case_state_builder_normalizes_session_turns_and_materials() -> No
         )
     ]
 
-    case_state = GraphCaseStateBuilder().build(
+    case_state = InterviewCaseStateBuilder().build(
         record,
         turns,
         documents=documents,
@@ -264,7 +264,7 @@ def test_graph_case_state_builder_projects_case_memory_from_document_artifacts()
         )
     ]
 
-    case_state = GraphCaseStateBuilder().build(record, [], documents=documents)
+    case_state = InterviewCaseStateBuilder().build(record, [], documents=documents)
 
     assert case_state["case_memory"]["claims"][0]["field_path"] == (
         "/education/school_name"
@@ -365,7 +365,7 @@ def test_graph_case_state_builder_prefers_first_class_case_memory_snapshot() -> 
         ],
     }
 
-    case_state = GraphCaseStateBuilder().build(
+    case_state = InterviewCaseStateBuilder().build(
         record,
         [],
         documents=documents,
@@ -442,7 +442,7 @@ def test_graph_case_state_builder_projects_material_next_move() -> None:
         )
     ]
 
-    case_state = GraphCaseStateBuilder().build(record, [], documents=documents)
+    case_state = InterviewCaseStateBuilder().build(record, [], documents=documents)
 
     assert case_state["case_memory"]["next_move"] == {
         "move_type": "ask",
@@ -532,7 +532,7 @@ def test_graph_case_state_builder_includes_user_claims_and_conflicts() -> None:
         )
     ]
 
-    case_state = GraphCaseStateBuilder().build(record, turns, documents=documents)
+    case_state = InterviewCaseStateBuilder().build(record, turns, documents=documents)
 
     claims_by_value = {
         claim["value"]: claim for claim in case_state["case_memory"]["claims"]
@@ -600,7 +600,7 @@ def test_graph_case_state_builder_excludes_tombstoned_case_memory_document() -> 
         )
     ]
 
-    case_state = GraphCaseStateBuilder().build(record, [], documents=documents)
+    case_state = InterviewCaseStateBuilder().build(record, [], documents=documents)
 
     assert case_state["case_memory"] == {
         "claims": [],
@@ -630,7 +630,7 @@ def test_graph_case_state_builder_keeps_recent_turn_window_stable() -> None:
         for index in range(1, 9)
     ]
 
-    case_state = GraphCaseStateBuilder(max_recent_turns=3).build(record, turns)
+    case_state = InterviewCaseStateBuilder(max_recent_turns=3).build(record, turns)
 
     assert [turn["turn_id"] for turn in case_state["recent_turns"]] == [
         "turn-6",
@@ -679,7 +679,7 @@ def test_graph_case_state_builder_summarizes_prior_question_topics() -> None:
         ),
     ]
 
-    case_state = GraphCaseStateBuilder().build(record, turns)
+    case_state = InterviewCaseStateBuilder().build(record, turns)
 
     assert case_state["history_summary"]["prior_question_topics"] == [
         "post_study_plan",
@@ -726,7 +726,7 @@ def test_graph_case_state_builder_remembers_answered_topics_after_recent_window_
         ],
     ]
 
-    case_state = GraphCaseStateBuilder(max_recent_turns=3).build(record, turns)
+    case_state = InterviewCaseStateBuilder(max_recent_turns=3).build(record, turns)
 
     assert "turn-assistant-post-study" not in {
         turn["turn_id"] for turn in case_state["recent_turns"]
@@ -780,7 +780,7 @@ def test_graph_case_state_builder_uses_profile_document_snapshot_and_material_re
         ),
     ]
 
-    case_state = GraphCaseStateBuilder().build(record, turns)
+    case_state = InterviewCaseStateBuilder().build(record, turns)
 
     assert case_state["case_brief"]["known_documented_facts"] == [
         {
@@ -799,7 +799,7 @@ def test_graph_case_state_builder_uses_profile_document_snapshot_and_material_re
 
 
 def test_graph_case_state_builder_does_not_depend_on_legacy_orchestrators() -> None:
-    builder = GraphCaseStateBuilder()
+    builder = InterviewCaseStateBuilder()
 
     assert not hasattr(builder, "capability_orchestrator")
     assert not hasattr(builder, "turn_projector")
@@ -936,7 +936,7 @@ def test_graph_case_state_builder_sanitizes_debug_material_metadata() -> None:
         ],
     }
 
-    case_state = GraphCaseStateBuilder().build(
+    case_state = InterviewCaseStateBuilder().build(
         record,
         [],
         documents=documents,

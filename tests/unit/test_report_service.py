@@ -232,6 +232,51 @@ def test_user_report_prefers_runtime_view_state_over_stale_interviewer_state() -
     assert payload["prompt_trace"]["model"] == "gpt-5.4"
 
 
+def test_user_report_does_not_promote_unresolved_gap_to_current_key_proof() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-runtime-gap-no-proof-focus",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={"funding": {"primary_source": "parents"}},
+        phase_state="interview",
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-2",
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "public_status": "continue_interview",
+            "current_focus": {
+                "kind": "interview_question",
+                "question": "How does this program fit your future plan?",
+            },
+            "current_key_question": "How does this program fit your future plan?",
+            "requested_documents": [],
+            "remaining_required_documents": ["funding_proof"],
+            "advisory_context": {"missing_evidence": ["funding_proof"]},
+        },
+        interviewer_state_json={
+            "current_key_proof": "funding_proof",
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+        },
+        current_focus_json={
+            "kind": "required_document",
+            "document_type": "funding_proof",
+        },
+    )
+
+    assert payload["interview_status"] == "continue_interview"
+    assert payload["missing_evidence"] == ["funding_proof"]
+    assert payload["remaining_required_documents"] == ["funding_proof"]
+    assert payload["current_key_question"] == (
+        "How does this program fit your future plan?"
+    )
+    assert payload["current_key_proof"] is None
+    assert payload["interview_result"] == "not_passed"
+    assert payload["interview_result_label"] == "未通过：材料或事实待补强"
+
+
 def test_user_report_keeps_runtime_focus_during_gate_review() -> None:
     service = ReportService()
     gate_status = build_initial_gate_status(

@@ -282,6 +282,14 @@ class CaseMemoryService:
         )
         for conflict in generated_conflicts:
             conflicts_by_id.setdefault(conflict.conflict_id, conflict)
+
+        self._apply_funding_proof_gap(
+            session_id=session_id,
+            claims_by_id=claims_by_id,
+            evidence_by_id=evidence_by_id,
+            proof_by_id=proof_by_id,
+        )
+
         if conflicts_by_id:
             next_move = self._next_move_from_conflict(
                 sorted(
@@ -737,6 +745,54 @@ class CaseMemoryService:
             values.extend(claim.conflicting_evidence_ids)
             values.extend(self._evidence_ids_for_claim(evidence_by_id, claim))
         return _dedupe(values)
+
+    def _apply_funding_proof_gap(
+        self,
+        *,
+        session_id: str,
+        claims_by_id: dict[str, CaseClaim],
+        evidence_by_id: dict[str, EvidenceCard],
+        proof_by_id: dict[str, ProofPoint],
+    ) -> None:
+        if "funding_proof" in proof_by_id:
+            return
+
+        funding_claims = [
+            claim
+            for claim in claims_by_id.values()
+            if claim.field_path == "/funding/primary_source"
+            and claim.value is not None
+        ]
+        if not funding_claims:
+            return
+
+        documented_claims = [
+            claim
+            for claim in funding_claims
+            if claim.status == "documented"
+            and (
+                claim.supporting_evidence_ids
+                or self._evidence_ids_for_claim(evidence_by_id, claim)
+            )
+        ]
+        if documented_claims:
+            return
+
+        record = self.sessions.get(session_id)
+        visa_family = record.declared_family if record is not None else "unknown"
+        proof_by_id["funding_proof"] = ProofPoint(
+            proof_point_id="funding_proof",
+            visa_family=visa_family or "unknown",
+            question="Funding source needs documentary support.",
+            status="missing",
+            why_it_matters=(
+                "A stated F-1 funding source must stay visible as unresolved "
+                "until a parsed funding document supports it."
+            ),
+            claim_refs=sorted(claim.claim_id for claim in funding_claims),
+            evidence_refs=[],
+            metadata={"source": "case_memory_funding_gap_guard"},
+        )
 
     def _evidence_ids_for_claim(
         self,

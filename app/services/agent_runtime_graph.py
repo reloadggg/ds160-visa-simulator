@@ -41,7 +41,7 @@ class LangGraphTurnState(TypedDict):
 
 
 class DeterministicDS160TurnGraph:
-    """DS-160 turn graph backed by the official LangGraph StateGraph runtime."""
+    """Experimental DS-160 compatibility graph backed by LangGraph StateGraph."""
 
     node_order = (
         "receive_turn",

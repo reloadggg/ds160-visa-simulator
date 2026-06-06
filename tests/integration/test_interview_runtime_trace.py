@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
 
-from app.agents.schemas import InterviewNextAction
+from app.core import settings as settings_module
 from app.db.base import Base
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.db.session import get_db
@@ -88,46 +88,133 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_build_question_action(
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "legacy")
+
+    def fake_native_run_turn(
         self,
-        session_id,
-        profile,
-        score,
-        governor_decision,
-        trace_entries,
-        recent_turns=None,
-    ):
-        trace_entries.extend(
-            [
-                RuntimeTraceEntry(
-                    node_name="governor_decide",
-                    summary=f"decision={governor_decision}",
-                ),
-                RuntimeTraceEntry(
-                    node_name="decide_capability",
-                    summary="planned=none",
-                ),
-                RuntimeTraceEntry(
-                    node_name="resolve_capability",
-                    summary="resolved=none",
-                ),
-                RuntimeTraceEntry(
-                    node_name="turn_decision",
-                    summary="decision=continue_interview",
-                    turn_decision="continue_interview",
-                    metadata={"boundary_decision": governor_decision},
-                ),
-            ]
-        )
-        return InterviewNextAction(
-            assistant_message="What is the purpose of your travel?",
-            requested_documents=[],
-            decision="continue_interview",
-        )
+        record,
+        message_text,
+        user_turn=None,
+    ) -> dict:
+        del self
+        trace_entries = [
+            RuntimeTraceEntry(node_name="receive_input", summary="user_message_received"),
+            RuntimeTraceEntry(node_name="extract_claims", summary="claims_extracted"),
+            RuntimeTraceEntry(node_name="resolve_evidence", summary="evidence_resolved"),
+            RuntimeTraceEntry(node_name="consistency_check", summary="consistency_checked"),
+            RuntimeTraceEntry(node_name="score_case", summary="score_updated"),
+            RuntimeTraceEntry(
+                node_name="governor_decide",
+                summary="decision=continue_interview",
+            ),
+            RuntimeTraceEntry(node_name="decide_capability", summary="planned=none"),
+            RuntimeTraceEntry(node_name="resolve_capability", summary="resolved=none"),
+            RuntimeTraceEntry(
+                node_name="turn_decision",
+                summary="decision=continue_interview",
+                turn_decision="continue_interview",
+                metadata={"boundary_decision": "continue_interview"},
+            ),
+        ]
+        record.runtime_trace_json = [
+            *(record.runtime_trace_json or []),
+            *[entry.model_dump(mode="json", exclude_none=True) for entry in trace_entries],
+        ]
+        record.score_history_json = [
+            *(record.score_history_json or []),
+            {
+                "scoring_stage": "interview_turn",
+                "category_fit": 70,
+                "document_readiness": 70,
+                "narrative_consistency": 70,
+                "confidence": 70,
+                "missing_evidence": [],
+                "risk_flags": [],
+                "summary": "native stub score",
+            },
+        ]
+        record.governor_history_json = [
+            *(record.governor_history_json or []),
+            {"decision": "continue_interview", "summary": "native stub decision"},
+        ]
+        assistant_message = "What is the purpose of your travel?"
+        current_focus = {
+            "owner": "native_interviewer",
+            "kind": "interview_question",
+            "question": assistant_message,
+        }
+        runtime_view_state = {
+            "source_turn_id": None,
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "public_status": "continue_interview",
+            "risk_level": "none",
+            "current_focus": current_focus,
+            "current_key_question": assistant_message,
+            "current_key_proof": None,
+            "current_risk_code": None,
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "allowed_next_actions": ["answer_question", "continue_interview"],
+            "advisory_context": {
+                "score_summary": {},
+                "risk_codes": [],
+                "missing_evidence": [],
+                "risk_level": "none",
+            },
+            "document_review": {},
+            "prompt_trace": {
+                "prompt_pack_id": "ds160.native_interviewer",
+                "prompt_version": "native-v0",
+                "native_run_id": "native-run-trace-stub",
+            },
+        }
+        return {
+            "assistant_message": assistant_message,
+            "governor_decision": "continue_interview",
+            "score_summary": {},
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "turn_decision": {
+                "decision": "continue_interview",
+                "assistant_message_author": "native_interviewer",
+                "next_safe_action": "continue_interview",
+                "current_key_question": assistant_message,
+            },
+            "document_review": {},
+            "advisory_context": runtime_view_state["advisory_context"],
+            "prompt_trace": runtime_view_state["prompt_trace"],
+            "runtime_view_state": runtime_view_state,
+            "turn_record": {
+                "turn_id": getattr(user_turn, "turn_id", None)
+                or f"{record.session_id}:pending-turn",
+                "session_id": record.session_id,
+                "user_turn_id": getattr(user_turn, "turn_id", None),
+                "user_input": message_text,
+                "decision": "continue_interview",
+                "assistant_message": assistant_message,
+                "requested_documents": [],
+                "remaining_required_documents": [],
+                "focus": current_focus,
+                "trace_refs": ["native_interviewer"],
+                "artifacts": [],
+                "advisory_summary": {},
+                "document_review": {},
+            },
+            "agent_runtime": "native_interviewer",
+            "selected_public_runtime": "native_interviewer",
+            "native_run_id": "native-run-trace-stub",
+        }
 
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        fake_build_question_action,
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        fake_native_run_turn,
+    )
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run for public messages")
+        ),
     )
     session_id = _prepare_ready_for_interview_session(client, db_session_factory)
 
@@ -185,8 +272,7 @@ def test_interview_runtime_trace_and_histories_append_per_turn(
         for group in trace_groups
         if group and group[0].get("node_name") == "material_changed"
     ]
-    assert material_change_groups
-    assert material_change_groups[-1][0]["node_name"] == "material_changed"
+    assert material_change_groups == []
     assert len(user_turn_groups) >= 2
     expected_user_turn_nodes = [
         "receive_input",

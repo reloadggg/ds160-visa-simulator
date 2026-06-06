@@ -292,9 +292,9 @@ function describeDebugBundleEvent(
 ): string {
   switch (event.event) {
     case "accepted":
-      return "已收到材料包生成请求。"
+      return "已收到调试合成材料生成请求。"
     case "debug_bundle_started":
-      return `开始生成${event.data.scenario_label ?? "材料包"}，预计 ${event.data.document_count ?? 0} 份材料。`
+      return `开始生成${event.data.scenario_label ?? "调试合成材料"}，预计 ${event.data.document_count ?? 0} 份材料。`
     case "document_created":
       return `已生成材料：${event.data.document_type_label ?? event.data.filename ?? "材料"}。`
     case "evidence_written":
@@ -310,13 +310,13 @@ function describeDebugBundleEvent(
     case "governor_decided":
       return `已得到下一步状态：${humanizeBackendText(event.data.governor_decision ?? "") || "待确认"}。`
     case "progress":
-      return event.data.message ?? "材料包仍在生成或核对中。"
+      return event.data.message ?? "调试合成材料仍在生成或核对中。"
     case "final":
-      return "材料包生成完成。"
+      return "调试合成材料生成完成。"
     case "error":
-      return `材料包生成失败：${event.data.detail ?? "未知错误"}`
+      return `调试合成材料生成失败：${event.data.detail ?? "未知错误"}`
     default:
-      return "材料包生成状态已更新。"
+      return "调试合成材料生成状态已更新。"
   }
 }
 
@@ -345,6 +345,18 @@ function runtimeDebugEventFromMaterialEvent(
 
 function buildDebugBundleProgressMessage(lines: string[]): string {
   return lines.join("\n")
+}
+
+
+function getImportStatusWarning(result: MaterialPackageImportResponse): string | null {
+  const warnings: string[] = []
+  if (result.import_status !== "imported") {
+    warnings.push(`导入状态为 ${humanizeBackendText(result.status_label || result.import_status)}`)
+  }
+  if (result.main_flow_refresh_error) {
+    warnings.push(`面签状态刷新失败：${result.main_flow_refresh_error}`)
+  }
+  return warnings.length ? warnings.join("；") : null
 }
 
 function debugBundleDocumentToMaterial(
@@ -3302,12 +3314,19 @@ export function useSessionWorkbench() {
       setIsImportingMaterialPackage(true)
       const progressMessageId = appendActivityEvent({
         kind: "debug",
-        content: "正在导入存档材料包...",
+        content: "正在导入已验证案例包...",
         status: "sending",
       })
       try {
         const result = await importMaterialPackage(sessionId, packageId)
-        updateActivityEventStatus(progressMessageId, "sent")
+        const importWarning = getImportStatusWarning(result)
+        updateActivityEventStatus(progressMessageId, importWarning ? "error" : "sent")
+        if (importWarning) {
+          updateActivityEventContent(
+            progressMessageId,
+            `案例包导入未完全成功：${importWarning}`,
+          )
+        }
         setUploadedMaterials((prev) => {
           const nextMaterials = result.documents.map((document) =>
             materialPackageDocumentToMaterial(sessionId, document, result),
@@ -3333,8 +3352,11 @@ export function useSessionWorkbench() {
             : prev,
         )
         appendActivityEvent({
-          kind: "debug",
-          content: `已导入存档材料包：${result.documents.length} 份材料。`,
+          kind: importWarning ? "error" : "debug",
+          content: importWarning
+            ? `案例包已复制 ${result.documents.length} 份材料，但存在风险：${importWarning}`
+            : `已导入已验证案例包：${result.documents.length} 份材料。`,
+          status: importWarning ? "error" : "sent",
         })
         if (result.assistant_message) {
           appendMessage({
@@ -3350,12 +3372,10 @@ export function useSessionWorkbench() {
         await refreshReports(sessionId)
         await refreshRuntimeDebugSnapshot(sessionId)
         await refreshMaterialPackages()
-        if (result.main_flow_refresh_error) {
-          setSettingsFeedback(
-            `材料包已导入，但下一步刷新失败：${result.main_flow_refresh_error}`,
-          )
+        if (importWarning) {
+          setSettingsFeedback(`案例包导入需要处理：${importWarning}`)
         } else {
-          setSettingsFeedback("存档材料包已导入当前会话。")
+          setSettingsFeedback("已验证案例包已导入当前会话。")
         }
       } catch (error) {
         updateActivityEventStatus(progressMessageId, "error")
@@ -3374,6 +3394,7 @@ export function useSessionWorkbench() {
       refreshReports,
       refreshRuntimeDebugSnapshot,
       sessionId,
+      updateActivityEventContent,
       updateActivityEventStatus,
     ],
   )
@@ -3422,7 +3443,7 @@ export function useSessionWorkbench() {
       }
 
       setIsDebugBundleGenerating(true)
-      setSettingsFeedback("正在生成材料包...")
+      setSettingsFeedback("正在生成调试合成材料...")
       setDebugBundleProgress([])
       try {
         const result = await createDebugMaterialBundleStream(
@@ -3482,10 +3503,10 @@ export function useSessionWorkbench() {
         await refreshMaterialPackages()
         if (result.main_flow_refresh_error) {
           setSettingsFeedback(
-            `材料包已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
+            `调试合成材料已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
           )
         } else {
-          setSettingsFeedback("AI 材料包已生成，前端已接收完整流式进度。")
+          setSettingsFeedback("AI 调试合成材料已生成，前端已接收完整流式进度。")
         }
       } catch (error) {
         updateActivityEventStatus(progressMessageId, "error")

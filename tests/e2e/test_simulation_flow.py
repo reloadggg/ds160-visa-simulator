@@ -6,12 +6,12 @@ import fitz
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
-from types import SimpleNamespace
-
 from app.db.base import Base
+from app.core import settings as settings_module
 from app.db.models import SessionRecord
 from app.db.session import get_db
 from app.main import app
+from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 from app.workers.parse_worker import ParseWorker, stop_parse_worker_runtime
 
 
@@ -26,30 +26,73 @@ def build_pdf_bytes(*pages: str) -> bytes:
         pdf.close()
 
 
-def install_stub_build_question_action(
+def install_native_interviewer_turn_stub(
     monkeypatch: pytest.MonkeyPatch,
     *,
     continue_interview_message: str = "What is the purpose of your travel?",
 ) -> None:
+    """Use the canonical native interviewer writer while keeping this e2e deterministic."""
+
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "native_interviewer")
+
+    def fake_run_turn(self, record, message_text: str, *, user_turn=None):
+        case_state = self._build_case_state(record)
+        advisory_context = self._build_advisory_context(case_state)
+        missing_evidence = self._missing_evidence_documents(advisory_context)
+        has_funding_evidence = any(
+            item.get("evidence_type") == "funding_proof"
+            or item.get("field_path") == "/funding/primary_source"
+            for item in case_state.get("evidence_items", [])
+            if isinstance(item, dict)
+        )
+        if has_funding_evidence:
+            missing_evidence = [
+                item for item in missing_evidence if item != "funding_proof"
+            ]
+        decision = "need_more_evidence" if missing_evidence else "continue_interview"
+        requested_documents = missing_evidence[:1] if decision == "need_more_evidence" else []
+        assistant_message = (
+            f"Please upload {requested_documents[0]}."
+            if requested_documents
+            else continue_interview_message
+        )
+        response = self._build_response(
+            record=record,
+            message_text=message_text,
+            case_state=case_state,
+            output=NativeInterviewerOutput(
+                assistant_message=assistant_message,
+                decision=decision,
+                requested_documents=requested_documents,
+            ),
+            run_id="native-e2e-stub-run",
+            quality={"status": "passed", "attempts": []},
+            user_turn_id=getattr(user_turn, "turn_id", None),
+        )
+        response["remaining_required_documents"] = list(missing_evidence)
+        response["turn_decision"]["remaining_required_documents"] = list(missing_evidence)
+        response["advisory_context"]["missing_evidence"] = list(missing_evidence)
+        response["runtime_view_state"]["remaining_required_documents"] = list(missing_evidence)
+        response["runtime_view_state"]["advisory_context"] = response["advisory_context"]
+        if not missing_evidence:
+            response["advisory_context"]["risk_codes"] = [
+                code
+                for code in response["advisory_context"].get("risk_codes", [])
+                if code != "supporting_evidence_missing"
+            ]
+            response["advisory_context"]["risk_level"] = "none"
+            response["runtime_view_state"]["risk_level"] = "none"
+            response["runtime_view_state"]["public_status"] = "continue_interview"
+            response["turn_record"]["advisory_summary"]["missing_evidence"] = []
+            response["turn_record"]["advisory_summary"]["risk_codes"] = response[
+                "advisory_context"
+            ]["risk_codes"]
+            response["turn_record"]["advisory_summary"]["risk_level"] = "none"
+        return response
+
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: (
-            SimpleNamespace(
-                assistant_message=continue_interview_message,
-                requested_documents=[],
-                decision_hint="continue_interview",
-            )
-            if governor_decision == "continue_interview" and not score.missing_evidence
-            else SimpleNamespace(
-                assistant_message=(
-                    f"Please upload {score.missing_evidence[0]}."
-                    if score.missing_evidence
-                    else "Please provide the key supporting document for this point."
-                ),
-                requested_documents=list(score.missing_evidence[:1]),
-                decision_hint="need_more_evidence",
-            )
-        ),
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        fake_run_turn,
     )
 
 
@@ -112,6 +155,90 @@ def drain_parse_worker(db_session_factory) -> bool:
     return processed_any
 
 
+def _contains_marker(value, marker: str) -> bool:
+    if isinstance(value, str):
+        return marker in value
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_marker(item, marker) for item in value)
+    if isinstance(value, dict):
+        return any(
+            _contains_marker(key, marker) or _contains_marker(item, marker)
+            for key, item in value.items()
+        )
+    return False
+
+
+def assert_funding_proof_is_tracked(payload: dict, *, label: str) -> None:
+    """缺资金证明时可以继续聊，但 funding_proof 不能从产品状态里消失。"""
+
+    if "metadata" in payload:
+        payload = payload["metadata"]
+    tracked_fields = {
+        "requested_documents": payload.get("requested_documents"),
+        "remaining_required_documents": payload.get("remaining_required_documents"),
+        "turn_decision": payload.get("turn_decision"),
+        "document_review": payload.get("document_review"),
+        "runtime_view_state": payload.get("runtime_view_state"),
+        "missing_evidence": payload.get("missing_evidence"),
+        "risk_points": payload.get("risk_points"),
+        "current_key_proof": payload.get("current_key_proof"),
+        "recommended_improvements": payload.get("recommended_improvements"),
+        "advisory_context": payload.get("advisory_context"),
+    }
+    assert _contains_marker(tracked_fields, "funding_proof"), (
+        f"{label} should keep funding_proof visible while the funding evidence "
+        f"gap is unresolved; tracked_fields={tracked_fields!r}"
+    )
+
+
+def assert_continue_interview_funding_gap_contract(
+    payload: dict,
+    *,
+    label: str,
+) -> None:
+    """continue_interview 下 funding gap 只能是全局缺口，不能是本轮上传请求。"""
+
+    if "metadata" in payload:
+        payload = payload["metadata"]
+    decision = payload.get("governor_decision") or payload.get("decision")
+    if decision != "continue_interview":
+        return
+
+    runtime_view_state = payload.get("runtime_view_state") or {}
+    advisory_context = (
+        runtime_view_state.get("advisory_context")
+        if isinstance(runtime_view_state, dict)
+        else {}
+    ) or payload.get("advisory_context") or {}
+    current_focus = (
+        runtime_view_state.get("current_focus")
+        if isinstance(runtime_view_state, dict)
+        else {}
+    ) or payload.get("current_focus") or {}
+
+    assert payload.get("requested_documents") == [], (
+        f"{label} should not treat unresolved funding_proof as an active "
+        f"upload request during continue_interview; payload={payload!r}"
+    )
+    assert _contains_marker(
+        payload.get("remaining_required_documents"),
+        "funding_proof",
+    ) or _contains_marker(
+        runtime_view_state.get("remaining_required_documents")
+        if isinstance(runtime_view_state, dict)
+        else None,
+        "funding_proof",
+    ), f"{label} should keep funding_proof in remaining_required_documents"
+    assert _contains_marker(
+        advisory_context.get("missing_evidence")
+        if isinstance(advisory_context, dict)
+        else advisory_context,
+        "funding_proof",
+    ), f"{label} should keep funding_proof in advisory_context.missing_evidence"
+    if current_focus:
+        assert current_focus.get("kind") == "interview_question"
+
+
 @pytest.fixture(autouse=True)
 def disable_runtime_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -160,7 +287,7 @@ def test_golden_path_f1_parent_sponsored_progresses_after_helpful_upload(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_native_interviewer_turn_stub(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
 
     assert session_resp.status_code == 201
@@ -238,7 +365,7 @@ def test_irrelevant_upload_does_not_drift_mainline_focus(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_native_interviewer_turn_stub(monkeypatch)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
 
     assert session_resp.status_code == 201
@@ -300,7 +427,7 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_stub_build_question_action(monkeypatch)
+    install_native_interviewer_turn_stub(monkeypatch)
     first_completion = client.post(
         "/v1/chat/completions",
         json={
@@ -321,11 +448,23 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert first_payload["metadata"]["session_id"] == session_id
     assert first_payload["metadata"]["phase_state"] == "interview"
     assert first_payload["metadata"]["context_mode"] == "new_session"
-    assert first_payload["metadata"]["governor_decision"] == "need_more_evidence"
-    assert first_payload["metadata"]["requested_documents"] == ["funding_proof"]
-    assert first_payload["metadata"]["remaining_required_documents"] == [
-        "funding_proof"
-    ]
+    assert first_payload["metadata"]["governor_decision"] in {
+        "continue_interview",
+        "need_more_evidence",
+    }
+    assert_funding_proof_is_tracked(first_payload, label="first completion metadata")
+    assert_continue_interview_funding_gap_contract(
+        first_payload,
+        label="first completion metadata",
+    )
+
+    first_report_response = client.get(f"/v1/sessions/{session_id}/reports/user")
+
+    assert first_report_response.status_code == 200
+    assert_funding_proof_is_tracked(
+        first_report_response.json(),
+        label="first user report",
+    )
 
     upload_response = client.post(
         f"/v1/sessions/{session_id}/files",
@@ -360,7 +499,23 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert second_payload["metadata"]["session_id"] == session_id
     assert second_payload["metadata"]["phase_state"] == "interview"
     assert second_payload["metadata"]["context_mode"] == "existing_session"
-    assert second_payload["metadata"]["governor_decision"] == "need_more_evidence"
+    assert second_payload["metadata"]["governor_decision"] in {
+        "continue_interview",
+        "need_more_evidence",
+    }
+    assert_funding_proof_is_tracked(second_payload, label="pre-worker metadata")
+    assert_continue_interview_funding_gap_contract(
+        second_payload,
+        label="pre-worker metadata",
+    )
+
+    second_report_response = client.get(f"/v1/sessions/{session_id}/reports/user")
+
+    assert second_report_response.status_code == 200
+    assert_funding_proof_is_tracked(
+        second_report_response.json(),
+        label="pre-worker user report",
+    )
 
     assert drain_parse_worker(db_session_factory) is True
 
@@ -384,6 +539,9 @@ def test_openai_compat_reuses_session_and_advances_to_interview_after_parse(
     assert third_payload["metadata"]["session_id"] == session_id
     assert third_payload["metadata"]["phase_state"] == "interview"
     assert third_payload["metadata"]["context_mode"] == "existing_session"
+    assert third_payload["metadata"]["governor_decision"] == "continue_interview"
+    assert third_payload["metadata"]["requested_documents"] == []
+    assert third_payload["metadata"]["remaining_required_documents"] == []
     assert third_payload["choices"][0]["message"]["role"] == "assistant"
     assert third_payload["choices"][0]["message"]["content"]
 

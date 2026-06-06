@@ -5,7 +5,7 @@ import json
 from app.db.models import SessionRecord, SessionTurnRecord
 from app.domain.agent_runtime import DS160GraphState, GraphRunResult
 from app.services.graph_adjudication_node import GraphAdjudicationNode
-from app.services.graph_case_state_builder import GraphCaseStateBuilder
+from app.services.interview_case_state_builder import InterviewCaseStateBuilder
 from app.services.llm_node_runner import LLMNodeRequest, LLMNodeResponse
 
 
@@ -776,7 +776,7 @@ def test_graph_adjudication_golden_replay_does_not_repeat_answered_school_progra
             metadata_json={},
         ),
     ]
-    case_state = GraphCaseStateBuilder(max_recent_turns=1).build(record, turns)
+    case_state = InterviewCaseStateBuilder(max_recent_turns=1).build(record, turns)
     assert case_state["transcript"]["turn_count"] == len(turns)
     assert case_state["case_brief"]["recent_assistant_questions"] == [
         {

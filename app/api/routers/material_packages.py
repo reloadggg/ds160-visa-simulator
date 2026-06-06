@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.services.admin_config_service import AdminConfigService
 from app.services.material_package_archive_service import (
     MaterialPackageArchiveService,
+    MaterialPackageNotReadyError,
 )
 
 router = APIRouter(prefix="/v1", tags=["material-packages"])
@@ -37,3 +38,14 @@ def import_material_package(
         return MaterialPackageArchiveService(db).import_package(session_id, package_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MaterialPackageNotReadyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": 409,
+                "detail": str(exc),
+                "package_id": exc.package_id,
+                "package_status": exc.status,
+                "warning": exc.warning,
+            },
+        ) from exc

@@ -35,10 +35,12 @@ from app.repositories.session_turn_repo import SessionTurnRepository
 from app.services.case_board_projection import (
     case_board_has_state,
     missing_evidence_from_case_board,
+    proof_point_code,
+    unresolved_funding_claim_requires_proof,
 )
 from app.services.admin_config_service import AdminConfigService
 from app.services.case_memory_service import CaseMemoryService
-from app.services.graph_case_state_builder import GraphCaseStateBuilder
+from app.services.interview_case_state_builder import InterviewCaseStateBuilder
 from app.services.runtime_errors import (
     ModelRuntimeError,
     ModelUnavailableError,
@@ -489,13 +491,13 @@ class NativeInterviewerRuntimeService:
         *,
         model_factory: AgentModelFactory | None = None,
         agent_runner: NativeInterviewerAgentRunner | None = None,
-        case_state_builder: GraphCaseStateBuilder | None = None,
+        case_state_builder: InterviewCaseStateBuilder | None = None,
         quality_validator: NativeInterviewQualityValidator | None = None,
     ) -> None:
         self.db = db
         self.model_factory = model_factory or AgentModelFactory()
         self.agent_runner = agent_runner or OpenAIAgentsInterviewerRunner()
-        self.case_state_builder = case_state_builder or GraphCaseStateBuilder()
+        self.case_state_builder = case_state_builder or InterviewCaseStateBuilder()
         self.quality_validator = quality_validator or NativeInterviewQualityValidator()
         self.session_turn_repo = SessionTurnRepository(db)
         self.document_repo = DocumentRepository(db)
@@ -567,6 +569,7 @@ class NativeInterviewerRuntimeService:
                 decision=decision,
                 current_focus=current_focus,
                 requested_documents=[],
+                remaining_required_documents=[],
                 advisory_context=advisory_context,
                 document_review=document_review,
                 prompt_trace=prompt_trace,
@@ -832,17 +835,19 @@ class NativeInterviewerRuntimeService:
         user_turn_id: str | None,
     ) -> dict[str, Any]:
         decision = output.decision
-        requested_documents = (
+        advisory_context = self._build_advisory_context(case_state)
+        missing_evidence = self._missing_evidence_documents(advisory_context)
+        requested_documents = list(
             output.requested_documents
             if decision == GovernorDecision.NEED_MORE_EVIDENCE.value
             else []
         )
+        remaining_required_documents = list(missing_evidence)
         current_focus = self._build_current_focus(
             decision=decision,
             assistant_message=output.assistant_message,
             requested_documents=requested_documents,
         )
-        advisory_context = self._build_advisory_context(case_state)
         prompt_trace = self._build_prompt_trace(
             run_id=run_id,
             quality=quality,
@@ -852,6 +857,7 @@ class NativeInterviewerRuntimeService:
             decision=decision,
             current_focus=current_focus,
             requested_documents=requested_documents,
+            remaining_required_documents=remaining_required_documents,
             advisory_context=advisory_context,
             document_review={},
             prompt_trace=prompt_trace,
@@ -860,7 +866,7 @@ class NativeInterviewerRuntimeService:
             "decision": decision,
             "assistant_message_author": "native_interviewer",
             "requested_documents": requested_documents,
-            "remaining_required_documents": list(requested_documents),
+            "remaining_required_documents": remaining_required_documents,
             "focus_kind": current_focus.get("kind"),
             "focus_document_type": current_focus.get("document_type"),
             "focus_risk_code": current_focus.get("risk_code"),
@@ -878,7 +884,7 @@ class NativeInterviewerRuntimeService:
             decision=decision,
             assistant_message=output.assistant_message,
             requested_documents=requested_documents,
-            remaining_required_documents=list(requested_documents),
+            remaining_required_documents=remaining_required_documents,
             focus=current_focus,
             trace_refs=["native_interviewer"],
             artifacts=[
@@ -902,7 +908,7 @@ class NativeInterviewerRuntimeService:
             "governor_decision": decision,
             "score_summary": advisory_context.get("score_summary", {}),
             "requested_documents": requested_documents,
-            "remaining_required_documents": list(requested_documents),
+            "remaining_required_documents": remaining_required_documents,
             "gate_progress": self._payload(case_state.get("gate_progress")),
             "turn_decision": turn_decision,
             "document_review": {},
@@ -914,6 +920,17 @@ class NativeInterviewerRuntimeService:
             "selected_public_runtime": "native_interviewer",
             "native_run_id": run_id,
         }
+
+    def _missing_evidence_documents(
+        self,
+        advisory_context: dict[str, Any],
+    ) -> list[str]:
+        values: list[str] = []
+        for item in advisory_context.get("missing_evidence", []) or []:
+            normalized = proof_point_code({"proof_point_id": item})
+            if normalized and normalized not in values:
+                values.append(normalized)
+        return values
 
     def _build_current_focus(
         self,
@@ -958,6 +975,7 @@ class NativeInterviewerRuntimeService:
         decision: str,
         current_focus: dict[str, Any],
         requested_documents: list[str],
+        remaining_required_documents: list[str],
         advisory_context: dict[str, Any],
         document_review: dict[str, Any],
         prompt_trace: dict[str, Any],
@@ -981,7 +999,7 @@ class NativeInterviewerRuntimeService:
             "current_key_proof": current_key_proof,
             "current_risk_code": current_risk_code,
             "requested_documents": requested_documents,
-            "remaining_required_documents": list(requested_documents),
+            "remaining_required_documents": remaining_required_documents,
             "allowed_next_actions": self._allowed_next_actions(
                 decision=decision,
                 current_key_question=current_key_question,
@@ -1025,7 +1043,7 @@ class NativeInterviewerRuntimeService:
                 advisory["missing_evidence"] = missing_evidence_from_case_board(
                     case_board
                 )
-            return advisory
+            return self._with_unresolved_funding_claim(case_board, advisory)
         latest_score = self._latest_payload(case_state.get("score_history_tail"))
         risk_flags = latest_score.get("risk_flags", [])
         risk_codes = [
@@ -1033,7 +1051,7 @@ class NativeInterviewerRuntimeService:
             for item in risk_flags
             if isinstance(item, dict) and self._string_or_none(item.get("code"))
         ]
-        return {
+        advisory_context = {
             "score_summary": {
                 key: int(latest_score.get(key, 0))
                 for key in (
@@ -1055,6 +1073,34 @@ class NativeInterviewerRuntimeService:
                 ]
             ),
             "risk_level": "high" if risk_codes else "none",
+        }
+        return self._with_unresolved_funding_claim(case_board, advisory_context)
+
+    def _with_unresolved_funding_claim(
+        self,
+        case_board: dict[str, Any],
+        advisory_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not unresolved_funding_claim_requires_proof(case_board):
+            return advisory_context
+
+        missing_evidence = list(advisory_context.get("missing_evidence", []) or [])
+        if "funding_proof" not in missing_evidence:
+            missing_evidence.append("funding_proof")
+
+        risk_codes = list(advisory_context.get("risk_codes", []) or [])
+        if "supporting_evidence_missing" not in risk_codes:
+            risk_codes.append("supporting_evidence_missing")
+
+        return {
+            **advisory_context,
+            "missing_evidence": missing_evidence,
+            "risk_codes": risk_codes,
+            "risk_level": (
+                advisory_context.get("risk_level")
+                if advisory_context.get("risk_level") not in {None, "none"}
+                else "medium"
+            ),
         }
 
     def _material_change_decision(

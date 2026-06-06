@@ -271,6 +271,44 @@ def generated_bundle_for_scenario(
     )
 
 
+def promote_source_session_as_validated_archive(
+    db_session_factory,
+    *,
+    session_id: str,
+    package_id: str,
+) -> None:
+    required_document_types = [
+        "ds160",
+        "passport_bio",
+        "i20",
+        "admission_letter",
+        "funding_proof",
+        "relationship_proof_between_applicant_and_sponsors",
+    ]
+    with db_session_factory() as db:
+        documents = db.query(DocumentRecord).filter_by(session_id=session_id).all()
+        for document in documents:
+            artifact = dict(document.artifact_json or {})
+            metadata = dict(artifact.get("metadata") or {})
+            metadata.update(
+                {
+                    "debug_material_bundle": True,
+                    "synthetic_bundle_id": package_id,
+                    "demo_template_archive_source": True,
+                    "archive_source_reason": "validated_f1_demo_material_package",
+                    "source_validation_session_id": session_id,
+                    "demo_template_id": "f1_parent_sponsored_demo_test_v1",
+                    "validation_status": "passed",
+                    "visa_family": "f1",
+                    "intent": "pass_oriented_customer_demo",
+                    "required_document_types": required_document_types,
+                }
+            )
+            artifact["metadata"] = metadata
+            document.artifact_json = artifact
+        db.commit()
+
+
 def install_ai_material_generator_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_generate(self, *, record, scenario, seed_text, include_synthetic_user_turns):
         assert seed_text == SEED_TEXT
@@ -319,7 +357,7 @@ def test_debug_material_bundle_api_persists_documents_and_evidence(
     assert record.gate_status_json["status"] == "ready_for_interview"
 
 
-def test_material_package_archive_lists_and_imports_generated_bundle(
+def test_material_package_archive_lists_and_imports_only_validated_archive(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -338,6 +376,16 @@ def test_material_package_archive_lists_and_imports_generated_bundle(
     bundle_payload = bundle_response.json()
     package_id = bundle_payload["bundle_id"]
 
+    ordinary_list_response = client.get("/v1/material-packages")
+    assert ordinary_list_response.status_code == 200
+    assert ordinary_list_response.json()["packages"] == []
+
+    promote_source_session_as_validated_archive(
+        db_session_factory,
+        session_id=source_session_id,
+        package_id=package_id,
+    )
+
     list_response = client.get("/v1/material-packages")
     assert list_response.status_code == 200
     packages = list_response.json()["packages"]
@@ -346,6 +394,12 @@ def test_material_package_archive_lists_and_imports_generated_bundle(
     assert package["status_label"] == "可导入"
     assert package["document_count"] == len(bundle_payload["documents"])
     assert package["source_session_id"] == source_session_id
+    assert package["validation_status"] == "passed"
+    assert package["source_validation_session_id"] == source_session_id
+    assert package["demo_template_id"] == "f1_parent_sponsored_demo_test_v1"
+    assert package["archive_source_reason"] == "validated_f1_demo_material_package"
+    assert package["intent"] == "pass_oriented_customer_demo"
+    assert package["visa_family"] == "f1"
 
     target_session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     target_session_id = target_session_resp.json()["session_id"]
@@ -408,6 +462,66 @@ def test_material_package_archive_lists_and_imports_generated_bundle(
     }
     assert package_id in listed_package_ids
     assert import_payload["imported_bundle_id"] not in listed_package_ids
+
+
+def test_material_package_import_rejects_partial_validated_archive(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
+    source_session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    source_session_id = source_session_resp.json()["session_id"]
+    bundle_response = client.post(
+        f"/v1/sessions/{source_session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
+    )
+    assert bundle_response.status_code == 200
+    package_id = bundle_response.json()["bundle_id"]
+    promote_source_session_as_validated_archive(
+        db_session_factory,
+        session_id=source_session_id,
+        package_id=package_id,
+    )
+
+    with db_session_factory() as db:
+        source_document = db.query(DocumentRecord).filter_by(
+            session_id=source_session_id,
+            filename="ai_funding.txt",
+        ).one()
+        source_document.artifact_json = {
+            **source_document.artifact_json,
+            "understanding_status": "failed",
+        }
+        db.commit()
+
+    list_response = client.get("/v1/material-packages")
+    assert list_response.status_code == 200
+    package = next(
+        item
+        for item in list_response.json()["packages"]
+        if item["package_id"] == package_id
+    )
+    assert package["status"] == "partial"
+    assert package["validation_status"] == "incomplete"
+
+    target_session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    target_session_id = target_session_resp.json()["session_id"]
+    import_response = client.post(
+        f"/v1/sessions/{target_session_id}/material-packages/{package_id}/import"
+    )
+
+    assert import_response.status_code == 409
+    detail = import_response.json()["detail"]
+    assert detail["package_id"] == package_id
+    assert detail["package_status"] == "partial"
+    assert "理解状态不完整" in detail["detail"]
+    with db_session_factory() as db:
+        assert (
+            db.query(DocumentRecord).filter_by(session_id=target_session_id).count()
+            == 0
+        )
 
 
 def test_debug_material_bundle_api_rejects_missing_seed_without_writing_materials(
@@ -968,6 +1082,9 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "material_change",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph",

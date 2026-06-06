@@ -19,11 +19,10 @@ class RuntimeViewContractService:
         anchored_only: bool = False,
     ) -> dict[str, Any]:
         if isinstance(runtime_view_state, RuntimeViewState):
-            payload = runtime_view_state.model_dump(
-                mode="json",
-                exclude_none=True,
-                exclude_defaults=True,
-            )
+            # Runtime view state is the canonical turn contract.  Keep explicit
+            # None / [] / {} values so anchored payloads can clear stale
+            # interviewer-state fields instead of silently falling back.
+            payload = runtime_view_state.model_dump(mode="json")
         elif isinstance(runtime_view_state, dict):
             payload = dict(runtime_view_state)
         else:

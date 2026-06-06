@@ -618,3 +618,131 @@ def test_native_interviewer_advisory_missing_evidence_prefers_case_board(
     )
 
     assert advisory["missing_evidence"] == ["proof-funding-chain"]
+
+
+def test_native_continue_interview_keeps_funding_gap_out_of_requested_documents(
+    db_session,
+) -> None:
+    record = SessionRecord(
+        session_id="sess-native-funding-gap",
+        phase_state="interview",
+        declared_family="f1",
+        current_governor_decision="continue_interview",
+    )
+    service = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+        agent_runner=QueueRunner([]),
+    )
+
+    response = service._build_response(
+        record=record,
+        message_text="My parents will pay for the program.",
+        case_state={
+            "case_board": {
+                "claims": [
+                    {
+                        "claim_id": "claim-funding-source",
+                        "field_path": "/funding/primary_source",
+                        "value": "parents",
+                        "status": "stated",
+                        "supporting_evidence_ids": [],
+                    }
+                ],
+                "evidence_cards": [],
+                "proof_points": [],
+                "conflicts": [],
+            },
+            "score_history_tail": [
+                {
+                    "risk_flags": [],
+                    "missing_evidence": [],
+                }
+            ],
+        },
+        output=NativeInterviewerOutput(
+            assistant_message="What do your parents do for work in China?",
+            decision="continue_interview",
+        ),
+        run_id="run-test",
+        quality={"status": "accepted", "attempts": []},
+        user_turn_id="turn-user",
+    )
+
+    assert response["governor_decision"] == "continue_interview"
+    assert response["requested_documents"] == []
+    assert response["remaining_required_documents"] == ["funding_proof"]
+    assert response["advisory_context"]["missing_evidence"] == ["funding_proof"]
+
+    runtime_view = response["runtime_view_state"]
+    assert runtime_view["requested_documents"] == []
+    assert runtime_view["remaining_required_documents"] == ["funding_proof"]
+    assert runtime_view["advisory_context"]["missing_evidence"] == ["funding_proof"]
+    assert runtime_view["current_focus"]["kind"] == "interview_question"
+    assert runtime_view["current_key_proof"] is None
+
+    assert response["turn_decision"]["requested_documents"] == []
+    assert response["turn_decision"]["remaining_required_documents"] == [
+        "funding_proof"
+    ]
+    assert response["turn_record"]["requested_documents"] == []
+    assert response["turn_record"]["remaining_required_documents"] == [
+        "funding_proof"
+    ]
+
+
+def test_native_need_more_evidence_keeps_active_document_request_semantics(
+    db_session,
+) -> None:
+    record = SessionRecord(
+        session_id="sess-native-doc-request",
+        phase_state="interview",
+        declared_family="f1",
+        current_governor_decision="need_more_evidence",
+    )
+    service = NativeInterviewerRuntimeService(
+        db_session,
+        model_factory=StubModelFactory(),
+        agent_runner=QueueRunner([]),
+    )
+
+    response = service._build_response(
+        record=record,
+        message_text="I cannot upload it yet.",
+        case_state={
+            "case_board": {
+                "claims": [],
+                "evidence_cards": [],
+                "proof_points": [
+                    {
+                        "proof_point_id": "funding_proof",
+                        "status": "missing",
+                    }
+                ],
+                "conflicts": [],
+            }
+        },
+        output=NativeInterviewerOutput(
+            assistant_message="Please upload your parent sponsor bank statement.",
+            decision="need_more_evidence",
+            requested_documents=["funding_proof"],
+        ),
+        run_id="run-test",
+        quality={"status": "accepted", "attempts": []},
+        user_turn_id="turn-user",
+    )
+
+    assert response["governor_decision"] == "need_more_evidence"
+    assert response["requested_documents"] == ["funding_proof"]
+    assert response["remaining_required_documents"] == ["funding_proof"]
+
+    runtime_view = response["runtime_view_state"]
+    assert runtime_view["requested_documents"] == ["funding_proof"]
+    assert runtime_view["remaining_required_documents"] == ["funding_proof"]
+    assert runtime_view["current_key_proof"] == "funding_proof"
+    assert runtime_view["current_focus"] == {
+        "owner": "native_interviewer",
+        "kind": "required_document",
+        "document_type": "funding_proof",
+    }
+    assert response["turn_decision"]["current_key_proof"] == "funding_proof"

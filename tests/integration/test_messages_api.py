@@ -1,10 +1,10 @@
 from collections.abc import Generator
+import inspect
 import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
-from pydantic_ai.models.test import TestModel
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
@@ -30,6 +30,8 @@ from app.domain.runtime import RuntimeTraceEntry, build_initial_gate_status
 from app.main import app
 from app.agents.user_model_config import current_user_model_config
 from app.core import settings as settings_module
+from app.platform.runtime_ledger import RuntimeViewState
+from app.services.message_service import MessageService
 from app.services.native_interviewer_runtime_service import NativeInterviewerOutput
 from app.services.runtime_errors import ModelRuntimeError
 from app.workers.parse_worker import ParseWorker
@@ -68,6 +70,26 @@ def assert_interviewer_state_matches_new_contract(
         "document_review": expected_state.get("document_review", {}),
     }
 
+def assert_native_canonical_runtime_execution(
+    payload: dict,
+    *,
+    configured_runtime: str = "native_interviewer",
+    compatibility_runtime_label: str | None = None,
+    source: str = "message_turn",
+) -> None:
+    runtime_execution = payload["runtime_execution"]
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert runtime_execution["configured_runtime"] == configured_runtime
+    assert runtime_execution["requested_public_runtime"] == "native_interviewer"
+    assert runtime_execution["public_runtime"] == "native_interviewer"
+    assert runtime_execution["runtime_role"] == "canonical"
+    assert runtime_execution["canonical"] is True
+    assert runtime_execution["execution_runtime"] == "native_interviewer_runtime"
+    assert runtime_execution["source"] == source
+    if compatibility_runtime_label is None:
+        assert "compatibility_runtime_label" not in runtime_execution
+    else:
+        assert runtime_execution["compatibility_runtime_label"] == compatibility_runtime_label
 
 def parse_sse_events(body: str) -> list[tuple[str, dict]]:
     events: list[tuple[str, dict]] = []
@@ -133,11 +155,33 @@ def disable_runtime_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
 
+def install_native_run_turn_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    run_turn,
+) -> None:
+    signature = inspect.signature(run_turn)
+    accepts_user_turn = "user_turn" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+    def native_run_turn(self, record, message_text, user_turn=None):
+        if accepts_user_turn:
+            return run_turn(self, record, message_text, user_turn=user_turn)
+        return run_turn(self, record, message_text)
+
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        native_run_turn,
+    )
+
+
 def install_native_interviewer_stub(
     monkeypatch: pytest.MonkeyPatch,
     *,
     assistant_message: str = "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？",
     decision: str = "continue_interview",
+    requested_documents: list[str] | None = None,
 ) -> None:
     monkeypatch.setattr(
         "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService._build_runtime",
@@ -152,6 +196,7 @@ def install_native_interviewer_stub(
         lambda self, **kwargs: NativeInterviewerOutput(
             assistant_message=assistant_message,
             decision=decision,
+            requested_documents=list(requested_documents or []),
         ),
     )
 
@@ -236,107 +281,139 @@ def seed_ready_for_interview_session(
     return session_id
 
 
-def install_stub_build_question_action(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    continue_interview_message: str = "What is the purpose of your travel?",
-    high_risk_message: str = (
-        "This case needs additional review before the interview can continue."
-    ),
-) -> None:
-    def fake_build_question_action(
-        self,
-        session_id,
-        profile,
-        score,
-        governor_decision,
-        trace_entries,
-        recent_turns=None,
-    ):
-        del self, session_id, profile, trace_entries, recent_turns
-        requested_documents = list(score.missing_evidence[:1])
-        if governor_decision == "need_more_evidence":
-            return SimpleNamespace(
-                assistant_message=(
-                    f"Please upload {requested_documents[0]}."
-                    if requested_documents
-                    else "Please provide the key supporting document for this point."
-                ),
-                requested_documents=requested_documents,
-                decision_hint="need_more_evidence",
-            )
-        if governor_decision == "high_risk_review":
-            return SimpleNamespace(
-                assistant_message=high_risk_message,
-                requested_documents=[],
-                decision_hint="high_risk_review",
-            )
-        if governor_decision == "simulated_refusal":
-            return SimpleNamespace(
-                assistant_message="This simulated case results in refusal.",
-                requested_documents=[],
-                decision_hint="simulated_refusal",
-            )
-        if governor_decision == "route_correction":
-            return SimpleNamespace(
-                assistant_message="Your case may fit a different visa route.",
-                requested_documents=[],
-                decision_hint="route_correction",
-            )
-        if requested_documents:
-            return SimpleNamespace(
-                assistant_message=f"Please upload {requested_documents[0]}.",
-                requested_documents=requested_documents,
-                decision_hint="need_more_evidence",
-            )
-        return SimpleNamespace(
-            assistant_message=continue_interview_message,
-            requested_documents=[],
-            decision_hint="continue_interview",
-        )
-
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        fake_build_question_action,
-    )
-
-
-def install_fixed_build_question_action(
+def install_native_fixed_interview_response(
     monkeypatch: pytest.MonkeyPatch,
     *,
     decision: str,
     assistant_message: str,
     requested_documents: list[str] | None = None,
 ):
-    def fake_build_question_action(
-        self,
-        session_id,
-        profile,
-        score,
-        governor_decision,
-        trace_entries,
-        recent_turns=None,
-    ):
-        del self, session_id, profile, score, governor_decision, trace_entries, recent_turns
-        return SimpleNamespace(
-            assistant_message=assistant_message,
-            requested_documents=list(requested_documents or []),
-            decision_hint=decision,
-        )
-
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        fake_build_question_action,
+    active_requested_documents = list(
+        requested_documents or (["funding_proof"] if decision == "need_more_evidence" else [])
     )
 
+    def fake_run_turn(self, record, message_text, user_turn=None):
+        del self
+        if decision == "need_more_evidence":
+            current_focus = {
+                "owner": "native_interviewer",
+                "kind": "required_document",
+                "document_type": active_requested_documents[0] if active_requested_documents else None,
+            }
+            current_key_question = None
+            current_key_proof = current_focus.get("document_type")
+            allowed_next_actions = ["upload_key_proof", "explain_missing_proof"]
+        elif decision == "high_risk_review":
+            current_focus = {
+                "owner": "native_interviewer",
+                "kind": "risk_review",
+                "question": assistant_message,
+            }
+            current_key_question = assistant_message
+            current_key_proof = None
+            allowed_next_actions = ["clarify_key_issue", "wait_for_review"]
+        elif decision == "simulated_refusal":
+            current_focus = {
+                "owner": "native_interviewer",
+                "kind": "refusal",
+                "reason": assistant_message,
+            }
+            current_key_question = None
+            current_key_proof = None
+            allowed_next_actions = ["review_refusal_result"]
+        else:
+            current_focus = {
+                "owner": "native_interviewer",
+                "kind": "interview_question",
+                "question": assistant_message,
+            }
+            current_key_question = assistant_message
+            current_key_proof = None
+            allowed_next_actions = ["answer_question", "continue_interview"]
+
+        advisory_context = {
+            "score_summary": {},
+            "risk_codes": [],
+            "missing_evidence": active_requested_documents if decision == "need_more_evidence" else [],
+            "risk_level": "none",
+        }
+        prompt_trace = {
+            "prompt_pack_id": "ds160.native_interviewer",
+            "prompt_version": "native-v0",
+            "native_run_id": "native-run-fixed-stub",
+            "assistant_message_author": "native_interviewer",
+        }
+        runtime_view_state = {
+            "source_turn_id": None,
+            "decision": decision,
+            "governor_decision": decision,
+            "public_status": decision,
+            "risk_level": advisory_context["risk_level"],
+            "current_focus": current_focus,
+            "current_key_question": current_key_question,
+            "current_key_proof": current_key_proof,
+            "current_risk_code": None,
+            "requested_documents": active_requested_documents,
+            "remaining_required_documents": active_requested_documents if decision == "need_more_evidence" else [],
+            "allowed_next_actions": allowed_next_actions,
+            "advisory_context": advisory_context,
+            "document_review": {},
+            "prompt_trace": prompt_trace,
+        }
+        return {
+            "assistant_message": assistant_message,
+            "governor_decision": decision,
+            "score_summary": {},
+            "requested_documents": active_requested_documents,
+            "remaining_required_documents": active_requested_documents if decision == "need_more_evidence" else [],
+            "gate_progress": {},
+            "turn_decision": {
+                "decision": decision,
+                "assistant_message_author": "native_interviewer",
+                "requested_documents": active_requested_documents,
+                "remaining_required_documents": active_requested_documents if decision == "need_more_evidence" else [],
+                "governor_decision": decision,
+                "next_safe_action": "continue_interview",
+                "current_key_question": current_key_question,
+                "current_key_proof": current_key_proof,
+                "current_risk_code": None,
+            },
+            "document_review": {},
+            "advisory_context": advisory_context,
+            "prompt_trace": prompt_trace,
+            "runtime_view_state": runtime_view_state,
+            "turn_record": {
+                "turn_id": getattr(user_turn, "turn_id", None) or f"{record.session_id}:pending-turn",
+                "session_id": record.session_id,
+                "user_turn_id": getattr(user_turn, "turn_id", None),
+                "user_input": message_text,
+                "decision": decision,
+                "assistant_message": assistant_message,
+                "requested_documents": active_requested_documents,
+                "remaining_required_documents": active_requested_documents if decision == "need_more_evidence" else [],
+                "focus": current_focus,
+                "trace_refs": ["native_interviewer"],
+                "artifacts": [],
+                "advisory_summary": {},
+                "document_review": {},
+            },
+            "agent_runtime": "native_interviewer",
+            "selected_public_runtime": "native_interviewer",
+            "native_run_id": "native-run-fixed-stub",
+        }
+
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        fake_run_turn,
+    )
 
 def test_message_turn_enters_runtime_when_gate_not_ready(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "What is your study plan?",
             "governor_decision": "continue_interview",
@@ -409,10 +486,7 @@ def test_message_post_is_idempotent_for_repeated_client_message_id(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -479,10 +553,7 @@ def test_message_user_turn_commits_before_runtime_call(
             "prompt_trace": {},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
     session_id = session_resp.json()["session_id"]
 
@@ -530,10 +601,7 @@ def test_message_post_retries_transient_provider_failures_then_succeeds(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -590,10 +658,7 @@ def test_message_post_retries_transient_rate_limit_429(
             "prompt_trace": {"run_count": run_count},
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -624,10 +689,7 @@ def test_message_post_exhausted_transient_provider_failure_cleans_user_turn(
             error_category="upstream_model",
         )
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -674,10 +736,7 @@ def test_message_post_does_not_retry_quota_or_auth_provider_failures(
             body={"code": "API_KEY_QUOTA_EXHAUSTED", "message": "余额不足"},
         )
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -717,10 +776,7 @@ def test_message_post_does_not_retry_model_config_provider_failure(
             error_category="upstream_model",
         )
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
     session_id = seed_ready_for_interview_session(client, db_session_factory)
 
     response = client.post(
@@ -746,8 +802,8 @@ def test_message_turn_records_interview_memory_for_answered_question(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "毕业后你准备做什么工作？",
             "governor_decision": "continue_interview",
@@ -1004,10 +1060,7 @@ def test_messages_apply_user_model_config_for_request_scope(
             "requested_documents": [],
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     response = client.post(
@@ -1089,10 +1142,7 @@ def test_messages_stream_allows_default_model_without_user_streaming_switch(
             "turn_record": turn_record,
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     with client.stream(
@@ -1276,10 +1326,7 @@ def test_messages_stream_emits_final_payload_contract(
             "turn_record": turn_record,
         }
 
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
-        fake_run_turn,
-    )
+    install_native_run_turn_stub(monkeypatch, fake_run_turn)
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
     with client.stream(
@@ -1375,9 +1422,9 @@ def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("未选择签证家族前不应进入 interviewer runtime")
+            AssertionError("未选择签证家族前不应进入 native interviewer runtime")
         ),
     )
     session_resp = client.post("/v1/sessions", json={"declared_family": None})
@@ -1424,26 +1471,22 @@ def test_message_turn_keeps_family_selection_gate_before_interview_runtime(
     ]
 
 
-def test_message_turn_uses_adjudication_agent_output_for_continue_interview(
+def test_message_turn_legacy_config_uses_native_interviewer_output(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "legacy")
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="What is the purpose of your travel?",
+        decision="continue_interview",
+    )
     monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "What is the purpose of your travel?",
-                    "requested_documents": [],
-                    "decision_hint": "continue_interview",
-                },
-            ),
-            {"model": "gpt-5.4"},
-        )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run for public messages")
+        ),
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -1456,6 +1499,8 @@ def test_message_turn_uses_adjudication_agent_output_for_continue_interview(
     assert response.status_code == 200
     payload = response.json()
     assert payload["governor_decision"] == "continue_interview"
+    assert payload["agent_runtime"] == "native_interviewer"
+    assert_native_canonical_runtime_execution(payload, configured_runtime="legacy")
     assert payload["assistant_message"] == "What is the purpose of your travel?"
     assert payload["requested_documents"] == []
     assert payload["runtime_view_state"]["decision"] == "continue_interview"
@@ -1471,26 +1516,13 @@ def test_message_turn_uses_adjudication_agent_output_for_continue_interview(
     with db_session_factory() as db:
         record = db.get(SessionRecord, session_id)
         assert record is not None
-        assert [entry["node_name"] for entry in record.runtime_trace_json] == [
-            "receive_input",
-            "extract_claims",
-            "resolve_evidence",
-            "consistency_check",
-            "score_case",
-            "governor_decide",
-            "decide_capability",
-            "resolve_capability",
-            "turn_decision",
-        ]
-        assert record.score_history_json[-1]["scoring_stage"] == "interview_turn"
-        assert record.governor_history_json[-1]["decision"] == "continue_interview"
         assert record.current_focus_json == {
-            "owner": "interviewer_runtime_service",
+            "owner": "native_interviewer",
             "kind": "interview_question",
             "question": "What is the purpose of your travel?",
         }
-        assert record.interviewer_state_json["owner"] == "interviewer_runtime_service"
-        assert record.interviewer_state_json["next_action"] == "answer_question"
+        assert record.interviewer_state_json["owner"] == "native_interviewer_runtime"
+        assert record.interviewer_state_json["selected_public_runtime"] == "native_interviewer"
 
 
 def test_message_turn_graph_shadow_uses_native_public_response_and_single_assistant_turn(
@@ -1533,6 +1565,9 @@ def test_message_turn_graph_shadow_uses_native_public_response_and_single_assist
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "message_turn",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph_shadow",
@@ -1669,6 +1704,9 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "message_turn",
         "fail_open_to_legacy": False,
         "compatibility_runtime_label": "graph",
@@ -1704,6 +1742,35 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     assert record.interviewer_state_json["runtime_execution"] == payload["runtime_execution"]
 
 
+
+def test_message_turn_legacy_config_is_ignored_and_uses_native_canonical_runtime(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "legacy")
+    install_native_interviewer_stub(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run for public messages")
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_runtime"] == "native_interviewer"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert_native_canonical_runtime_execution(payload, configured_runtime="legacy")
+
+
 def test_message_turn_native_interviewer_runtime_reports_native_label(
     client: TestClient,
     db_session_factory,
@@ -1736,6 +1803,9 @@ def test_message_turn_native_interviewer_runtime_reports_native_label(
         "public_runtime": "native_interviewer",
         "execution_runtime": "native_interviewer_runtime",
         "runtime_engine": "native_interviewer_runtime",
+        "canonical_runtime": "native_interviewer",
+        "runtime_role": "canonical",
+        "canonical": True,
         "source": "message_turn",
         "fail_open_to_legacy": False,
     }
@@ -1759,6 +1829,86 @@ def test_message_turn_native_interviewer_runtime_reports_native_label(
     assert record.interviewer_state_json["owner"] == "native_interviewer_runtime"
     assert record.interviewer_state_json["selected_public_runtime"] == "native_interviewer"
     assert record.interviewer_state_json["runtime_execution"] == payload["runtime_execution"]
+
+
+
+
+@pytest.mark.parametrize(
+    "configured_runtime",
+    ["native_interviewer", "graph", "graph_shadow", "graph_canary"],
+)
+def test_message_turn_public_native_paths_do_not_call_pydantic_ai_model_build(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+    configured_runtime: str,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", configured_runtime)
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_canary_percent", 0)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.invalid/v1")
+
+    def pydantic_model_build_must_not_run(self, *args, **kwargs):
+        raise AssertionError(
+            "public native runtime paths must not build pydantic-ai chat models"
+        )
+
+    monkeypatch.setattr(
+        "app.agents.model_factory.AgentModelFactory.build",
+        pydantic_model_build_must_not_run,
+    )
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.OpenAIAgentsInterviewerRunner.run",
+        lambda self, **kwargs: NativeInterviewerOutput(
+            assistant_message="What is your study plan?",
+            decision="continue_interview",
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["execution_runtime"] == "native_interviewer_runtime"
+    assert payload["runtime_execution"]["runtime_role"] == "canonical"
+    assert payload["runtime_execution"]["canonical"] is True
+
+
+def test_message_turn_native_interviewer_does_not_eager_init_legacy_runtime(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "native_interviewer")
+    install_native_interviewer_stub(monkeypatch)
+
+    def legacy_init_must_not_run(self, db) -> None:
+        raise AssertionError("legacy runtime should not initialize in native mode")
+
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.__init__",
+        legacy_init_must_not_run,
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["canonical_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["runtime_role"] == "canonical"
+    assert payload["runtime_execution"]["canonical"] is True
 
 
 def test_message_turn_graph_canary_hundred_percent_uses_native_compat_alias(
@@ -1790,6 +1940,9 @@ def test_message_turn_graph_canary_hundred_percent_uses_native_compat_alias(
     assert payload["runtime_execution"]["configured_runtime"] == "graph_canary"
     assert payload["runtime_execution"]["compatibility_runtime_label"] == "graph_canary"
     assert payload["runtime_execution"]["execution_runtime"] == "native_interviewer_runtime"
+    assert payload["runtime_execution"]["canonical_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["runtime_role"] == "canonical"
+    assert payload["runtime_execution"]["canonical"] is True
 
     with db_session_factory() as db:
         assistant_turn = db.scalar(
@@ -1803,6 +1956,90 @@ def test_message_turn_graph_canary_hundred_percent_uses_native_compat_alias(
 
     assert assistant_turn is not None
     assert assistant_turn.source == "native_interviewer_runtime"
+
+
+def test_message_turn_graph_canary_zero_percent_still_uses_native_compat_alias(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "graph_canary")
+    monkeypatch.setattr(settings_module.settings, "agent_runtime_canary_percent", 0)
+    install_native_interviewer_stub(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run when graph_canary misses")
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={"role": "user", "content": "I will study computer science."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_runtime"] == "graph"
+    assert payload["selected_public_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["configured_runtime"] == "graph_canary"
+    assert payload["runtime_execution"]["compatibility_runtime_label"] == "graph_canary"
+    assert payload["runtime_execution"]["execution_runtime"] == "native_interviewer_runtime"
+    assert payload["runtime_execution"]["canonical_runtime"] == "native_interviewer"
+    assert payload["runtime_execution"]["runtime_role"] == "canonical"
+    assert payload["runtime_execution"]["canonical"] is True
+
+    with db_session_factory() as db:
+        assistant_turn = db.scalar(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "assistant",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        )
+
+    assert assistant_turn is not None
+    assert assistant_turn.source == "native_interviewer_runtime"
+
+
+def test_message_turn_native_failure_does_not_fail_open_to_legacy(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "agent_runtime", "native_interviewer")
+    monkeypatch.setattr(
+        "app.services.native_interviewer_runtime_service.NativeInterviewerRuntimeService.run_turn",
+        lambda self, record, message_text, user_turn=None: (_ for _ in ()).throw(
+            RuntimeError("native exploded")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+        lambda self, record, message_text: (_ for _ in ()).throw(
+            AssertionError("legacy runtime should not run after native failure")
+        ),
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    with pytest.raises(RuntimeError, match="native exploded"):
+        client.post(
+            f"/v1/sessions/{session_id}/messages",
+            json={"role": "user", "content": "I will study computer science."},
+        )
+
+    with db_session_factory() as db:
+        turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(SessionTurnRecord.session_id == session_id)
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+
+    assert turns == []
 
 
 def test_message_turn_graph_failure_does_not_fail_open_to_legacy(
@@ -2032,6 +2269,9 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
         final_payload["runtime_execution"]["execution_runtime"]
         == "native_interviewer_runtime"
     )
+    assert final_payload["runtime_execution"]["canonical_runtime"] == "native_interviewer"
+    assert final_payload["runtime_execution"]["runtime_role"] == "canonical"
+    assert final_payload["runtime_execution"]["canonical"] is True
     assert final_payload["assistant_message"] == (
         "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
     )
@@ -2067,26 +2307,15 @@ def test_message_turn_returns_503_when_adjudication_agent_config_missing_for_int
     assert not record.runtime_trace_json
 
 
-def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
+def test_native_message_turn_persists_turn_record_on_assistant_turn_metadata(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "What is the purpose of your travel?",
-                    "requested_documents": [],
-                    "decision_hint": "continue_interview",
-                },
-            ),
-            {"model": "gpt-5.4"},
-        )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
+    install_native_interviewer_stub(
+        monkeypatch,
+        assistant_message="What is the purpose of your travel?",
+        decision="continue_interview",
     )
 
     session_id = seed_ready_for_interview_session(client, db_session_factory)
@@ -2097,6 +2326,7 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
     )
 
     assert response.status_code == 200
+    assert_native_canonical_runtime_execution(response.json())
 
     with db_session_factory() as db:
         turns = db.scalars(
@@ -2116,17 +2346,7 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
     assert turn_record["session_id"] == session_id
     assert turn_record["decision"] == "continue_interview"
     assert turn_record["assistant_message"] == "What is the purpose of your travel?"
-    assert turn_record["trace_refs"] == [
-        "receive_input",
-        "extract_claims",
-        "resolve_evidence",
-        "consistency_check",
-        "score_case",
-        "governor_decide",
-        "decide_capability",
-        "resolve_capability",
-        "turn_decision",
-    ]
+    assert turn_record["trace_refs"] == ["native_interviewer"]
     assert assistant_turn.metadata_json["requested_documents"] == []
     assert assistant_turn.metadata_json["turn_decision"] == "continue_interview"
     assert runtime_view_state["source_turn_id"] == assistant_turn.turn_id
@@ -2136,103 +2356,92 @@ def test_message_turn_persists_turn_record_on_assistant_turn_metadata(
     )
 
 
-def test_message_turn_returns_429_when_adjudication_agent_quota_is_exhausted(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "This value should never be used.",
-                    "requested_documents": [],
-                    "decision_hint": "continue_interview",
+def test_runtime_view_sync_does_not_restore_original_stale_document_request() -> None:
+    service = MessageService.__new__(MessageService)
+    service.session_read_model = SimpleNamespace(
+        build_from_record=lambda record: SimpleNamespace(
+            phase_state="interview",
+            runtime_view_state=RuntimeViewState(
+                source_turn_id="turn-assistant-new",
+                source_turn_content=(
+                    "How does this program fit your future plan?"
+                ),
+                decision="continue_interview",
+                governor_decision="continue_interview",
+                public_status="continue_interview",
+                current_focus={
+                    "kind": "interview_question",
+                    "question": "How does this program fit your future plan?",
                 },
+                current_key_question=(
+                    "How does this program fit your future plan?"
+                ),
+                current_key_proof=None,
+                requested_documents=[],
+                remaining_required_documents=["funding_proof"],
+                advisory_context={"missing_evidence": ["funding_proof"]},
             ),
-            {"model": "gpt-5.4"},
         )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
     )
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.AdjudicationAgentRunner.run",
-        lambda self, **kwargs: (_ for _ in ()).throw(
-            ModelRuntimeError(
-                detail="当前对话模型额度已耗尽，请稍后重试或更换可用配置。",
-                status_code=429,
-                provider="openai_compatible",
-                model="gpt-5.4",
-                upstream_code="API_KEY_QUOTA_EXHAUSTED",
-                body={
-                    "code": "API_KEY_QUOTA_EXHAUSTED",
-                    "message": "API key 额度已用完",
-                },
-            )
-        ),
+    record = SimpleNamespace(
+        phase_state="interview",
+        current_focus_json={
+            "kind": "interview_question",
+            "question": "How does this program fit your future plan?",
+        },
     )
-
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I will study computer science."},
-    )
-
-    assert response.status_code == 429
-    detail = response.json()["detail"]
-    assert detail["status"] == 429
-    assert detail["upstream_code"] == "API_KEY_QUOTA_EXHAUSTED"
-    assert "额度已耗尽" in detail["detail"]
-
-    with db_session_factory() as db:
-        turns = db.scalars(
-            select(SessionTurnRecord)
-            .where(SessionTurnRecord.session_id == session_id)
-            .order_by(SessionTurnRecord.turn_index)
-        ).all()
-        record = db.get(SessionRecord, session_id)
-
-    assert turns == []
-    assert record is not None
-    assert not record.runtime_trace_json
-
-
-def test_message_turn_returns_503_when_adjudication_agent_output_is_invalid(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.AgentModelFactory.build",
-        lambda self, module_key, stage_key: (
-            TestModel(
-                call_tools=[],
-                custom_output_args={
-                    "assistant_message": "Why did you choose this school?",
-                    "requested_documents": ["funding_proof"],
-                    "decision_hint": "need_more_evidence",
-                },
-            ),
-            {"model": "gpt-5.4"},
-        )
-        if module_key == "adjudication_agent"
-        else (None, {"model": None}),
+    response = {
+        "assistant_message": "How does this program fit your future plan?",
+        "governor_decision": "continue_interview",
+        "requested_documents": ["funding_proof"],
+        "remaining_required_documents": ["funding_proof"],
+        "turn_decision": {
+            "decision": "need_more_evidence",
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+            "current_key_proof": "funding_proof",
+        },
+        "runtime_view_state": {
+            "source_turn_id": "old-turn",
+            "decision": "need_more_evidence",
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+            "current_key_proof": "funding_proof",
+        },
+        "advisory_context": {"missing_evidence": ["funding_proof"]},
+        "document_review": {},
+        "prompt_trace": {},
+        "agent_runtime": "graph",
+        "selected_public_runtime": "native_interviewer",
+        "runtime_execution": {},
+    }
+    assistant_turn = SimpleNamespace(
+        turn_id="turn-assistant-new",
+        content="How does this program fit your future plan?",
+        metadata_json={},
     )
 
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
+    service._sync_runtime_view_contract(record, response, assistant_turn)
 
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I will study computer science."},
-    )
+    runtime_view_state = assistant_turn.metadata_json["runtime_view_state"]
+    assert response["requested_documents"] == []
+    assert response["remaining_required_documents"] == ["funding_proof"]
+    assert response["turn_decision"]["decision"] == "continue_interview"
+    assert response["turn_decision"]["requested_documents"] == []
+    assert response["turn_decision"]["remaining_required_documents"] == [
+        "funding_proof"
+    ]
+    assert response["turn_decision"]["current_key_proof"] is None
+    assert runtime_view_state["source_turn_id"] == assistant_turn.turn_id
+    assert runtime_view_state["source_turn_content"] == assistant_turn.content
+    assert runtime_view_state["requested_documents"] == []
+    assert runtime_view_state["remaining_required_documents"] == ["funding_proof"]
+    assert runtime_view_state["advisory_context"]["missing_evidence"] == [
+        "funding_proof"
+    ]
+    assert runtime_view_state["current_key_proof"] is None
 
-    assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert detail["status"] == 503
-    assert "模型运行失败" in detail["detail"]
+
 
 
 def test_message_turn_rejects_non_user_role(client: TestClient) -> None:
@@ -2252,8 +2461,8 @@ def test_supporting_funding_upload_does_not_block_interview_flow(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "What school will you attend?",
             "governor_decision": "continue_interview",
@@ -2336,8 +2545,8 @@ def test_fast_upload_does_not_block_next_message_while_parse_is_pending(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "Please explain your travel purpose.",
             "governor_decision": "continue_interview",
@@ -2417,8 +2626,8 @@ def test_helpful_secondary_upload_enters_gate_flow_without_hijacking_primary_foc
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "Please explain your travel purpose.",
             "governor_decision": "continue_interview",
@@ -2506,8 +2715,8 @@ def test_funding_alias_upload_stays_usable_in_followup_messages(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "Please explain your funding plan.",
             "governor_decision": "continue_interview",
@@ -2631,8 +2840,8 @@ def test_gate_progress_reports_ready_uploaded_and_missing_mix(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService.run_turn",
+    install_native_run_turn_stub(
+        monkeypatch,
         lambda self, record, message_text: {
             "assistant_message": "Please explain your study plan.",
             "governor_decision": "continue_interview",
@@ -2732,7 +2941,7 @@ def test_confirmed_fraud_message_triggers_simulated_refusal(
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_fixed_build_question_action(
+    install_native_fixed_interview_response(
         monkeypatch,
         decision="simulated_refusal",
         assistant_message="当前模拟结果为拒签。已确认存在严重材料真实性冲突，本次面签不再继续。",
@@ -2758,137 +2967,12 @@ def test_confirmed_fraud_message_triggers_simulated_refusal(
 
     assert record is not None
     assert record.phase_state == "session_closed"
-
-
-def test_confirmed_record_conflict_stays_in_high_risk_review(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="high_risk_review",
-        assistant_message="当前案例需要先进入高风险复核，正式问答暂时不能继续。",
-    )
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-    profile = ApplicantProfile.minimal(f"profile-{session_id}")
-    score = ScoreState.model_validate(
-        {
-            "score_state_id": "score-record-conflict",
-            "profile_version": 2,
-            "scoring_stage": "interview_turn",
-            "category_fit": 48,
-            "document_readiness": 55,
-            "narrative_consistency": 20,
-            "confidence": 81,
-            "risk_flags": [
-                {
-                    "code": "record_conflict",
-                    "severity": "high",
-                    "status": "confirmed",
-                    "evidence_refs": ["msg:last_user_turn"],
-                }
-            ],
-            "missing_evidence": [],
-        }
-    )
-
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.analyze_turn",
-        lambda self, record, message_text, recent_turns: SimpleNamespace(
-            profile=profile,
-            score=score,
-            trace_entries=[],
-            findings=[],
-        ),
-    )
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I want to explain the inconsistency."},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "high_risk_review"
-    assert payload["governor_decision"] != "simulated_refusal"
-    assert payload["score_summary"] == {}
-
-
-def test_redline_refusal_is_prioritized_when_multiple_confirmed_high_risks_exist(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="simulated_refusal",
-        assistant_message="当前模拟结果为拒签。已确认存在严重红线冲突，本次面签结束。",
-    )
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-    profile = ApplicantProfile.minimal(f"profile-{session_id}")
-    score = ScoreState.model_validate(
-        {
-            "score_state_id": "score-multi-high-risk",
-            "profile_version": 2,
-            "scoring_stage": "interview_turn",
-            "category_fit": 30,
-            "document_readiness": 40,
-            "narrative_consistency": 15,
-            "confidence": 92,
-            "risk_flags": [
-                {
-                    "code": "record_conflict",
-                    "severity": "high",
-                    "status": "confirmed",
-                    "evidence_refs": ["msg:record"],
-                },
-                {
-                    "code": "hard_conflict",
-                    "severity": "high",
-                    "status": "confirmed",
-                    "evidence_refs": ["msg:hard"],
-                },
-            ],
-            "missing_evidence": [],
-        }
-    )
-
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.analyze_turn",
-        lambda self, record, message_text, recent_turns: SimpleNamespace(
-            profile=profile,
-            score=score,
-            trace_entries=[],
-            findings=[
-                {
-                    "finding_type": "hard_conflict",
-                    "severity": "high",
-                    "status": "confirmed",
-                    "evidence_refs": ["msg:hard"],
-                }
-            ],
-        ),
-    )
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I need a final decision."},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "simulated_refusal"
-    assert "模拟拒签" in payload["assistant_message"]
-    assert payload["score_summary"] == {}
-
-
 def test_refusal_session_cannot_continue_with_new_messages(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_fixed_build_question_action(
+    install_native_fixed_interview_response(
         monkeypatch,
         decision="simulated_refusal",
         assistant_message="当前模拟结果为拒签。已确认存在严重材料真实性冲突，本次面签不再继续。",
@@ -2921,328 +3005,12 @@ def test_refusal_session_cannot_continue_with_new_messages(
         ).all()
 
     assert len(turns) == 2
-
-
-def test_message_turn_persists_current_focus_from_interviewer_runtime(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-    profile = ApplicantProfile.minimal(f"profile-{session_id}")
-    score = ScoreState.minimal(profile_version=2, scoring_stage="interview_turn")
-    score.category_fit = 70
-    score.document_readiness = 45
-    score.narrative_consistency = 72
-    score.confidence = 66
-    score.risk_flags = [
-        RiskFlag(
-            code="supporting_evidence_missing",
-            severity="medium",
-            status="supported",
-            evidence_refs=[],
-        )
-    ]
-
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.analyze_turn",
-        lambda self, record, message_text, recent_turns: SimpleNamespace(
-            profile=profile,
-            score=score,
-            trace_entries=[
-                RuntimeTraceEntry(
-                    node_name="receive_input",
-                    summary="user_message_received",
-                ),
-            ],
-            current_focus={"owner": "legacy_runtime", "kind": "decision"},
-            interviewer_state={"owner": "legacy_runtime", "next_action": "need_more_evidence"},
-        ),
-    )
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService._decide_governor",
-        lambda self, record, profile, score, trace_entries, findings=None: {
-            "decision": "continue_interview",
-            "blocked_actions": [],
-            "rationale_refs": [],
-            "requested_documents": [],
-        },
-    )
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns=None: SimpleNamespace(
-            assistant_message="What is the purpose of your travel?",
-            requested_documents=[],
-            decision_hint="continue_interview",
-        ),
-    )
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I want to study computer science."},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["governor_decision"] == "continue_interview"
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-        assert record is not None
-        assert record.current_focus_json == {
-            "owner": "interviewer_runtime_service",
-            "kind": "interview_question",
-            "question": "What is the purpose of your travel?",
-        }
-        assert_interviewer_state_matches_new_contract(
-            record.interviewer_state_json,
-            {
-                "owner": "interviewer_runtime_service",
-                "status": "verify_key_issue",
-                "public_status": "verify_key_issue",
-                "decision": "continue_interview",
-                "governor_decision": "continue_interview",
-            "next_action": "answer_question",
-            "decision_hint": "continue_interview",
-            "current_key_question": "What is the purpose of your travel?",
-            "current_key_proof": None,
-            "current_risk_code": "supporting_evidence_missing",
-            "risk_level": "medium",
-            "allowed_next_actions": [
-                "answer_question",
-                "clarify_key_issue",
-                ],
-                "requested_documents": [],
-                "risk_codes": ["supporting_evidence_missing"],
-                "history_turn_count": 0,
-            },
-        )
-
-
-@pytest.mark.parametrize(
-    ("decision", "score", "action", "expected_focus", "expected_state"),
-    [
-        (
-            "need_more_evidence",
-            ScoreState.model_validate(
-                {
-                    "score_state_id": "score-2-interview_turn",
-                    "profile_version": 2,
-                    "scoring_stage": "interview_turn",
-                    "category_fit": 62,
-                    "document_readiness": 30,
-                    "narrative_consistency": 70,
-                    "confidence": 60,
-                    "risk_flags": [],
-                    "missing_evidence": ["funding_proof"],
-                }
-            ),
-            SimpleNamespace(
-                assistant_message="Please upload funding proof.",
-                requested_documents=["funding_proof"],
-                decision_hint="need_more_evidence",
-            ),
-            {
-                "owner": "interviewer_runtime_service",
-                "kind": "interview_question",
-                "question": "这份材料我看到了。你这次赴美学习什么项目？",
-            },
-            {
-                "owner": "interviewer_runtime_service",
-                "status": "continue_interview",
-                "public_status": "continue_interview",
-                "decision": "continue_interview",
-                "governor_decision": "continue_interview",
-                "next_action": "answer_question",
-                "decision_hint": "continue_interview",
-                "current_key_question": "这份材料我看到了。你这次赴美学习什么项目？",
-                "current_key_proof": None,
-                "current_risk_code": None,
-                "risk_level": "none",
-                "allowed_next_actions": [
-                    "answer_question",
-                    "continue_interview",
-                ],
-                "requested_documents": [],
-                "remaining_required_documents": [],
-                "risk_codes": [],
-                "history_turn_count": 0,
-            },
-        ),
-        (
-            "high_risk_review",
-            ScoreState.model_validate(
-                {
-                    "score_state_id": "score-2-interview_turn",
-                    "profile_version": 2,
-                    "scoring_stage": "interview_turn",
-                    "category_fit": 55,
-                    "document_readiness": 40,
-                    "narrative_consistency": 20,
-                    "confidence": 85,
-                    "risk_flags": [
-                        {
-                            "code": "record_conflict",
-                            "severity": "high",
-                            "status": "confirmed",
-                            "evidence_refs": ["msg:last_user_turn"],
-                        }
-                    ],
-                    "missing_evidence": [],
-                }
-            ),
-            SimpleNamespace(
-                assistant_message="This case needs additional review.",
-                requested_documents=[],
-                decision_hint="high_risk_review",
-            ),
-            {
-                "owner": "interviewer_runtime_service",
-                "kind": "risk_review",
-                "risk_code": "record_conflict",
-            },
-            {
-                "owner": "interviewer_runtime_service",
-                "status": "high_risk_review",
-                "public_status": "high_risk_review",
-                "decision": "high_risk_review",
-                "governor_decision": "high_risk_review",
-                "next_action": "wait_for_review",
-                "decision_hint": "high_risk_review",
-                "current_key_question": None,
-                "current_key_proof": None,
-                "current_risk_code": "record_conflict",
-                "risk_level": "high",
-                "allowed_next_actions": ["wait_for_review"],
-                "requested_documents": [],
-                "risk_codes": ["record_conflict"],
-                "history_turn_count": 0,
-            },
-        ),
-        (
-            "simulated_refusal",
-            ScoreState.model_validate(
-                {
-                    "score_state_id": "score-2-interview_turn",
-                    "profile_version": 2,
-                    "scoring_stage": "interview_turn",
-                    "category_fit": 40,
-                    "document_readiness": 35,
-                    "narrative_consistency": 10,
-                    "confidence": 95,
-                    "risk_flags": [
-                        {
-                            "code": "fraud_admission",
-                            "severity": "high",
-                            "status": "confirmed",
-                            "evidence_refs": ["msg:last_user_turn"],
-                        }
-                    ],
-                    "missing_evidence": [],
-                }
-            ),
-            SimpleNamespace(
-                assistant_message="This simulated case results in refusal.",
-                requested_documents=[],
-                decision_hint="simulated_refusal",
-            ),
-            {
-                "owner": "interviewer_runtime_service",
-                "kind": "refusal",
-                "risk_code": "fraud_admission",
-                "reason": "当前记录已确认存在虚假陈述或伪造材料，系统给出模拟拒签结果，本次会话到此结束。",
-            },
-            {
-                "owner": "interviewer_runtime_service",
-                "status": "simulated_refusal",
-                "public_status": "simulated_refusal",
-                "decision": "simulated_refusal",
-                "governor_decision": "simulated_refusal",
-                "next_action": "review_refusal_result",
-                "decision_hint": "simulated_refusal",
-                "current_key_question": None,
-                "current_key_proof": None,
-                "current_risk_code": "fraud_admission",
-                "risk_level": "high",
-                "allowed_next_actions": ["review_refusal_result"],
-                "requested_documents": [],
-                "risk_codes": ["fraud_admission"],
-                "history_turn_count": 0,
-            },
-        ),
-    ],
-)
-def test_message_turn_persists_owner_state_for_non_continue_decisions(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-    decision: str,
-    score: ScoreState,
-    action: SimpleNamespace,
-    expected_focus: dict,
-    expected_state: dict,
-) -> None:
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-    profile = ApplicantProfile.minimal(f"profile-{session_id}")
-
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.analyze_turn",
-        lambda self, record, message_text, recent_turns: SimpleNamespace(
-            profile=profile,
-            score=score,
-            trace_entries=[
-                RuntimeTraceEntry(
-                    node_name="receive_input",
-                    summary="user_message_received",
-                )
-            ],
-        ),
-    )
-    monkeypatch.setattr(
-        "app.services.interviewer_runtime_service.InterviewerRuntimeService._decide_governor",
-        lambda self, record, profile, score, trace_entries, current_decision=decision, findings=None: {
-            "decision": (
-                "continue_interview"
-                if current_decision == "need_more_evidence"
-                else current_decision
-            ),
-            "blocked_actions": [],
-            "rationale_refs": [],
-            "requested_documents": list(score.missing_evidence),
-        },
-    )
-    monkeypatch.setattr(
-        "app.services.interview_runtime_service.InterviewRuntimeService.build_question_action",
-        lambda self, session_id, profile, score, governor_decision, trace_entries, recent_turns, current_action=action: current_action,
-    )
-
-    response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I need a follow-up decision."},
-    )
-
-    assert response.status_code == 200
-    expected_response_decision = (
-        "continue_interview" if decision == "need_more_evidence" else decision
-    )
-    assert response.json()["governor_decision"] == expected_response_decision
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-        assert record is not None
-        assert record.current_focus_json == expected_focus
-        assert_interviewer_state_matches_new_contract(
-            record.interviewer_state_json,
-            expected_state,
-        )
-
-
 def test_negated_fraud_statement_does_not_trigger_refusal(
     client: TestClient,
     db_session_factory,
     monkeypatch,
 ) -> None:
-    install_fixed_build_question_action(
+    install_native_fixed_interview_response(
         monkeypatch,
         decision="continue_interview",
         assistant_message="What is the purpose of your travel?",
@@ -3260,288 +3028,3 @@ def test_negated_fraud_statement_does_not_trigger_refusal(
     assert response.status_code == 200
     payload = response.json()
     assert payload["governor_decision"] == "continue_interview"
-
-
-def test_hard_conflict_signal_closes_session_and_keeps_first_evidence_ref(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="simulated_refusal",
-        assistant_message="当前模拟结果为拒签。已确认存在严重材料真实性冲突，本次面签不再继续。",
-    )
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-
-    first = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={
-            "role": "user",
-            "content": "I lied about my supporting documents.",
-        },
-    )
-    second = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={
-            "role": "user",
-            "content": "I want to explain my school plan now.",
-        },
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 409
-    assert first.json()["governor_decision"] == "simulated_refusal"
-    assert "拒签" in second.json()["detail"]
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-        turns = db.scalars(
-            select(SessionTurnRecord)
-            .where(SessionTurnRecord.session_id == session_id)
-            .order_by(SessionTurnRecord.turn_index)
-        ).all()
-
-    assert record is not None
-    first_user_turn = turns[0]
-    latest_score_entry = record.score_history_json[-1]
-    hard_conflict = next(
-        flag for flag in latest_score_entry["risk_flags"] if flag["code"] == "hard_conflict"
-    )
-    assert record.profile_json["ds160_view"]["last_user_message"] == (
-        "I lied about my supporting documents."
-    )
-    assert hard_conflict["evidence_refs"] == [f"msg:{first_user_turn.turn_id}"]
-    assert hard_conflict["evidence_refs"] != ["msg:last_user_turn"]
-    assert len(turns) == 2
-
-
-def test_funding_claim_change_keeps_old_statement_and_allows_continue(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="continue_interview",
-        assistant_message="What is the purpose of your travel?",
-    )
-    session_id = seed_ready_for_interview_session(
-        client,
-        db_session_factory,
-        funding_source="self",
-    )
-
-    first = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My parents will pay for my studies."},
-    )
-    second = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "Actually not my parents. I will pay for my education."},
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["governor_decision"] == "continue_interview"
-    assert second.json()["governor_decision"] == "continue_interview"
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-
-    assert record is not None
-    claim_history = record.profile_json["ds160_view"]["funding_claim_history"]
-    assert [item["value"] for item in claim_history] == ["parents", "self"]
-    assert not any(
-        flag["code"] == "record_conflict"
-        for flag in record.score_history_json[-1]["risk_flags"]
-    )
-
-
-def test_repeated_conflicting_funding_explanations_no_longer_auto_raise_high_risk(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="continue_interview",
-        assistant_message="What is the purpose of your travel?",
-    )
-    session_id = seed_ready_for_interview_session(
-        client,
-        db_session_factory,
-        funding_source="self",
-    )
-
-    first = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My parents will pay for my studies."},
-    )
-    second = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My uncle will pay for my studies."},
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["governor_decision"] == "continue_interview"
-    assert second.json()["governor_decision"] == "continue_interview"
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-
-    assert record is not None
-    assert record.interviewer_state_json["status"] != "high_risk_review"
-    assert [item["value"] for item in record.profile_json["ds160_view"]["funding_claim_history"]] == [
-        "parents",
-        "relative",
-    ]
-
-
-def test_evasive_answers_no_longer_accumulate_into_hard_risk_watch(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="continue_interview",
-        assistant_message="Who is funding your education?",
-    )
-    session_id = seed_ready_for_interview_session(client, db_session_factory)
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-        assert record is not None
-        record.current_focus_json = {
-            "owner": "interviewer_runtime_service",
-            "kind": "interview_question",
-            "question": "Who is funding your education?",
-        }
-        db.add(record)
-        db.commit()
-
-    first = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My program is computer science."},
-    )
-    second = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My university is in California."},
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["governor_decision"] == "continue_interview"
-    assert second.json()["governor_decision"] == "continue_interview"
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-
-    assert record is not None
-    assert "risk_watch" not in record.profile_json["ds160_view"]
-
-
-def test_repeated_conflicting_funding_explanations_no_longer_auto_escalate_after_turn_window_rolls(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="continue_interview",
-        assistant_message="What is the purpose of your travel?",
-    )
-    session_id = seed_ready_for_interview_session(
-        client,
-        db_session_factory,
-        funding_source="self",
-    )
-
-    first = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My parents will pay for my studies."},
-    )
-    assert first.status_code == 200
-    assert first.json()["governor_decision"] == "continue_interview"
-
-    for filler in [
-        "I will study computer science.",
-        "My program lasts two years.",
-        "The school is in California.",
-        "I plan to return after graduation.",
-        "I chose this university for research fit.",
-    ]:
-        response = client.post(
-            f"/v1/sessions/{session_id}/messages",
-            json={"role": "user", "content": filler},
-        )
-        assert response.status_code == 200
-
-    final_response = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "My uncle will pay for my studies."},
-    )
-
-    assert final_response.status_code == 200
-    assert final_response.json()["governor_decision"] == "continue_interview"
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-
-    assert record is not None
-    archived_history = record.profile_json["ds160_view"]["field_claim_history"][
-        "/funding/primary_source"
-    ]
-    assert archived_history[0]["value"] == "parents"
-    assert archived_history[-1]["value"] == "relative"
-
-
-def test_missing_key_proof_across_turns_stays_need_more_evidence_without_hard_watch(
-    client: TestClient,
-    db_session_factory,
-    monkeypatch,
-) -> None:
-    install_fixed_build_question_action(
-        monkeypatch,
-        decision="need_more_evidence",
-        assistant_message="Please provide the key supporting document for this point.",
-    )
-    session_id = seed_ready_for_interview_session(
-        client,
-        db_session_factory,
-        funding_source="parents",
-        documented_funding=False,
-    )
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-        assert record is not None
-        record.current_focus_json = {
-            "owner": "interviewer_runtime_service",
-            "kind": "required_document",
-            "document_type": "funding_proof",
-        }
-        db.add(record)
-        db.commit()
-
-    first = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I will upload the funding proof later."},
-    )
-    second = client.post(
-        f"/v1/sessions/{session_id}/messages",
-        json={"role": "user", "content": "I still do not have the bank statement yet."},
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["governor_decision"] == "need_more_evidence"
-    assert second.json()["governor_decision"] == "need_more_evidence"
-
-    with db_session_factory() as db:
-        record = db.get(SessionRecord, session_id)
-
-    assert record is not None
-    assert "risk_watch" not in record.profile_json["ds160_view"]

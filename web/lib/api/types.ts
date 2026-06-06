@@ -355,6 +355,12 @@ export interface MaterialPackageArchiveItem {
   status: MaterialPackageStatus
   status_label: string
   warning?: string | null
+  validation_status?: string | null
+  source_validation_session_id?: string | null
+  demo_template_id?: string | null
+  archive_source_reason?: string | null
+  intent?: string | null
+  visa_family?: string | null
   document_count: number
   document_types: string[]
   documents: MaterialPackageDocument[]
@@ -533,8 +539,10 @@ export interface RequiredPackage {
 export interface MessageResponse {
   assistant_message: string
   governor_decision?: string | null
+  /** 当前轮明确要求用户上传的材料；不要用全局待补材料回填。 */
   requested_documents: string[]
   requested_document_labels: string[]
+  /** 全局仍未解决的必需材料/证据缺口；不等同于当前轮上传请求。 */
   remaining_required_documents: string[]
   remaining_required_document_labels: string[]
   gate_progress?: GateProgress | null
@@ -564,14 +572,20 @@ export interface UserReport {
   risk_level: RiskLevel
   risk_level_label: string
   current_key_question: string
+  /** 当前轮材料焦点；不应从 missing_evidence 或 remaining_required_documents 推导。 */
   current_key_proof?: string | null
   current_key_proof_label?: string | null
   current_risk_code?: string | null
+  /** 报告层证据缺口，用于状态/报告提示，不代表当前轮上传请求。 */
   missing_evidence: MissingEvidence[]
   allowed_next_actions: AllowedAction[]
   recommended_improvements: string[]
+  /** 当前轮明确要求用户上传的材料；报告缺口不能自动回填到这里。 */
   requested_documents: string[]
   requested_document_labels: string[]
+  /** 全局仍未解决材料；用于状态提示，不触发当前轮上传 CTA。 */
+  remaining_required_documents: string[]
+  remaining_required_document_labels: string[]
   case_board?: CaseBoardDelta | null
   advisory_context?: Record<string, unknown>
   prompt_trace?: Record<string, unknown>
@@ -723,8 +737,10 @@ export interface FileUploadResponse {
   evidence_cards: CaseEvidenceCard[]
   case_board_delta?: CaseBoardDelta | null
   caseBoardRefresh?: CaseBoardRefresh | null
+  /** 当前轮上传后主流程明确要求继续补的材料。 */
   requested_documents: string[]
   requested_document_labels: string[]
+  /** 全局仍未解决材料；不等同于当前轮上传请求。 */
   remaining_required_documents: string[]
   remaining_required_document_labels: string[]
   gate_progress?: GateProgress | null
@@ -950,7 +966,9 @@ export interface BackendMessageResponse {
   selected_public_runtime?: string | null
   runtime_execution?: Record<string, unknown>
   governor_decision?: string | null
+  /** Backend contract: current-turn explicit upload request only. */
   requested_documents?: string[]
+  /** Backend contract: unresolved global required documents/evidence. */
   remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null
   score_summary?: Record<string, number>
@@ -998,12 +1016,18 @@ export interface BackendUserReport {
   risk_points?: string[]
   risk_level?: RiskLevel | string
   current_key_question?: string | null
+  /** Current document focus only; not all missing evidence. */
   current_key_proof?: string | null
   current_risk_code?: string | null
   case_board?: BackendCaseBoardDelta | null
+  /** Report-level evidence gaps. */
   missing_evidence?: Array<
     string | { id?: string; code?: string; name?: string; priority?: string }
   >
+  /** Current-turn explicit upload request if backend includes it. */
+  requested_documents?: string[]
+  /** Global unresolved documents/evidence if backend includes it. */
+  remaining_required_documents?: string[]
   allowed_next_actions?: string[]
   recommended_improvements?: string[]
   advisory_context?: Record<string, unknown>
@@ -1155,7 +1179,9 @@ export interface BackendFileUploadResponse {
   case_board_delta?: BackendCaseBoardDelta | null
   case_board_refresh?: BackendCaseBoardRefresh | null
   caseBoardRefresh?: BackendCaseBoardRefresh | null
+  /** Current-turn explicit upload request only. */
   requested_documents?: string[]
+  /** Global unresolved documents/evidence; not a CTA source by itself. */
   remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null
 }

@@ -21,7 +21,6 @@ from app.services.interview_memory_service import (
     INTERVIEW_MEMORY_KEY,
     InterviewMemoryService,
 )
-from app.services.interviewer_runtime_service import InterviewerRuntimeService
 from app.services.native_interviewer_runtime_service import (
     NativeInterviewerRuntimeService,
 )
@@ -54,7 +53,7 @@ class SessionClosedError(RuntimeError):
         super().__init__(detail)
 
 
-PublicRuntimeMode = Literal["legacy", "native_interviewer"]
+PublicRuntimeMode = Literal["native_interviewer"]
 ProviderRetryEventCallback = Callable[[dict], None]
 PROVIDER_RUNTIME_MAX_ATTEMPTS = 3
 _QUOTA_EXHAUSTION_MARKERS = (
@@ -114,7 +113,6 @@ class MessageService:
         self.session_repo = SessionRepository(db)
         self.session_turn_repo = SessionTurnRepository(db)
         self.gate_runtime = GateRuntimeService(db)
-        self.interviewer_runtime = InterviewerRuntimeService(db)
         self.native_interviewer_runtime = NativeInterviewerRuntimeService(db)
         self.session_read_model = SessionReadModelService(db)
         self.case_memory = CaseMemoryService(db)
@@ -291,6 +289,8 @@ class MessageService:
     ) -> SessionTurnRecord | None:
         turns = self.session_turn_repo.list_session_turns(session_id)
         if not turns or turns[-1].role != "user":
+            return None
+        if turns[-1].source == "chat_completions_import":
             return None
         return turns[-1]
 
@@ -477,21 +477,22 @@ class MessageService:
         return False
 
     def _select_public_runtime(self, session_id: str) -> PublicRuntimeMode:
-        if settings.agent_runtime in {"graph", "graph_shadow", "native_interviewer"}:
-            return "native_interviewer"
-        if settings.agent_runtime == "graph_canary":
-            if self._is_graph_canary_selected(session_id):
-                return "native_interviewer"
-        return "legacy"
+        # graph / graph_shadow / graph_canary are compatibility labels until a
+        # future graph promotion task proves a public writer cutover. Legacy is
+        # accepted only as an ignored compatibility value in settings; public
+        # traffic always uses the native canonical runtime.
+        del session_id
+        return "native_interviewer"
 
     def _selected_agent_runtime_label(self, runtime_mode: PublicRuntimeMode) -> str:
-        if runtime_mode != "native_interviewer":
-            return settings.agent_runtime
+        del runtime_mode
         if settings.agent_runtime == "native_interviewer":
             return "native_interviewer"
         if settings.agent_runtime == "graph_shadow":
             return "graph_shadow"
-        return "graph"
+        if settings.agent_runtime in {"graph", "graph_canary"}:
+            return "graph"
+        return "native_interviewer"
 
     def _runtime_execution_payload(
         self,
@@ -500,9 +501,12 @@ class MessageService:
         public_runtime: PublicRuntimeMode,
         execution_runtime: str,
         source: str,
-        fallback_runtime: str | None = None,
         error: dict | None = None,
     ) -> dict:
+        is_native_canonical = (
+            public_runtime == "native_interviewer"
+            and execution_runtime == "native_interviewer_runtime"
+        )
         payload = {
             "schema_version": "runtime.execution.v1",
             "configured_runtime": settings.agent_runtime,
@@ -512,9 +516,14 @@ class MessageService:
             "runtime_engine": execution_runtime,
             "source": source,
             "fail_open_to_legacy": False,
+            "canonical_runtime": "native_interviewer" if is_native_canonical else None,
+            "runtime_role": (
+                "canonical"
+                if is_native_canonical
+                else None
+            ),
+            "canonical": True if is_native_canonical else None,
         }
-        if fallback_runtime:
-            payload["fallback_runtime"] = fallback_runtime
         if error:
             payload["error_type"] = error.get("error_type")
             payload["error_message"] = error.get("error_message")
@@ -795,17 +804,7 @@ class MessageService:
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
 
-        interview_response = self.interviewer_runtime.run_turn(record, message_text)
-        response = self.gate_runtime.merge_interview_response(interview_response, record)
-        response["agent_runtime"] = settings.agent_runtime
-        response["selected_public_runtime"] = "legacy"
-        response["runtime_execution"] = self._runtime_execution_payload(
-            requested_public_runtime="legacy",
-            public_runtime="legacy",
-            execution_runtime="interviewer_runtime_service",
-            source="message_turn",
-        )
-        return response
+        raise RuntimeError(f"unsupported public runtime mode: {runtime_mode}")
 
     def _run_material_change_public_runtime(
         self,
@@ -830,23 +829,7 @@ class MessageService:
             self._apply_graph_response_state(record, response)
             return self.gate_runtime.merge_interview_response(response, record)
 
-        response = self._run_legacy_material_change(record, reason=reason)
-        response["agent_runtime"] = settings.agent_runtime
-        response["selected_public_runtime"] = "legacy"
-        response["runtime_execution"] = self._runtime_execution_payload(
-            requested_public_runtime="legacy",
-            public_runtime="legacy",
-            execution_runtime="interviewer_runtime_service",
-            source="material_change",
-        )
-        return response
-
-    def _run_legacy_material_change(self, record, *, reason: str) -> dict:
-        interview_response = self.interviewer_runtime.refresh_after_material_change(
-            record,
-            reason=reason,
-        )
-        return self.gate_runtime.merge_interview_response(interview_response, record)
+        raise RuntimeError(f"unsupported public runtime mode: {runtime_mode}")
 
     def _graph_material_change_reason(self, reason: str) -> str:
         normalized = reason.strip()
@@ -936,7 +919,7 @@ class MessageService:
         remaining_required_documents = _explicit_list_field(
             response,
             "remaining_required_documents",
-            fallback=requested_documents,
+            fallback=[],
         )
         if requested_documents:
             record.current_focus_json = {
@@ -990,7 +973,7 @@ class MessageService:
             and response.get("selected_public_runtime", "graph") == "graph"
             else "native_interviewer_runtime"
             if response.get("selected_public_runtime") == "native_interviewer"
-            else "interviewer_runtime_service"
+            else "native_interviewer_runtime"
         )
         assistant_turn = self.session_turn_repo.append_assistant_turn(
             session_id=record.session_id,
@@ -1027,7 +1010,6 @@ class MessageService:
         response: dict,
         assistant_turn: SessionTurnRecord,
     ) -> None:
-        original_runtime_view_state = dict(response.get("runtime_view_state", {}) or {})
         read_model = self.session_read_model.build_from_record(record)
         runtime_view_state = RuntimeViewContractService.payload(
             read_model.runtime_view_state
@@ -1094,8 +1076,11 @@ class MessageService:
             response.get("agent_runtime") == "graph"
             or response.get("selected_public_runtime") == "native_interviewer"
         ):
-            graph_runtime_view_state = dict(original_runtime_view_state)
+            graph_runtime_view_state = dict(
+                response.get("runtime_view_state", {}) or {}
+            )
             graph_runtime_view_state["source_turn_id"] = assistant_turn.turn_id
+            graph_runtime_view_state["source_turn_content"] = assistant_turn.content
             graph_runtime_view_state["prompt_trace"] = dict(
                 response.get("prompt_trace", {}) or {}
             )
@@ -1211,10 +1196,10 @@ class MessageService:
                 interviewer_state.get("current_key_question")
                 or current_focus.get("question")
             ),
-            "current_key_proof": (
-                interviewer_state.get("current_key_proof")
-                or current_focus.get("document_type")
-                or (requested_documents[0] if requested_documents else None)
+            "current_key_proof": self._material_refresh_current_key_proof(
+                decision=decision,
+                current_focus=current_focus,
+                requested_documents=requested_documents,
             ),
             "current_risk_code": (
                 interviewer_state.get("current_risk_code")
@@ -1233,6 +1218,24 @@ class MessageService:
             "document_review": dict(response.get("document_review", {}) or {}),
             "prompt_trace": dict(response.get("prompt_trace", {}) or {}),
         }
+
+    def _material_refresh_current_key_proof(
+        self,
+        *,
+        decision: str | None,
+        current_focus: dict,
+        requested_documents: list[str],
+    ) -> str | None:
+        if requested_documents:
+            return requested_documents[0]
+        if decision != "need_more_evidence":
+            return None
+        focus_kind = str(current_focus.get("kind") or "").strip()
+        focus_document_type = current_focus.get("document_type")
+        if focus_kind in {"required_document", "document_request"}:
+            if isinstance(focus_document_type, str) and focus_document_type.strip():
+                return focus_document_type.strip()
+        return None
 
     def _finalize_turn_record(
         self,

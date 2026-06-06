@@ -283,6 +283,17 @@ class ReportService:
     ) -> dict[str, Any]:
         payload = dict(interviewer_state_json or {})
         has_runtime_turn = bool(runtime_view_state.get("source_turn_id"))
+        contract_defaults = {
+            "current_key_question": None,
+            "current_key_proof": None,
+            "current_risk_code": None,
+            "requested_documents": [],
+            "remaining_required_documents": [],
+            "allowed_next_actions": [],
+            "advisory_context": {},
+            "document_review": {},
+            "prompt_trace": {},
+        }
         for key in (
             "decision",
             "governor_decision",
@@ -300,6 +311,8 @@ class ReportService:
             "prompt_trace",
         ):
             if key not in runtime_view_state:
+                if has_runtime_turn and key in contract_defaults:
+                    payload[key] = contract_defaults[key]
                 continue
             value = runtime_view_state.get(key)
             if not has_runtime_turn and value in (None, [], {}):
@@ -364,6 +377,14 @@ class ReportService:
         for document_type in remaining_required_documents:
             if document_type and document_type not in missing_evidence:
                 missing_evidence.append(document_type)
+
+        advisory_context = interviewer_state_json.get("advisory_context", {})
+        if isinstance(advisory_context, dict):
+            for document_type in self._list_payload(
+                advisory_context.get("missing_evidence")
+            ):
+                if document_type and document_type not in missing_evidence:
+                    missing_evidence.append(document_type)
 
         if not has_explicit_document_summary:
             current_key_proof = interviewer_state_json.get("current_key_proof")

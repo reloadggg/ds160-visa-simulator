@@ -530,7 +530,7 @@ def test_reports_api_projects_case_memory_from_material_understanding(
     assert payload["case_board"]["claims"][0]["claim_id"] == "claim-funding"
     assert "用户说自费，但材料显示父母资助。" in payload["risk_points"]
     assert payload["risk_level"] == "high"
-    assert payload["missing_evidence"][0] == "proof-funding-source"
+    assert payload["missing_evidence"][0] == "funding_proof"
     assert "请澄清资金来源。" in payload["recommended_improvements"]
 
 

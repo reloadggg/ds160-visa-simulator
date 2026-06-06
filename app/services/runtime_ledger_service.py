@@ -146,7 +146,6 @@ class RuntimeLedgerService:
         )
         remaining_required_documents = self._remaining_required_documents_from_turn_record(
             turn_record,
-            requested_documents,
         )
         advisory_context = self._latest_event_payload(ledger, LedgerEventType.ADVISORY)
         if not advisory_context:
@@ -537,7 +536,6 @@ class RuntimeLedgerService:
     def _remaining_required_documents_from_turn_record(
         self,
         turn_record: dict[str, Any],
-        requested_documents: list[str],
     ) -> list[str]:
         remaining_required_documents = turn_record.get("remaining_required_documents")
         if isinstance(remaining_required_documents, list):
@@ -546,7 +544,7 @@ class RuntimeLedgerService:
                 for item in remaining_required_documents
                 if isinstance(item, str) and item.strip()
             ]
-        return list(requested_documents)
+        return []
 
     def _document_review_from_turn_record(
         self,

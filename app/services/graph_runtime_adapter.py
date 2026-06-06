@@ -22,19 +22,19 @@ from app.services.agent_runtime_graph import (
 )
 from app.services.case_memory_service import CaseMemoryService
 from app.services.graph_adjudication_node import GraphAdjudicationNode
-from app.services.graph_case_state_builder import GraphCaseStateBuilder
+from app.services.interview_case_state_builder import InterviewCaseStateBuilder
 from app.services.graph_knowledge_plane_service import GraphKnowledgePlaneService
 from app.services.graph_response_mapper import GraphResponseMapper
 
 
 class GraphRuntimeAdapter:
-    """唯一 graph runtime 入口；当前阶段只做 deterministic shadow run。"""
+    """Experimental graph compatibility harness, not the public source of truth."""
 
     def __init__(
         self,
         db: Session,
         *,
-        case_state_builder: GraphCaseStateBuilder | None = None,
+        case_state_builder: InterviewCaseStateBuilder | None = None,
         response_mapper: GraphResponseMapper | None = None,
         adjudication_node: GraphAdjudicationNode | None = None,
         knowledge_plane: GraphKnowledgePlaneService | None = None,
@@ -44,7 +44,7 @@ class GraphRuntimeAdapter:
         self.document_repo = DocumentRepository(db)
         self.evidence_repo = EvidenceRepository(db)
         self.case_memory = CaseMemoryService(db)
-        self.case_state_builder = case_state_builder or GraphCaseStateBuilder()
+        self.case_state_builder = case_state_builder or InterviewCaseStateBuilder()
         self.response_mapper = response_mapper or GraphResponseMapper()
         self.adjudication_node = adjudication_node or GraphAdjudicationNode()
         self.knowledge_plane = knowledge_plane or GraphKnowledgePlaneService()
@@ -114,6 +114,18 @@ class GraphRuntimeAdapter:
         payload = self.response_mapper.to_message_response(state, events)
         payload["graph_runtime_engine"] = "langgraph"
         payload["graph_runtime_engine_class"] = graph.graph_runtime_name
+        payload["runtime_execution"] = {
+            "schema_version": "runtime.execution.v1",
+            "configured_runtime": "graph",
+            "requested_public_runtime": "experimental_graph",
+            "public_runtime": "experimental_graph",
+            "execution_runtime": "graph_runtime_adapter",
+            "runtime_engine": "langgraph",
+            "runtime_engine_class": graph.graph_runtime_name,
+            "source": trigger,
+            "runtime_role": "experimental",
+            "canonical": False,
+        }
         payload["graph_events"] = [
             event.model_dump(mode="json") for event in events
         ]

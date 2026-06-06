@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import DocumentRecord
+from app.domain.document_types import normalize_document_type
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
 from app.services.debug_material_bundle_service import DOCUMENT_TYPE_LABELS
@@ -16,6 +17,32 @@ from app.services.gate_runtime_service import GateRuntimeService
 from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
 from app.services.runtime_errors import ModelRuntimeError
+
+
+VALIDATED_ARCHIVE_SOURCE_REASON = "validated_f1_demo_material_package"
+F1_VALIDATED_PACKAGE_REQUIRED_DOCUMENT_TYPES = (
+    "ds160",
+    "passport_bio",
+    "i20",
+    "admission_letter",
+    "funding_proof",
+    "relationship_proof_between_applicant_and_sponsors",
+)
+
+
+class MaterialPackageNotReadyError(RuntimeError):
+    def __init__(
+        self,
+        package_id: str,
+        *,
+        status: str,
+        warning: str | None,
+    ) -> None:
+        self.package_id = package_id
+        self.status = status
+        self.warning = warning
+        detail = warning or f"Material package {package_id} is not ready to import."
+        super().__init__(detail)
 
 
 class MaterialPackageArchiveService:
@@ -46,6 +73,14 @@ class MaterialPackageArchiveService:
         source_documents = self._group_archived_documents().get(package_id)
         if not source_documents:
             raise LookupError(f"Material package not found: {package_id}")
+
+        status, _status_label, warning = self._package_status(source_documents)
+        if status != "ready":
+            raise MaterialPackageNotReadyError(
+                package_id,
+                status=status,
+                warning=warning,
+            )
 
         imported_bundle_id = f"pkg-import-{uuid4().hex[:12]}"
         imported_documents: list[dict[str, Any]] = []
@@ -120,6 +155,8 @@ class MaterialPackageArchiveService:
                 continue
             if metadata.get("material_package_import"):
                 continue
+            if not self._is_validated_archive_source(metadata):
+                continue
             package_id = self._string_or_none(metadata.get("synthetic_bundle_id"))
             if not package_id:
                 continue
@@ -141,6 +178,15 @@ class MaterialPackageArchiveService:
             for document in documents
         ]
         status, status_label, warning = self._package_status(documents)
+        validation_status = self._string_or_none(
+            first_metadata.get("validation_status")
+        )
+        if status != "ready" and validation_status == "passed":
+            validation_status = "incomplete"
+        if validation_status is None and self._is_validated_archive_source(
+            first_metadata
+        ):
+            validation_status = "passed" if status == "ready" else "incomplete"
         return {
             "package_id": package_id,
             "label": scenario_label or package_id,
@@ -157,6 +203,18 @@ class MaterialPackageArchiveService:
                 for item in document_payloads
                 if item.get("document_type")
             ],
+            "validation_status": validation_status,
+            "source_validation_session_id": self._string_or_none(
+                first_metadata.get("source_validation_session_id")
+            ),
+            "demo_template_id": self._string_or_none(
+                first_metadata.get("demo_template_id")
+            ),
+            "archive_source_reason": self._string_or_none(
+                first_metadata.get("archive_source_reason")
+            ),
+            "intent": self._string_or_none(first_metadata.get("intent")),
+            "visa_family": self._string_or_none(first_metadata.get("visa_family")),
             "documents": document_payloads,
         }
 
@@ -167,12 +225,32 @@ class MaterialPackageArchiveService:
         if not documents:
             return "failed", "失败不可导入", "没有可导入的材料。"
 
+        missing_document_type = [
+            document.filename
+            for document in documents
+            if not self._document_type(document)
+        ]
+        if missing_document_type:
+            return (
+                "partial",
+                "有警告",
+                f"{len(missing_document_type)} 份材料缺少 document_type。",
+            )
+
+        missing_required = self._missing_required_document_types(documents)
+        if missing_required:
+            return (
+                "partial",
+                "有警告",
+                "缺少必要材料类型：" + ", ".join(missing_required),
+            )
+
         incomplete = [
             document.filename
             for document in documents
             if document.status != "parsed"
             or (document.artifact_json or {}).get("understanding_status")
-            not in {"completed", None}
+            != "completed"
         ]
         if incomplete:
             return (
@@ -181,6 +259,61 @@ class MaterialPackageArchiveService:
                 f"{len(incomplete)} 份材料的理解状态不完整。",
             )
         return "ready", "可导入", None
+
+    def _is_validated_archive_source(self, metadata: dict[str, Any]) -> bool:
+        return (
+            metadata.get("archive_source_reason") == VALIDATED_ARCHIVE_SOURCE_REASON
+            or metadata.get("demo_template_archive_source") is True
+        )
+
+    def _missing_required_document_types(
+        self,
+        documents: list[DocumentRecord],
+    ) -> list[str]:
+        required = self._required_document_types_for_package(documents)
+        if not required:
+            return []
+        present = {self._document_type(document) for document in documents}
+        return [
+            document_type
+            for document_type in required
+            if document_type not in present
+        ]
+
+    def _required_document_types_for_package(
+        self,
+        documents: list[DocumentRecord],
+    ) -> tuple[str, ...]:
+        if not documents:
+            return ()
+        first_metadata = self._document_metadata(documents[0])
+        configured = first_metadata.get("required_document_types")
+        if isinstance(configured, list):
+            normalized = tuple(
+                document_type
+                for document_type in (
+                    normalize_document_type(item)
+                    for item in configured
+                    if isinstance(item, str)
+                )
+                if document_type
+            )
+            if normalized:
+                return normalized
+        visa_family = self._string_or_none(first_metadata.get("visa_family"))
+        if visa_family and visa_family.lower() == "f1":
+            return F1_VALIDATED_PACKAGE_REQUIRED_DOCUMENT_TYPES
+        if (
+            first_metadata.get("archive_source_reason")
+            == VALIDATED_ARCHIVE_SOURCE_REASON
+        ):
+            return F1_VALIDATED_PACKAGE_REQUIRED_DOCUMENT_TYPES
+        return ()
+
+    def _document_type(self, document: DocumentRecord) -> str | None:
+        return normalize_document_type(
+            self._string_or_none(self._document_metadata(document).get("document_type"))
+        )
 
     def _copy_document(
         self,

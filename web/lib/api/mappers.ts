@@ -713,13 +713,8 @@ export function mapMessageResponse(
 export function mapUserReport(payload: BackendUserReport): UserReport {
   const currentKeyProof = payload.current_key_proof ?? null
   const caseBoard = mapCaseBoardDelta(payload.case_board)
-  const requestedDocuments = Array.from(
-    new Set(
-      mapMissingEvidence(payload.missing_evidence, currentKeyProof).map(
-        (item) => item.code,
-      ),
-    ),
-  )
+  const requestedDocuments = payload.requested_documents ?? []
+  const remainingRequiredDocuments = payload.remaining_required_documents ?? []
   const riskLevel = normalizeRiskLevel(payload.risk_level)
   const interviewStatus = payload.interview_status ?? "status_pending"
   const interviewResult =
@@ -771,6 +766,9 @@ export function mapUserReport(payload: BackendUserReport): UserReport {
     ),
     requested_documents: requestedDocuments,
     requested_document_labels: requestedDocuments.map(toDocumentLabel),
+    remaining_required_documents: remainingRequiredDocuments,
+    remaining_required_document_labels:
+      remainingRequiredDocuments.map(toDocumentLabel),
     case_board: caseBoard,
     advisory_context: payload.advisory_context,
     prompt_trace: payload.prompt_trace,
