@@ -8,11 +8,15 @@
 
 | 场景 | Base URL | 示例 |
 | --- | --- | --- |
+| 前端产品首页 | Web 根路径 | `GET /` |
+| 前端用户工作台 | Web 路由 | `GET /login` |
+| 前端项目状态页 | Web 路由，读取后端 `/healthz` | `GET /health` |
+| 前端后台入口 | Web 路由 | `GET /admin` |
 | 直接访问后端 FastAPI | `http://localhost:8000/v1` | `GET http://localhost:8000/v1/app-config` |
 | 浏览器经 Next / Nginx 反代 | `/api/v1` | `GET /api/v1/app-config` |
 | 健康检查 / 版本 | 后端根路径 | `GET /healthz`、`GET /version` |
 
-本文示例默认使用直接后端路径 `http://localhost:8000/v1`。如果你从生产前端或 Nginx 入口调用，把 `/v1/...` 替换成 `/api/v1/...` 即可。
+本文示例默认使用直接后端路径 `http://localhost:8000/v1`。如果你从生产前端或 Nginx 入口调用，把 `/v1/...` 替换成 `/api/v1/...` 即可。公开首页 `/` 只负责产品展示和入口组织；真正的授权会话、材料、复盘和调试能力仍在 `/login` 工作台中完成，首页授权弹窗成功后也会进入该工作台。
 
 FastAPI 自动文档在 `/docs`、`/redoc`、`/openapi.json`；生产默认受 `APP_AUTH_PROTECT_DOCS=true` 保护。
 
@@ -282,6 +286,12 @@ Success example:
 ```
 
 注意：当前 public app config 不向普通用户开放 BYOK 和 RAG 状态；后台 DB flag 只用于受控内部 endpoint guard，不代表普通公开能力已开放。
+
+前端使用说明：
+
+- `show_github_link=false` 时，公开首页和 `/health` 状态页都隐藏 GitHub 链接。
+- `show_github_link=true` 时，前端使用 `PROJECT_INFO.githubUrl` 渲染 GitHub 链接，不应在页面里硬编码第二份仓库 URL。
+- 如果 `/v1/app-config` 暂不可用，公开页面按安全默认值处理：隐藏 GitHub 链接，其他入口继续可见。
 
 ### 7.2 Auth
 
