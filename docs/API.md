@@ -2,6 +2,8 @@
 
 这份文档面向要接入或调试 DS-160 AI 面签模拟器的技术读者。它按真实工作流组织 API，而不是按源码文件顺序罗列。所有路径均已按当前 FastAPI 路由、前端 API client 和 integration tests 做过人工核对。
 
+当前公开工作台是 **native-only public runtime**：会话消息、材料上传后的主流程刷新，以及 OpenAI-compatible adapter 最终都执行 `native_interviewer` / `NativeInterviewerRuntimeService`。`legacy` 不是公开 fallback；`graph` / `graph_shadow` / `graph_canary` 只保留为 shadow、eval、兼容标签或未来 promotion 语境。
+
 ## 1. Base URL 与路径约定
 
 | 场景 | Base URL | 示例 |
@@ -20,7 +22,7 @@ FastAPI 自动文档在 `/docs`、`/redoc`、`/openapi.json`；生产默认受 `
 | --- | --- | --- |
 | User / workbench | 普通工作台：登录、会话、消息、材料、报告 | Web Cookie；本地未设置 `APP_AUTH_PASSWORD` 时可关闭 |
 | Admin | 后台登录、access key、运行时模型配置、后台设置、后台 RAG 状态 | Admin Cookie |
-| Debug | runtime snapshot、debug material bundles、runtime trace | 普通或 admin session + debug 开关 |
+| Debug / controlled demo | runtime snapshot、debug material generation、runtime trace；material package archive/list/import 仅用于受控 demo/模板资产 | 普通或 admin session + debug 开关 |
 | OpenAI-compatible | `/v1/chat/completions`、`/v1/responses` 的状态化 DS-160 adapter | Cookie 或 `Authorization: Bearer <APP_COMPAT_API_KEY>` |
 
 ## 3. 认证方式
@@ -35,7 +37,7 @@ Content-Type: application/json
 ```
 
 ```json
-{"password":"user-password-or-access-key"}
+{"password":"<user-password-or-access-key>"}
 ```
 
 成功后后端设置 `HttpOnly` Cookie，并返回：
@@ -58,7 +60,7 @@ Content-Type: application/json
 ```
 
 ```json
-{"password":"admin-password"}
+{"password":"<admin-password>"}
 ```
 
 `ADMIN_AUTH_PASSWORD` 优先；未设置时使用 `APP_AUTH_PASSWORD` 作为后台 fallback。后台登录设置独立的 admin cookie。
@@ -68,16 +70,16 @@ Content-Type: application/json
 外部机器客户端调用 OpenAI-compatible endpoint 时，配置：
 
 ```env
-APP_COMPAT_API_KEY=machine-token
+APP_COMPAT_API_KEY=<machine-api-key>
 ```
 
 请求携带：
 
 ```http
-Authorization: Bearer machine-token
+Authorization: Bearer <machine-api-key>
 ```
 
-当前 middleware 只对以下路径接受 machine bearer token：
+当前 middleware 只对以下路径接受 machine bearer token。文档里的 token 均使用占位符；不要把真实 bearer、access key 或模型 key 写进 Markdown、issue、截图或日志：
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
@@ -99,7 +101,7 @@ Authorization: Bearer machine-token
 ```bash
 curl -i -c cookie.txt \
   -H 'Content-Type: application/json' \
-  -d '{"password":"dev-password"}' \
+  -d '{"password":"<user-password-or-access-key>"}' \
   http://localhost:8000/v1/auth/login
 
 curl -b cookie.txt -c cookie.txt \
@@ -129,7 +131,7 @@ curl -b cookie.txt -c cookie.txt \
 ```bash
 curl -i -c admin.txt \
   -H 'Content-Type: application/json' \
-  -d '{"password":"admin-password"}' \
+  -d '{"password":"<admin-password>"}' \
   http://localhost:8000/v1/admin/login
 
 curl -b admin.txt \
@@ -164,7 +166,7 @@ curl -b admin.txt \
 
 ### 5.3 SSE 事件
 
-消息流和 debug material bundle 都是事件式 SSE，不是 token 级逐字流。
+消息流和 debug material generation 都是事件式 SSE，不是 token 级逐字流。
 
 通用格式：
 
@@ -200,6 +202,12 @@ data: {"assistant_message":"..."}
 - 响应不会回显 API key，只会返回 `base_url`、`model`、`source` 和测试结果。
 
 `GET /v1/sessions/{session_id}/debug/runtime` 返回的是一次只读、redacted 的调试快照，用来观察当前 session 的 runtime、latest turn、timeline、errors、Case Board 和材料理解状态；它不是写入接口，也不是实时订阅。
+
+### 5.6 Public runtime 语义
+
+- 公开请求的 canonical writer 是 `native_interviewer`。即使环境变量仍接受 `graph`、`graph_shadow`、`graph_canary` 或历史值，`/messages` 与材料变更刷新也不应把它们解释成公开 writer 切换。
+- `legacy` 只表示历史/冻结实现或迁移兼容值，不是 native runtime 出错后的普通公开 fallback。native 执行失败时按错误合同返回，不能静默改由 legacy 生成回复。
+- `graph` 相关标签仅用于 replay/eval、shadow 对比、兼容 metadata 或未来单独验证的 promotion 分支；当前生产公开链路不要把它写成与 native 并列的可选 runtime。
 
 ## 6. 错误 payload 与状态码
 
@@ -273,7 +281,7 @@ Success example:
 }
 ```
 
-注意：当前 public app config 不向普通用户开放 BYOK 和 RAG 状态，即使后台 DB flag 可用于 legacy/internal endpoint guard。
+注意：当前 public app config 不向普通用户开放 BYOK 和 RAG 状态；后台 DB flag 只用于受控内部 endpoint guard，不代表普通公开能力已开放。
 
 ### 7.2 Auth
 
@@ -288,7 +296,7 @@ Success example:
 Request:
 
 ```json
-{"password":"user-password-or-access-key"}
+{"password":"<user-password-or-access-key>"}
 ```
 
 Response:
@@ -417,7 +425,7 @@ Important notes:
 - `role` 只接受 `user`；
 - `model_config` 是 `user_model_config` 的兼容 alias；
 - 用户 API key 只在本次请求中使用，不写入后端数据库；
-- native runtime 失败不会静默生成 legacy 回复；错误会按模型运行错误合同返回。
+- `native_interviewer` 失败不会静默生成 legacy 回复；错误会按模型运行错误合同返回。
 
 #### `POST /v1/sessions/{session_id}/messages/stream`
 
@@ -450,8 +458,8 @@ data: {"assistant_message":"...","requested_documents":[]}
 | `POST` | `/v1/sessions/{session_id}/files` | Session access | 上传材料 |
 | `GET` | `/v1/sessions/{session_id}/files/{document_id}/content` | Session access | 预览/下载原始材料内容 |
 | `DELETE` | `/v1/sessions/{session_id}/files/{document_id}` | Session access | tombstone 一份材料 |
-| `GET` | `/v1/material-packages` | Session access + debug material | 列出 debug 材料包存档 |
-| `POST` | `/v1/sessions/{session_id}/material-packages/{package_id}/import` | Session access + debug material | 导入材料包 |
+| `GET` | `/v1/material-packages` | Session access + debug material switch | 列出已验证 material package archive |
+| `POST` | `/v1/sessions/{session_id}/material-packages/{package_id}/import` | Session access + debug material switch | 导入已验证 material package |
 
 #### `POST /v1/sessions/{session_id}/files`
 
@@ -507,24 +515,30 @@ Notes:
 
 #### `GET /v1/material-packages`
 
-列出由 debug material bundle 生成的可复用材料包。该入口用于本地/受控测试环境，公开生产不要开启 debug material。
+列出已发布到 archive 的可复用 material package。当前主要用途是受控 demo/模板资产，例如经过 `scripts/f1_demo_material_package.py validate` 与 `publish` 的 F-1 自洽材料包；它不是让普通公开用户在线生成材料的入口。
+
+边界要分清：
+
+- **material package archive/list/import**：读取和导入已经验证过的模板资产，可用于受控演示、回归验证和客户 demo 初始化。
+- **debug material generation**：`/debug/material-bundles` 和 `/debug/fill-current-gap` 这类本地/受控测试能力，用来生成 synthetic/debug materials；不要作为公开生产用户功能开放。
+- 当前 archive/list/import 仍受 `debug_material_enabled` / `ALLOW_DEBUG_FILL` 保护开关约束；如果关闭，会返回 `403`，这是预期的安全边界。
 
 ```json
 {
   "packages":[
-    {"package_id":"dbg-bundle-abc123","label":"F-1 自洽基准材料包","status":"ready","document_count":6,"document_types":["i20","funding_proof"]}
+    {"package_id":"f1-demo-validated-package","label":"F-1 validated demo package","status":"ready","document_count":6,"document_types":["i20","funding_proof"]}
   ]
 }
 ```
 
 #### `POST /v1/sessions/{session_id}/material-packages/{package_id}/import`
 
-导入材料包并触发材料变更刷新。
+把已验证 material package 复制到目标 session，并触发材料变更刷新。导入后的材料属于目标 session 的材料库；archive 源包本身不会被消费或删除。
 
 ```json
 {
   "session_id":"sess_target",
-  "package_id":"dbg-bundle-abc123",
+  "package_id":"f1-demo-validated-package",
   "imported_bundle_id":"pkg-import-abc123",
   "import_status":"imported",
   "documents":[],
@@ -841,17 +855,17 @@ Failure still returns a structured body instead of raising FastAPI error for mos
 
 ### 7.11 Debug endpoints
 
-Debug endpoints are for local or controlled test environments. Do not enable debug material generation on public production demos unless you intentionally want synthetic material creation and import.
+Debug endpoints 只面向本地或受控测试环境。`debug/runtime` 是只读观测；`debug/material-bundles` 与 `debug/fill-current-gap` 会生成或写入 synthetic/debug materials，不能当成普通公开 demo 用户能力。公开演示如果需要稳定材料，应优先使用已经验证并发布的 material package archive，而不是现场生成 debug material。
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `POST` | `/v1/sessions/{session_id}/debug/fill-current-gap` | Session access + debug material | 用调试场景填当前材料缺口 |
-| `POST` | `/v1/sessions/{session_id}/debug/material-bundles` | Session access + debug material | 非流式生成 synthetic 材料包 |
-| `POST` | `/v1/sessions/{session_id}/debug/material-bundles/stream` | Session access + debug material | SSE 生成 synthetic 材料包 |
+| `POST` | `/v1/sessions/{session_id}/debug/fill-current-gap` | Session access + debug material switch | 用调试场景填当前材料缺口，本地/受控测试专用 |
+| `POST` | `/v1/sessions/{session_id}/debug/material-bundles` | Session access + debug material switch | 非流式生成 synthetic/debug material bundle |
+| `POST` | `/v1/sessions/{session_id}/debug/material-bundles/stream` | Session access + debug material switch | SSE 生成 synthetic/debug material bundle |
 | `GET` | `/v1/sessions/{session_id}/debug/runtime` | Session access + runtime debug | 获取 runtime debug snapshot |
 | `GET` | `/v1/sessions/{session_id}/runtime-traces/{run_id}` | Session access + runtime debug | 获取单个 runtime trace |
 
-Debug 开关来自后台 settings；初始默认值可由 `ALLOW_RUNTIME_DEBUG` / `ALLOW_DEBUG_FILL` 注入。
+Debug 开关来自后台 settings；初始默认值可由 `ALLOW_RUNTIME_DEBUG` / `ALLOW_DEBUG_FILL` 注入。生产公开环境建议保持 debug material 关闭；如为了受控 demo 临时开启，应同时限制访问入口、记录发布窗口，并在演示后关闭。
 
 #### `GET /v1/sessions/{session_id}/debug/runtime`
 
@@ -874,6 +888,8 @@ Response excerpt:
 ```
 
 #### `POST /v1/sessions/{session_id}/debug/material-bundles`
+
+这个接口用于生成 synthetic/debug material bundle。若要沉淀成可复用 demo 模板，需要走离线验证与 publish 流程；不要把一次在线 debug generation 的输出直接称为已验证 material package。
 
 Request:
 
@@ -906,7 +922,7 @@ Response excerpt:
   "bundle_id":"dbg-bundle-abc123",
   "scenario":"school_mismatch_bundle",
   "scenario_label":"学校材料冲突包",
-  "documents":[{"document_id":"doc_1","filename":"debug_i20.txt","document_type":"i20"}],
+  "documents":[{"document_id":"doc_1","filename":"synthetic_i20.txt","document_type":"i20"}],
   "expected_findings":[],
   "assistant_message":"Please clarify the school mismatch.",
   "main_flow_refresh_error":null

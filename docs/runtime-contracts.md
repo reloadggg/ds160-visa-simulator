@@ -1,8 +1,14 @@
 # Runtime Contracts
 
-本文记录当前主线运行时合同，重点是 Gate、LLM 面试官 Agent、Governor、上传和报告之间的职责边界。
+本文记录当前主线运行时合同，重点是 Gate、native public interviewer runtime、Governor、上传和报告之间的职责边界。
 
-## Gate 与 LLM 的边界
+## Public Runtime Boundary
+
+当前公开 writer 只有一个：`native_interviewer` / `NativeInterviewerRuntimeService`。`/messages` 和 public material refresh 都必须写入 `runtime_execution.public_runtime=native_interviewer`、`execution_runtime=native_interviewer_runtime`。
+
+`graph`、`graph_shadow`、`graph_canary` 只保留为 LangGraph-backed shadow/eval/replay 或 compatibility labels；它们不能成为公开 writer。`legacy` 只作为历史/兼容语义存在，不能作为 public writer 或 fail-open fallback。
+
+## Gate 与 Native Interviewer 的边界
 
 Gate 不是面谈主脑，也不负责决定下一句面试官回复。
 
@@ -10,7 +16,7 @@ Gate 不是面谈主脑，也不负责决定下一句面试官回复。
 
 - `GateRuntimeService` 只负责签证家族选择、材料包进度和 `gate_progress`。
 - `MessageService.handle_user_turn()` 只在 `gate_status == family_not_selected` 时返回 Gate response。
-- `pending_documents`、`waiting_for_parse`、最低字段未齐等状态仍必须进入 `InterviewerRuntimeService`。
+- `pending_documents`、`waiting_for_parse`、最低字段未齐等状态仍必须进入 `NativeInterviewerRuntimeService`。
 - 非拒签场景下 `phase_state` 保持 `interview`。
 - `simulated_refusal` 是唯一把 `phase_state` 置为 `session_closed` 的 turn decision。
 
@@ -58,7 +64,7 @@ Gate 不是面谈主脑，也不负责决定下一句面试官回复。
 
 ## 报告合同
 
-用户报告和内部报告以 runtime view / interviewer state 为主：
+用户报告和内部报告以 native runtime view / interviewer state 为主：
 
 - 不因 `phase_state == gate_review` 自动输出“补件审核中”。
 - 不用 Gate primary document 覆盖 `current_key_proof`。
@@ -110,7 +116,7 @@ Correct:
 ```python
 if record.gate_status_json["status"] == "family_not_selected":
     return gate_runtime.build_gate_response(record)
-return interviewer_runtime.run_turn(record, message_text)
+return native_interviewer_runtime.run_turn(record, message_text)
 ```
 
 Wrong:

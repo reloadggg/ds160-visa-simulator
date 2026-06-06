@@ -1,17 +1,19 @@
 # Agent Runtime Cutover Plan
 
 日期：2026-05-24
-状态：v1 可执行上线计划
-目标：用 graph runtime 替换旧 agent-like 主流程，并可安全部署上线
+状态：dated cutover plan；2026-06-06 文档刷新后仅作为历史/设计背景保留
+目标：记录当时从旧 agent-like 主流程收敛 runtime 的计划；当前公开主线已经收敛为 native-only
+
+> **Current status**：当前公开 writer 只有 `native_interviewer` / `NativeInterviewerRuntimeService`。`graph`、`graph_shadow`、`graph_canary` 只保留为 replay/eval、shadow/兼容 metadata 或未来单独验证过的 public promotion 语境；`legacy` 不再是部署 runbook 里的公开 fallback。需要回滚时回滚镜像、提交或配置备份，不通过重新打开 legacy public runtime 掩盖问题。
 
 ## 目标
 
-本计划的终点不是“旁路 graph skeleton 存在”，而是：
+本计划原本用于收敛“多个 runtime/agent-like 层都能写用户可见回复”的复杂度。读这份文档时请按历史 cutover plan 理解：
 
-- `MessageService` 主流程可由 graph runtime 接管。
+- 当前 `MessageService` 公开主流程已由 native interviewer 承担。
 - 前端和 OpenAI-compatible API 保持现有响应字段兼容。
-- 出现 schema、citation、provider、checkpoint 问题时能安全降级或回滚。
-- 线上部署可用环境变量一键切回 legacy。
+- 出现 schema、citation、provider、checkpoint 问题时必须能安全失败、可观测，并通过发布回滚恢复。
+- 线上部署不再把 `legacy` 当成普通运行时回滚开关。
 
 ## 不再接受的旧模式
 
@@ -48,7 +50,7 @@ ResponseMapper  只做旧 API 兼容映射，不改写语义
 | --- | --- | --- |
 | `MessageService` | API transaction boundary | 保留，但只负责 user turn / assistant turn 持久化、runtime 选择、回滚 |
 | `GateRuntimeService` | pre-interview document gate | 暂时保留；后续只输出 gate state，不写面试官语气 |
-| `InterviewerRuntimeService` | legacy runtime | shadow/canary 期间保留，graph 默认后冻结，最后删除 |
+| `InterviewerRuntimeService` | historical legacy runtime | 不再作为 public writer；剩余引用仅用于兼容/删除窗口背景 |
 | `InterviewRuntimeService` | legacy analysis + LLM caller | 拆出可复用 pure functions 后删除主控职责 |
 | `CapabilityOrchestrator` | legacy scattered tool planner | 不迁移；能力拆成 graph nodes 和 `KnowledgePlane` |
 | `InterviewerTurnProjectorService` | legacy projector | 不迁移为 graph 节点；仅抽出 `ResponseMapper` 兼容字段 |
@@ -77,9 +79,9 @@ ResponseMapper  只做旧 API 兼容映射，不改写语义
 ### 可以先保留但冻结
 
 1. `InterviewerRuntimeService`
-   - 已按 `docs/architecture/legacy-runtime-deprecation-decision.md` 冻结。
-   - 仅用于显式 `AGENT_RUNTIME=legacy` 的人工回滚路径，不再加新能力；native 失败不再自动 fail-open 到 legacy。
-   - 生产完成 split Compose + Postgres cutover 后只保留一个发布周期，下一删除窗口移除 live path。
+   - 已按 `docs/architecture/legacy-runtime-deprecation-decision.md` 冻结并降级为历史/兼容语义。
+   - 不再作为 current deployment rollback path；native 失败不能 fail-open 到 legacy。
+   - 后续删除窗口只处理剩余代码/配置兼容面，不代表 legacy 可以继续写 public response。
 2. `RuntimeLedgerService`
    - 继续服务报告和前端兼容，等 graph events 完整后替换。
 3. `GateRuntimeService`
@@ -97,20 +99,20 @@ ResponseMapper  只做旧 API 兼容映射，不改写语义
 
 ## Runtime 模式
 
-新增环境变量：
+历史上该计划讨论过以下配置标签：
 
 ```text
-AGENT_RUNTIME=legacy | native_interviewer | graph_shadow | graph_canary | graph
+AGENT_RUNTIME=native_interviewer | graph_shadow | graph_canary | graph | legacy
 AGENT_RUNTIME_CANARY_PERCENT=0..100
 AGENT_RUNTIME_TRACE_ENABLED=true | false
 ```
 
-语义：
+当前语义：
 
-- `legacy`：当前主流程，graph 不运行。
-- `native_interviewer`：当前默认公开主流程，由 `NativeInterviewerRuntimeService` 写用户可见回复。
+- `native_interviewer`：唯一公开主流程，由 `NativeInterviewerRuntimeService` 写用户可见回复和 public material refresh。
 - `graph_shadow`：历史兼容配置标签；公开请求仍只运行 native interviewer，不再同步旁路运行 graph。
-- `graph_canary` / `graph`：当前保留为历史兼容模式；公开回复仍走 native interviewer，`selected_public_runtime` 必须暴露真实执行路径。
+- `graph_canary` / `graph`：历史兼容标签或未来 promotion 讨论入口；当前公开回复仍走 native interviewer，`selected_public_runtime` / `runtime_execution` 必须暴露真实执行路径。
+- `legacy`：历史/兼容语义，不是当前公开 writer，也不是 deployment rollback runbook。
 
 当前上线默认：
 
@@ -119,7 +121,7 @@ AGENT_RUNTIME=native_interviewer
 AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true
 ```
 
-默认不静默回 legacy；`AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY` 已从运行时 settings 中移除，native 失败应返回错误或由调用方显式处理。需要临时回滚时只能显式设置 `AGENT_RUNTIME=legacy`。`AGENT_RUNTIME=graph` 不再作为新部署默认值；如果后续要让 LangGraph 成为公开 writer，必须单独完成 replay + live smoke + provider 指标验证。
+默认不静默回 legacy；`AGENT_RUNTIME_FAIL_OPEN_TO_LEGACY` 已从运行时 settings 中移除，native 失败应返回错误或由调用方显式处理。需要临时恢复服务时，按部署文档回滚到上一版已验证镜像、配置备份或代码提交。`AGENT_RUNTIME=graph` 不再作为新部署默认值；如果后续要让 LangGraph 成为公开 writer，必须单独完成 replay + live smoke + provider 指标验证。
 
 ## 兼容输出合同
 
@@ -372,23 +374,24 @@ graph 可追加但不能替换的字段：
 回滚：
 
 ```bash
-AGENT_RUNTIME=legacy
-docker compose up -d ds160-api ds160-worker
+# 回滚到上一版已验证镜像/提交/配置备份；不要用 legacy public runtime 掩盖 native 或 graph promotion 错误。
+git checkout <previous-verified-sha>
+docker compose up -d --build ds160-api ds160-web ds160-worker
 ```
 
 停止条件：
 
-- 任一档出现新增 500、重复模板、无法解释冲突、citation 缺失率异常，回滚到上一档。
+- 任一档出现新增 500、重复模板、无法解释冲突、citation 缺失率异常，回滚到上一版已验证发布。
 
-### Phase G - 默认 native interviewer，保留 legacy 回滚
+### Phase G - 默认 native interviewer，移除 legacy public rollback 语义
 
-目标：线上默认 `native_interviewer`，legacy 只作为短期回滚；LangGraph 只在 shadow/eval 或单独 public promotion 任务中接管。
+目标：线上默认 `native_interviewer`；legacy 只作为历史/兼容删除窗口背景，不作为 current rollback path。LangGraph 只在 shadow/eval 或单独 public promotion 任务中接管。
 
 任务：
 
 1. 默认 `.env.example` / compose 设为 `AGENT_RUNTIME=native_interviewer`。
 2. legacy 代码冻结，不再新增能力。
-3. 继续保留 `AGENT_RUNTIME=legacy` 一个发布周期；保留/删除边界以 `docs/architecture/legacy-runtime-deprecation-decision.md` 为准。
+3. 剩余 `AGENT_RUNTIME=legacy` 相关配置/测试/文档只作为删除窗口兼容面处理；边界以 `docs/architecture/legacy-runtime-deprecation-decision.md` 为准。
 4. 删除旧 runtime 前必须有完整 replay + live smoke 证据。
 5. 删除或降级旧复杂组件：
    - `CapabilityOrchestrator` 主流程职责删除。

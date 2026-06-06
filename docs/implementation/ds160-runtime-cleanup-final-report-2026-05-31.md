@@ -1,5 +1,8 @@
 # DS-160 Runtime 清理与生产切换最终报告
 
+> **历史快照说明（2026-06-06 文档刷新）**：本文保留 2026-05-31 runtime cleanup 与生产切换结果的审计证据，不作为当前操作 runbook。当前公开用户链路以 `native_interviewer` 为唯一 public runtime；文中关于 Graph、legacy、combined profile、cutover/rollback 的描述只用于解释当时迁移背景。当前操作说明请优先看 `README.md`、`docs/API.md`、`docs/runtime-contracts.md`、`deploy/README.md` 和相关 architecture runtime 文档。
+
+
 生成时间：2026-05-31  
 分支：`refactor/agent-runtime-graph`  
 生产完成实施 HEAD：`69d9a92 fix: use lightweight worker healthcheck`  

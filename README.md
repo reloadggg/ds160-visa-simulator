@@ -1,52 +1,49 @@
 # DS-160 AI 面签模拟器
 
-> 面向美国非移民签证准备的 AI 面签工作台：用多轮追问、材料理解、Case Board、证据图谱和复盘报告，帮助申请人在正式 DS-160 / 面签前发现叙事缺口、材料冲突和高风险信号。
+> 一个面向美国非移民签证准备的 AI 面签工作台。它把材料理解、签证官式追问、Case Board 和复盘报告放在同一条链路里，帮助申请人在正式填写 DS-160 或进入面签前，先发现自己叙事里的空白、矛盾和高风险点。
 
 ![Architecture](docs/assets/architecture.svg)
 
-## 授权协议：禁止商用
-
-本仓库采用“源码可见、非商业使用”的自定义许可，完整条款见 [LICENSE](LICENSE)。这不是 MIT、Apache、GPL 等开放商用开源协议。
-
-允许：个人学习、研究、教学、内部评估和非商业原型验证；在非商业场景下复制、修改、运行和分发，但必须保留 [LICENSE](LICENSE) 与版权声明。
-
-禁止：未经书面授权用于付费产品、SaaS、咨询交付、商业内部系统、客户项目、商业模型训练、商业数据产品或任何直接/间接营利业务。
-
-如需商业使用、商业部署或商业集成，必须先取得版权所有者的书面商业授权。
-
 ## 这个项目是什么
 
-DS-160 AI 面签模拟器不是普通聊天机器人，也不是“材料齐了才允许聊”的表单系统。它更像一个签证准备工作台：用户选择签证类别后，系统围绕赴美目的、资金来源、学习/工作计划、回国约束、材料证据和 DS-160 叙事一致性持续追问，并把每轮对话和每份材料沉淀为可复盘的 Case Memory / Evidence Graph。
+很多签证准备工具会把问题拆成清单：有没有 I-20、有没有资金证明、有没有行程、有没有工作证明。清单很有用，但真正让申请人焦虑的通常不是“有没有文件”，而是：
 
-适合用于：
+- 我说的故事和材料能不能互相支撑？
+- 面签官追问资金、学习计划、回国约束或家庭关系时，我会不会前后不一致？
+- 哪些信息已经有证据，哪些只是口头说法，哪些地方还需要补材料或澄清？
 
-- 模拟签证官式追问，而不是泛泛闲聊；
-- 上传 I-20、offer、资金证明、关系证明、护照页等材料，并由多模态模型理解可见事实；
-- 通过 Case Board 展示已知事实、证据片段、冲突、待核实点和下一问原因；
-- 接入服务端 RAG，优先引用官方政策、领馆页面和互惠表资料；
-- 生成用户准备报告、内部调试报告、会话导出和复盘报告；
-- 验证 native interviewer runtime、材料理解、Case Memory、RAG、Governor 护栏和前端工作台体验。
+DS-160 AI 面签模拟器就是围绕这些问题做的。它不是普通聊天机器人，也不是材料上传表单；它更像一个可复盘的签证准备桌面：用户先选择签证类别，像真实面签一样回答问题；系统在对话过程中理解上传材料，把材料事实、用户陈述、冲突点和待证明事项沉淀到 Case Memory / Evidence Graph；前端再用 Case Board 把这些状态展示出来，让用户知道“为什么现在问这个问题”和“下一步应该补什么”。
 
-## 主要用户流程
+当前公开用户流程由 `native_interviewer` 负责写入用户可见回复和材料刷新结果。历史 runtime、graph / shadow / eval 相关内容只作为兼容、回放、评估或架构演进语境存在，不是普通用户可以切换的公开面谈模式。
 
-```text
-选择签证类别
-  ↓
-面签式对话：回答问题、补充背景、澄清风险点
-  ↓
-上传材料：PDF / 图片 / 文本材料进入材料理解队列
-  ↓
-Case Board 更新：事实、证据、冲突、证明点、下一步建议
-  ↓
-继续追问或复盘：报告、调试台、导出、后台管理
-```
+## 一次典型使用
 
-工作台中的典型区域：
+用户视角下，它的使用方式很接近一次有记录、有证据板的模拟面谈：
 
-- 左侧：会话历史、材料库、设置、报告和后台入口；
-- 中间：面签问答流，失败消息可保留原文并重试；
-- 右侧：Case Board，展示案例事实、证据、冲突和下一问依据；
-- 后台：access key 发放、会话查看、运行时模型配置、RAG 状态和调试开关。
+1. 选择签证类别，例如 F-1、J-1、B-1/B-2 或 H-1B。
+2. 进入面签式对话，回答赴美目的、资金来源、学习/工作计划、家庭约束和回国安排等问题。
+3. 在系统追问或自己需要补充时上传材料，例如 I-20、offer、资金证明、护照页、关系证明、行程或在职证明。
+4. 等待材料理解完成后，Case Board 会更新已知事实、证据片段、冲突、证明点和下一步建议。
+5. 继续回答追问，直到关键风险被澄清，再生成用户准备报告、内部复盘报告或导出会话。
+
+工作台里通常会看到四块内容：左侧是会话历史、材料库、设置、报告和后台入口；中间是面签问答流，失败消息可以保留原文并重试；右侧是 Case Board，集中展示事实、证据、冲突和下一问依据；后台用于 access key 发放、会话查看、运行时模型配置、RAG 状态和受控调试。
+
+## 为什么材料理解、追问和 Case Board 要放在一起
+
+单独做材料解析，只能告诉用户“文件里写了什么”；单独做聊天，只容易变成泛泛建议；单独做报告，又经常缺少过程证据。这个项目把三者连起来，是为了让准备过程更接近真实面签压力：
+
+- **材料理解**负责把 PDF、图片或文本材料里的可见事实抽出来，文件名只作为审计信息，不能替代内容理解。
+- **面签追问**负责根据当前签证类别、用户回答、材料证据和风险状态继续发问，而不是固定问卷走完就结束。
+- **Case Board**负责把系统“已经知道什么、证据来自哪里、哪里冲突、下一步为什么这样问”摊开给用户和维护者看，避免 LLM 上下文变成不可检查的黑盒。
+
+因此，项目的价值不只是“AI 帮你练习回答”，而是让一次模拟面谈留下结构化状态：后续报告、复盘、材料补充、RAG 引用和调试快照都可以围绕同一份 case state 展开。
+
+## 适合谁使用
+
+- 需要准备美国非移民签证面签、想提前暴露叙事风险的申请人或演示用户。
+- 想验证 F-1 等签证场景材料包、面谈追问和报告链路能否跑通的维护者。
+- 想研究 AI-native case understanding、材料证据图谱、签证政策 RAG 和结构化 runtime 合同的开发者。
+- 想在受控环境里演示“材料 + 对话 + 复盘”闭环的团队。
 
 ## 架构一览
 
@@ -71,7 +68,7 @@ NativeInterviewerRuntimeService
         ├── Typed LLM Runtime
         ├── Visa Policy RAG / Chroma / SiliconFlow
         ├── Governor / Grounding Guard
-        └── Legacy Gate Compatibility Projection
+        └── Gate Compatibility Projection (historical fields only)
 ```
 
 | 层级 | 作用 |
@@ -89,9 +86,9 @@ NativeInterviewerRuntimeService
 
 | 概念 | 简明说明 |
 | --- | --- |
-| Native interviewer runtime | 当前公开主流程。每轮只产生一条用户可见面试官回复，并通过结构化字段给前端、报告和调试台消费。 |
+| Native interviewer runtime | 当前唯一公开面谈主流程。每轮只产生一条用户可见面试官回复，并通过结构化字段给前端、报告和调试台消费。 |
 | Case Memory / Evidence Graph | 长期事实、材料证据、冲突和证明点的持久化来源；LLM 上下文不是最终状态源。 |
-| Case Board | 前端主视图，展示 claims、evidence cards、proof points、conflicts 和 next move。 |
+| Case Board | 前端主视图，展示 claims、evidence cards、proof points、conflicts 和 next move，让用户能看见系统为什么继续追问。 |
 | 材料理解 | 上传文件先保存并进入 `case_understanding` 队列；图片/PDF 由多模态模型理解，文件名只作为审计元数据。 |
 | RAG | 服务端政策知识库能力；使用 Chroma + SiliconFlow embedding/rerank，不由用户 BYOK 配置覆盖。 |
 | Admin console | 后台可以登录、发放 access keys、查看 key 关联会话、调整 demo 设置和测试运行时模型。 |
@@ -101,6 +98,16 @@ NativeInterviewerRuntimeService
 | Runtime debug snapshot | 调试台读取 `GET /v1/sessions/{session_id}/debug/runtime`，返回一次只读快照；敏感字段会被后端 redaction，不应当作写入接口或实时订阅。 |
 
 更深的运行时合同见 [Runtime Contracts](docs/runtime-contracts.md)、[Agent Runtime Spec](docs/architecture/agent-runtime-spec.md) 和 [AI-native Case Understanding Spec](docs/architecture/ai-native-case-understanding-spec.md)。
+
+## 授权协议：禁止商用
+
+本仓库采用“源码可见、非商业使用”的自定义许可，完整条款见 [LICENSE](LICENSE)。这不是 MIT、Apache、GPL 等开放商用开源协议。
+
+允许：个人学习、研究、教学、内部评估和非商业原型验证；在非商业场景下复制、修改、运行和分发，但必须保留 [LICENSE](LICENSE) 与版权声明。
+
+禁止：未经书面授权用于付费产品、SaaS、咨询交付、商业内部系统、客户项目、商业模型训练、商业数据产品或任何直接/间接营利业务。
+
+如需商业使用、商业部署或商业集成，必须先取得版权所有者的书面商业授权。
 
 ## 快速启动
 
@@ -262,6 +269,7 @@ rg -n "/v1/(auth|sessions|admin|rag|model-config|chat|responses)" docs/API.md ap
 
 ## 继续阅读
 
+- [文档导航](docs/README.md)
 - [API Guide](docs/API.md)
 - [Runtime Contracts](docs/runtime-contracts.md)
 - [Agent Runtime Spec](docs/architecture/agent-runtime-spec.md)

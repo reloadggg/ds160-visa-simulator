@@ -1,13 +1,19 @@
 # Agent Runtime Spec
 
 日期：2026-05-24
-状态：v1 草案，可执行合同先行
+状态：v1 草案；当前作为 LangGraph-backed shadow/eval/replay contract，不是 public writer contract
+
+## Current Status
+
+As of 2026-06-06, the only native public runtime is `native_interviewer` / `NativeInterviewerRuntimeService`. `GraphRuntimeAdapter` and official LangGraph execution remain the supported shadow/eval/replay harness and a future public-promotion candidate, but they are not the writer for `/messages` or public material refresh. The historical `legacy` runtime is not a public writer.
+
+The contract below describes the graph runtime shape that replay/shadow/eval must preserve, and the promotion bar if LangGraph is ever proposed as the public writer.
 
 ## 目标
 
-新 agent runtime 的目标不是增加 agent 数量，而是收敛主流程控制权：
+新 agent runtime 的目标不是增加 agent 数量，而是为 graph shadow/eval/replay 收敛主流程控制权：
 
-- live turn 只有一个用户可见回复来源。
+- graph replay/shadow run 只有一个用户可见回复候选来源；当前 live public turn 仍由 native interviewer 写入。
 - 失败能安全停止，并带有可追踪原因。
 - 每个最终回复都能回放 graph state、citation、agent output、guard result。
 
@@ -30,7 +36,7 @@ pgvector        vector search，不绕过权限和生命周期
 
 ## 主控权
 
-`AdjudicationAgent` 是 live turn 唯一 user-facing writer。
+当前 live public writer 是 `NativeInterviewerRuntimeService`。在 graph shadow/eval/replay 内，`AdjudicationAgent` 是唯一 user-facing response candidate writer；只有经过单独 promotion 后，graph 才能接管 public writer。
 
 允许写 `assistant_message` 的来源只有：
 
@@ -47,7 +53,7 @@ pgvector        vector search，不绕过权限和生命周期
 
 ## Simplification Boundary
 
-graph runtime 不迁移旧 agent-like 层级，只迁移业务合同。
+graph runtime 不迁移旧 agent-like 层级，只迁移业务合同；当前迁移目标是 shadow/eval/replay，不改变 native public writer。
 
 保留：
 
@@ -55,7 +61,7 @@ graph runtime 不迁移旧 agent-like 层级，只迁移业务合同。
 - `GateRuntimeService` 作为材料门控状态机。
 - `TurnRecord` 作为兼容 artifact。
 
-替换：
+替换（graph promotion target, not current public runtime）：
 
 - `InterviewerRuntimeService` 主控流程。
 - `InterviewRuntimeService` 内的主控 agent 调用。
@@ -88,7 +94,7 @@ graph runtime 不迁移旧 agent-like 层级，只迁移业务合同。
 
 - 依赖上游 OpenAI-compatible provider 保存 DS-160 会话状态。
 - 只把最后一条 user message 传给主流程而丢弃前文。
-- 让 adapter 绕过 `MessageService` 直接写最终 assistant turn。
+- 让 adapter 绕过 `MessageService` 或 native public runtime contract 直接写最终 assistant turn。
 - 把 imported historical user turns 写成真实 `client_message_id`，导致历史导入占用本轮幂等语义。
 
 本地记忆层由以下部分共同组成：

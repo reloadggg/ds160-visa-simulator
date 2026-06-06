@@ -1,5 +1,7 @@
 # DS-160 Docker 部署说明
 
+这份说明按当前 split-service Docker 部署维护。公开工作台的 runtime 语义是 native-only：用户消息、材料上传后的主流程刷新和 OpenAI-compatible adapter 都以 `native_interviewer` 为 canonical writer。部署时不要把 `legacy` 配成普通 fallback，也不要把 `graph` 当成已上线公开 writer。
+
 ## 端口规划
 
 - 对公网只暴露 `18000/tcp`，由 Docker Nginx 监听。
@@ -120,17 +122,21 @@ TRUNCATE_TARGET=1
 
 ## Agent Runtime
 
-当前公开主流程默认由 native interviewer 接管；`graph` / `graph_canary` 是兼容标签，
-`graph_shadow` 也是兼容标签，不再在公开请求中旁路运行第二套 graph。legacy 只作为显式回滚路径：
+公开生产配置保持 native-only：
 
 ```env
 AGENT_RUNTIME=native_interviewer
 AGENT_RUNTIME_TYPED_ADJUDICATION_ENABLED=true
+AGENT_RUNTIME_CANARY_PERCENT=0
 ```
 
-如需评估 LangGraph，只运行 replay/eval 或专门的 public promotion 分支；不要在生产公开请求里打开并发 shadow。
+语义边界：
 
-切换前后先跑：
+- `native_interviewer` 是当前公开请求的唯一 canonical writer。
+- `legacy` 是历史/冻结实现或迁移兼容语境，不能作为 native 出错后的普通公开 fallback 写进部署 runbook。需要回滚时，应回滚到上一版已验证镜像、配置备份或代码提交，而不是把 `AGENT_RUNTIME` 切到 `legacy`。
+- `graph`、`graph_canary`、`graph_shadow` 只用于 replay/eval、shadow/兼容 metadata，或未来单独验证过的 public promotion 分支；当前公开生产不要打开并发 shadow，也不要把它写成可直接发布的 runtime 选项。
+
+发布或回滚前后至少确认：
 
 ```bash
 docker compose ps
@@ -138,13 +144,23 @@ curl -k https://127.0.0.1:18000/healthz -H "Host: ds160.efastt.store"
 curl -k https://127.0.0.1:18000/api/version -H "Host: ds160.efastt.store"
 ```
 
-回滚命令：
+如果出现新增 500、重复模板、无法解释冲突、citation 缺失率异常、模型连接错误异常升高等问题，优先回滚镜像/提交并保留日志；不要通过启用 legacy 来掩盖 native runtime 错误合同。
 
-```bash
-AGENT_RUNTIME=legacy AGENT_RUNTIME_CANARY_PERCENT=0 docker compose up -d ds160-api ds160-worker
+## Material package 与 debug material 开关
+
+material package archive/list/import 和 debug material generation 共用 `debug_material_enabled` / `ALLOW_DEBUG_FILL` 保护边界，但它们的产品含义不同：
+
+- **material package archive/list/import**：用于受控 demo、模板资产和回归验证。典型来源是已经通过 `scripts/f1_demo_material_package.py validate` 并 `publish` 的 F-1 validated demo package；运行时只把 archive 里的材料复制到目标 session，再触发 native material refresh。
+- **debug material generation**：`/api/v1/sessions/{session_id}/debug/material-bundles`、`/debug/material-bundles/stream`、`/debug/fill-current-gap` 会生成或写入 synthetic/debug materials，只适合本地或受控测试。
+
+生产公开环境建议默认关闭：
+
+```env
+ALLOW_RUNTIME_DEBUG=false
+ALLOW_DEBUG_FILL=false
 ```
 
-出现新增 500、重复模板、无法解释冲突、citation 缺失率异常、fallback 率异常时，直接回滚到 `native_interviewer` 或显式 `legacy`。
+如果受控演示必须临时开放 material package import，请确认入口已被访问控制保护、只使用已验证 archive 包，并在演示窗口结束后关闭 debug material 开关。不要把现场 debug generation 当作公开用户能力，也不要把未验证 bundle 发布为 demo 模板。
 
 ## 本机验证
 

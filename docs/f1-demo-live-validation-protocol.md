@@ -1,9 +1,57 @@
 # F-1 demo live validation protocol
 
-This protocol is the acceptance checklist for the F-1 pass-oriented demo material
-package. It is intentionally live-style: a pass must come from real API calls and
-uploaded PDFs, not from direct debug-bundle persistence or hand-written success
-claims.
+This document defines the executable validation protocol for the F-1 validated
+customer demo material package. Use it when you need a reusable demo/template
+asset that can be shown, imported, and re-run with confidence, rather than a
+hand-written claim that “the demo works”. The package demonstrates a coherent
+F-1 parent-sponsored applicant flow: generated PDF materials are uploaded through
+the public session/file APIs, understood by the material pipeline, exercised
+through interview message turns, and captured through user/internal/export
+reports.
+
+This is intentionally **not** a shortcut for direct debug-bundle persistence. The
+accepted evidence must come from real API traffic and uploaded PDFs. Debug gates
+may be enabled only to collect controlled-environment runtime snapshots and to
+publish the already-validated source session into the material package archive.
+The reusable output is the validated demo material package/template, not the
+debug machinery used to inspect it.
+
+Use this protocol when:
+
+- preparing a customer or maintainer demo that should start from known-good F-1
+  materials;
+- refreshing the archived package after changing material parsing, reporting, or
+  interview behavior;
+- proving a demo template is reusable before documenting it as validated; or
+- investigating drift between uploaded materials, interview answers, and reports.
+
+## Validated package/template identity
+
+Current validated demo identity in this workspace:
+
+- Package id: `demo-f1-parent-sponsored-nyu-mscs-v1`
+- Template id: `f1_parent_sponsored_demo_nyu_mscs_v1`
+- Label: `F-1 留学面签演示材料包（NYU MSCS / 父母资助）`
+- Visa family / intent: `f1` / `pass_oriented_customer_demo`
+
+Strong local evidence artifacts already present:
+
+- `artifacts/f1_demo_validation_live3/run.json` — passed validation run for
+  session `sess-0e51b49cef24`.
+- `artifacts/f1_demo_validation_live3/api-log.json` — request log for the real
+  session, file upload, message, debug, and report API calls.
+- `artifacts/f1_demo_validation_live3/materials/manifest.json` and the six PDFs
+  under `artifacts/f1_demo_validation_live3/materials/` — the rendered material
+  set that was uploaded during validation.
+- `artifacts/f1_demo_validation/package-smoke-testclient-20260606T092445Z/package-smoke.json`
+  — recorded list/import/export smoke for the archived package.
+
+Do not cite older failed validation directories as passed evidence. In
+particular, `artifacts/f1_demo_validation_live/` and
+`artifacts/f1_demo_validation_live2/` are failed attempts. Also distinguish the
+recorded passed TestClient package smoke above from
+`artifacts/f1_demo_validation_live3/package-smoke-20260606T091054Z/package-smoke.json`,
+which records a live-server readiness failure and is not a passed package smoke.
 
 ## Current executable contract
 
@@ -78,11 +126,22 @@ request order into `api-log.json` and embeds the same log in `run.json`:
    - `POST /v1/sessions/{fresh_session_id}/material-packages/{package_id}/import`
    - `GET /v1/sessions/{fresh_session_id}/reports/export`
 
-## Manual list/import/export smoke after publish
+## List/import/export smoke after publish
 
-The runner currently automates `render`, `validate`, and `publish`; list/import
-smoke is still a manual API check. If local auth is enabled, log in first and
-store cookies without printing the password value.
+The `scripts/f1_demo_material_package.py` CLI currently automates `render`,
+`validate`, and `publish`; it does **not** expose a first-class automated
+list/import/export smoke command. Keep the live-server smoke below as the
+replayable manual API check. If local auth is enabled, log in first and store
+cookies without printing the password value.
+
+Current recorded smoke evidence in this workspace is stronger than a TODO but
+must be described precisely: `artifacts/f1_demo_validation/package-smoke-testclient-20260606T092445Z/package-smoke.json`
+records `passed=true` for `GET /v1/material-packages`, fresh `POST /v1/sessions`,
+`POST /v1/sessions/<fresh_session_id>/material-packages/demo-f1-parent-sponsored-nyu-mscs-v1/import`,
+and `GET /v1/sessions/<fresh_session_id>/reports/export`, with six exported
+documents and a passing secret-redaction check. That artifact is a recorded
+TestClient smoke, not a CLI subcommand and not proof that every future live
+server has been smoked.
 
 ```bash
 BASE_URL=http://127.0.0.1:8000 \
@@ -166,19 +225,36 @@ value is `<redacted>`; any real secret value fails the artifact review.
 ## Existing local evidence in this workspace
 
 This workspace already contains live-style artifacts. The strongest current
-local evidence is:
+local validation evidence is:
 
 - `artifacts/f1_demo_validation_live3/run.json`
 - `artifacts/f1_demo_validation_live3/api-log.json`
+- `artifacts/f1_demo_validation_live3/materials/manifest.json`
 
-That run reports `validation.status=passed`, six `POST /files` responses with
-HTTP `202`, five `POST /messages` responses with HTTP `200`, runtime debug and
-user/internal/export reports collected, and zero recorded defects/warnings.
+That run reports `validation.status=passed`, `validation.passed=true`, six
+`POST /files` responses with HTTP `202`, five `POST /messages` responses with
+HTTP `200`, runtime debug and user/internal/export reports collected, six export
+documents, and zero recorded defects/warnings. The material manifest records the
+same package/template identity and six rendered PDFs.
+
+The current recorded package archive smoke is:
+
+- `artifacts/f1_demo_validation/package-smoke-testclient-20260606T092445Z/package-smoke.json`
+
+That smoke records `passed=true`, `package_id=demo-f1-parent-sponsored-nyu-mscs-v1`,
+a ready package summary, a fresh session, successful import, six exported
+documents, and a passing secret-redaction check. Treat it as recorded smoke
+evidence for the package archive surface, while still using the manual live API
+smoke above when validating a newly started backend.
+
 Older directories such as `artifacts/f1_demo_validation_live/` and
 `artifacts/f1_demo_validation_live2/` are failed attempts and must not be cited
-as passed evidence.
+as passed evidence. The live-server package smoke at
+`artifacts/f1_demo_validation_live3/package-smoke-20260606T091054Z/package-smoke.json`
+failed because the server was not ready, so it must not be cited as passed
+list/import/export evidence.
 
-If a future branch or clean checkout does not contain a passed `run.json` and
-matching `api-log.json`, do not claim the template is validated. Regenerate it
-with the commands above, keep the artifact secret-free, and only publish from a
-passed validation session.
+If a future branch or clean checkout does not contain a passed `run.json`,
+matching `api-log.json`, six rendered PDFs, and a passed package smoke artifact,
+do not claim the template is validated. Regenerate it with the commands above,
+keep the artifact secret-free, and only publish from a passed validation session.

@@ -1,5 +1,8 @@
 # DS-160 Runtime 清理与生产切换更新报告
 
+> **历史快照说明（2026-06-06 文档刷新）**：本文是 2026-05-31 中途更新报告，保留当时生产 cutover 尚未完成、SSH/health 超时等现场证据。它不代表当前运行状态，也不应作为恢复或部署步骤执行。当前公开用户链路以 `native_interviewer` 为唯一 public runtime；文中 legacy/Graph/cutover 相关内容仅用于理解历史迁移过程。当前操作说明请优先看 `README.md`、`docs/API.md`、`docs/runtime-contracts.md`、`deploy/README.md` 和相关 architecture runtime 文档。
+
+
 生成时间：2026-05-31
 分支：`refactor/agent-runtime-graph`
 实施基线 HEAD：`2ec63cb fix: add production recovery guardrails`

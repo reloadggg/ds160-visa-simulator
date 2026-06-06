@@ -1,14 +1,17 @@
 # 2026-05-21 美签 RAG Source Manifest（100+ 候选源）
 
+> **Source inventory snapshot（2026-06-06 文档刷新）**：这是一份 2026-05-21 的候选源清单，用于说明当时的 RAG source discovery 范围；它不是“所有 URL 当前可抓取/已入库”的证明，也不是面向用户的操作说明。使用前应重新校验 URL、抓取状态和官方页面更新时间。当前 runtime 行为请以 `docs/runtime-contracts.md` 和 API 文档为准。
+
+
 ## 说明
 
 这份 manifest 的目标不是“每一页都已全文抓取”，而是先把 **可用于 RAG 的 100+ 候选源池** 建起来，供后续批量 ingestion。
 
 状态定义：
 
-- `fetched`：已通过 Exa 拉过正文或做过较完整读取
-- `discovered`：已通过 Exa 检索发现，适合加入后续抓取队列
-- `blocked`：Exa 检索到了 URL，但页面当前返回 technical difficulties / forbidden，后续可重试
+- `fetched`：2026-05-21 已通过 Exa 拉过正文或做过较完整读取
+- `discovered`：2026-05-21 已通过 Exa 检索发现，适合复核后加入后续抓取队列
+- `blocked`：Exa 检索到了 URL，但页面在当时返回 technical difficulties / forbidden，后续需复核后重试
 
 ---
 
@@ -158,9 +161,9 @@
 
 ---
 
-## 建议下一步
+## 后续摄取建议（需重新校验后执行）
 
-### 第一阶段：先抓 30 页正文
+### 第一阶段：复核并抓取 30 页正文
 
 优先顺序：
 
@@ -168,12 +171,12 @@
 2. 联邦官方页中最核心的 10 页
 3. 使领馆差异页里访问量高的 7 页
 
-### 第二阶段：扩到 60-80 页正文
+### 第二阶段：复核后扩到 60-80 页正文
 
 - 批量抓使领馆页
 - 抓更多 USCIS 表单 / checklist / policy manual 子页
 
-### 第三阶段：扩到 100+ 实际文档块
+### 第三阶段：复核后扩到 100+ 实际文档块
 
 - 大规模纳入 `Reciprocity and Civil Documents by Country`
 - 重点国家优先：中印日韩、新加坡、法国、德国、英国、巴西、沙特、南非、土耳其

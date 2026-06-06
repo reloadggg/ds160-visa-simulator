@@ -5,7 +5,7 @@
 
 ## Goal
 
-Replay must prove the product center has moved from Gate readiness to Case Memory.
+Replay must prove the product center has moved from Gate readiness to Case Memory while keeping native interviewer as the only current public writer.
 It should record what the agent knew, which evidence supported it, and why the
 next move was chosen.
 
@@ -50,6 +50,4 @@ These fixtures assert:
 
 ## Eval Boundary
 
-`GraphReplayEvaluator` checks graph output and product-state shape. It does not
-call live LLMs. Live LLM replay may be added later, but should only assert stable
-contract fields and not exact prose.
+`GraphReplayEvaluator` checks LangGraph-backed output and product-state shape for shadow/eval/replay. It does not call live LLMs and does not imply graph is the public writer. Live LLM replay may be added later, but should only assert stable contract fields and not exact prose.

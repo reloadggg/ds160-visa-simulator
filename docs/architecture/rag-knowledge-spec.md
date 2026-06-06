@@ -1,11 +1,13 @@
 # RAG Knowledge Spec
 
 日期：2026-05-24
-状态：v1 草案，可执行合同先行
+状态：v1 implementation contract；2026-06-06 文档刷新后仍作为 RAG/citation 边界
 
 ## 目标
 
 RAG 是知识平面，不是裁判。
+
+当前公开面谈 writer 是 `native_interviewer`。RAG 为 native runtime、报告和后续 eval/replay 提供可引用知识，不拥有用户可见回复，也不直接改变 runtime 选择。
 
 它只回答：
 

@@ -1,5 +1,8 @@
 # Runtime Cleanup Task Audit
 
+> **历史快照说明（2026-06-06 文档刷新）**：本文是 2026-05-30 runtime cleanup A-L 清单审计，保留任务完成状态与证据映射，不是当前 backlog 或 runtime 计划。当前公开用户链路以 `native_interviewer` 为唯一 public runtime；表格中的 legacy 删除窗口、Graph shadow/eval、fallback 可观测性等内容用于解释历史收口过程，不表示 legacy 仍是当前计划的一部分。当前操作说明请优先看 `README.md`、`docs/API.md`、`docs/runtime-contracts.md`、`deploy/README.md` 和相关 architecture runtime 文档。
+
+
 日期：2026-05-30
 
 本文把最初 A-L 清单重新映射到当前代码和验证证据。状态含义：

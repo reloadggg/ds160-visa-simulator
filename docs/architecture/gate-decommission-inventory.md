@@ -1,8 +1,11 @@
 # Legacy Gate Decommission Inventory
 
 日期：2026-05-25
+状态：current compatibility inventory；2026-06-06 文档刷新后继续作为 Gate 字段去留边界
 
 本清单用于收口 AI-native Case Understanding 改造后的旧 Gate 残留。结论是：Gate 可以继续作为兼容投影、迁移桥和旧客户端字段，但不能再是用户能否继续对话、Agent 下一问、上传主反馈或前端主视图的事实源。
+
+当前公开用户回复和材料刷新由 `native_interviewer` 写入。本文出现的 legacy/Gate 字段表示兼容投影或历史字段，不是新的产品事实源。
 
 ## Runtime Ownership
 
@@ -28,7 +31,7 @@
 - `app/workers/parse_worker.py`
   - 只 claim `case_understanding`。
   - 不再消费 `gate_parse` 历史队列。
-  - 解析完成后更新 Material Understanding、Case Memory，并触发 material-change graph refresh。
+  - 解析完成后更新 Material Understanding、Case Memory，并触发 native public material refresh。
 - `app/services/case_memory_service.py`
   - Case Memory 是 claims / evidence / proof points / conflicts 的产品级状态中心。
 - `app/services/graph_case_state_builder.py`
@@ -42,7 +45,7 @@
   - 不拥有用户可见主回复。
 - `app/services/graph_response_mapper.py`
   - 可以投影 `remaining_required_documents` 和 `gate_progress` 给旧前端/API。
-  - 不能改写 graph 的 `assistant_message`。
+  - 不能改写 native/graph 候选回复中的 `assistant_message`。
 - `app/platform/turn_record.py`、`app/platform/runtime_ledger.py`、`app/services/runtime_view_contract_service.py`
   - 保留旧字段用于 trace、ledger、OpenAI-compatible metadata。
   - 字段含义是“本轮建议/兼容摘要”，不是 Gate readiness。

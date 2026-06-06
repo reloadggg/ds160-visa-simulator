@@ -1,5 +1,8 @@
 # Runtime Cleanup Progress Report
 
+> **历史快照说明（2026-06-06 文档刷新）**：本文是 2026-05-29 至 2026-05-30 的阶段实施日志，按时间追加保留了当时的验证、远程审计和迁移尝试。它不作为当前操作说明。当前公开用户链路以 `native_interviewer` 为唯一 public runtime；文中 legacy、Graph、combined container、生产 cutover 的表述均按历史证据保留，不能解读为当前仍计划把 legacy 作为常规运行形态。当前操作说明请优先看 `README.md`、`docs/API.md`、`docs/runtime-contracts.md`、`deploy/README.md` 和相关 architecture runtime 文档。
+
+
 日期：2026-05-29（2026-05-30 继续更新）
 状态：阶段实施报告，非最终完成报告
 

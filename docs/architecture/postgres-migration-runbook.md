@@ -235,9 +235,11 @@ for path in ("healthz", "livez", "version"):
 PY
 ```
 
-Then create one UI session, send one message, upload or generate one debug material
-bundle, and open the runtime debug console. The debug snapshot should show the
-current backend version and runtime metadata without requiring SSH log access.
+Then create one UI session, send one message, and upload one ordinary material
+(or import a previously validated material package in a controlled demo window).
+Only generate debug material in local/controlled testing. Open the runtime debug
+console and confirm the snapshot shows the current backend version and runtime
+metadata without requiring SSH log access.
 
 For Compose, also confirm:
 
