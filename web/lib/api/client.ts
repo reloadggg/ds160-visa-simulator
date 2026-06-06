@@ -2,6 +2,8 @@ import { buildApiUrl } from "./config"
 import {
   mapFileUploadResponse,
   mapInterviewReviewResponse,
+  mapMaterialPackageImportResponse,
+  mapMaterialPackageListResponse,
   mapMessageResponse,
   mapRequiredPackage,
   mapSession,
@@ -631,7 +633,9 @@ export async function listMaterialPackages(): Promise<MaterialPackageListRespons
   const response = await apiFetch(buildApiUrl("/v1/material-packages"), {
     headers: getAuthHeaders(),
   })
-  return handleResponse<MaterialPackageListResponse>(response)
+  return mapMaterialPackageListResponse(
+    await handleResponse<MaterialPackageListResponse>(response),
+  )
 }
 
 export async function importMaterialPackage(
@@ -647,7 +651,9 @@ export async function importMaterialPackage(
       headers: getAuthHeaders("application/json"),
     },
   )
-  return handleResponse<MaterialPackageImportResponse>(response)
+  return mapMaterialPackageImportResponse(
+    await handleResponse<MaterialPackageImportResponse>(response),
+  )
 }
 
 export async function uploadFile(

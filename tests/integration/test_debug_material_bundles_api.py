@@ -464,6 +464,47 @@ def test_material_package_archive_lists_and_imports_only_validated_archive(
     assert import_payload["imported_bundle_id"] not in listed_package_ids
 
 
+def test_material_package_archive_rejects_debug_bundle_without_validation_session(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
+    source_session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    source_session_id = source_session_resp.json()["session_id"]
+
+    bundle_response = client.post(
+        f"/v1/sessions/{source_session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
+    )
+
+    assert bundle_response.status_code == 200
+    package_id = bundle_response.json()["bundle_id"]
+    with db_session_factory() as db:
+        documents = db.query(DocumentRecord).filter_by(session_id=source_session_id).all()
+        for document in documents:
+            artifact = dict(document.artifact_json or {})
+            metadata = dict(artifact.get("metadata") or {})
+            metadata.update(
+                {
+                    "debug_material_bundle": True,
+                    "synthetic_bundle_id": package_id,
+                    "demo_template_archive_source": True,
+                    "archive_source_reason": "validated_f1_demo_material_package",
+                    "validation_status": "passed",
+                }
+            )
+            artifact["metadata"] = metadata
+            document.artifact_json = artifact
+        db.commit()
+
+    list_response = client.get("/v1/material-packages")
+
+    assert list_response.status_code == 200
+    assert list_response.json()["packages"] == []
+
+
 def test_material_package_import_rejects_partial_validated_archive(
     client: TestClient,
     db_session_factory,

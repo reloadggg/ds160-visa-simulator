@@ -183,8 +183,16 @@ def test_render_materials_creates_six_pdf_documents_without_debug_or_placeholder
 
     rendered = manifest["rendered_documents"]
     assert [item["document_type"] for item in rendered] == list(REQUIRED_DOCUMENT_TYPES)
+    assert len(rendered) == 6
     assert manifest["template"]["label"] == PACKAGE_LABEL
     assert "自洽" not in manifest["template"]["label"]
+    assert manifest["template"]["expected_facts"] == DEMO_TEMPLATE.expected_facts
+    assert manifest["template"]["applicant_answers"] == list(DEMO_TEMPLATE.applicant_answers)
+    manifest_text = json.dumps(manifest, ensure_ascii=False).lower()
+    assert "placeholder" not in manifest_text
+    assert "oracle" not in manifest_text
+    assert "debug_bundle" not in manifest_text
+    assert "debug material" not in manifest_text
 
     for item in rendered:
         pdf_path = Path(item["path"])
@@ -200,6 +208,131 @@ def test_render_materials_creates_six_pdf_documents_without_debug_or_placeholder
         assert "oracle" not in lowered
         assert "自洽" not in text
         assert "{{" not in text and "}}" not in text
+
+
+def test_validate_cli_runs_full_api_sequence_and_writes_secret_free_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "unit-test-access-secret"
+    monkeypatch.setenv("APP_AUTH_PASSWORD", secret)
+    real_client_class = httpx.Client
+    calls: list[tuple[str, str]] = []
+    uploaded_document_types: list[str] = []
+    message_count = 0
+
+    def completed_export_payload() -> dict:
+        return {
+            "documents": [
+                {
+                    "filename": definition.filename,
+                    "status": "parsed",
+                    "artifact": {
+                        "document_type": definition.document_type,
+                        "understanding_status": "completed",
+                        "metadata": {"document_type": definition.document_type},
+                    },
+                }
+                for definition in DEMO_TEMPLATE.documents
+            ]
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal message_count
+        path = request.url.path
+        calls.append((request.method, path))
+        if request.method == "POST" and path == "/v1/auth/login":
+            assert secret.encode() in request.content
+            return httpx.Response(200, json={"authenticated": True})
+        if request.method == "POST" and path == "/v1/sessions":
+            return httpx.Response(201, json={"session_id": "sess-cli-full-flow"})
+        if request.method == "POST" and path == "/v1/sessions/sess-cli-full-flow/files":
+            body = request.content.decode("latin1")
+            matched_type = next(
+                definition.document_type
+                for definition in DEMO_TEMPLATE.documents
+                if f'name="document_type"\r\n\r\n{definition.document_type}' in body
+            )
+            uploaded_document_types.append(matched_type)
+            return httpx.Response(202, json={"document_id": f"doc-{matched_type}"})
+        if request.method == "GET" and path == "/v1/sessions/sess-cli-full-flow/reports/export":
+            return httpx.Response(200, json=completed_export_payload())
+        if request.method == "POST" and path == "/v1/sessions/sess-cli-full-flow/messages":
+            message_count += 1
+            return httpx.Response(
+                200,
+                json={
+                    "governor_decision": "continue_interview",
+                    "assistant_message": f"F-1 interview follow-up {message_count}: please clarify one visa-relevant point.",
+                    "requested_documents": [],
+                    "remaining_required_documents": [],
+                },
+            )
+        if request.method == "GET" and path == "/v1/sessions/sess-cli-full-flow/debug/runtime":
+            return httpx.Response(
+                200,
+                json={
+                    "runtime_view_state": {
+                        "governor_decision": "continue_interview",
+                        "advisory_context": {"missing_evidence": []},
+                    }
+                },
+            )
+        if request.method == "GET" and path == "/v1/sessions/sess-cli-full-flow/reports/user":
+            return httpx.Response(200, json={"governor_decision": "continue_interview"})
+        if request.method == "GET" and path == "/v1/sessions/sess-cli-full-flow/reports/internal":
+            return httpx.Response(
+                200,
+                json={
+                    "turn_decision": {"governor_decision": "continue_interview"},
+                    "runtime_view_state": {"advisory_context": {"missing_evidence": []}},
+                },
+            )
+        if request.method == "GET" and path == "/v1/sessions/sess-cli-full-flow/messages":
+            return httpx.Response(200, json={"messages": []})
+        return httpx.Response(500, json={"unexpected": f"{request.method} {path}"})
+
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client_class(*args, **kwargs)
+
+    monkeypatch.setattr(f1_demo_tool.httpx, "Client", client_factory)
+
+    exit_code = main(
+        [
+            "validate",
+            "--base-url",
+            "http://api.test",
+            "--artifact-dir",
+            str(tmp_path),
+            "--timeout-seconds",
+            "5",
+            "--poll-seconds",
+            "0",
+        ]
+    )
+
+    assert exit_code == 0
+    assert uploaded_document_types == list(REQUIRED_DOCUMENT_TYPES)
+    assert calls.count(("POST", "/v1/sessions/sess-cli-full-flow/messages")) == 5
+    assert ("GET", "/v1/sessions/sess-cli-full-flow/debug/runtime") in calls
+    assert ("GET", "/v1/sessions/sess-cli-full-flow/reports/user") in calls
+    assert ("GET", "/v1/sessions/sess-cli-full-flow/reports/internal") in calls
+    assert ("GET", "/v1/sessions/sess-cli-full-flow/reports/export") in calls
+    assert ("GET", "/v1/sessions/sess-cli-full-flow/messages") in calls
+
+    run_payload = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
+    api_log = json.loads((tmp_path / "api-log.json").read_text(encoding="utf-8"))
+    assert run_payload["validation"]["passed"] is True
+    assert run_payload["session_id"] == "sess-cli-full-flow"
+    assert len(run_payload["uploads"]) == len(REQUIRED_DOCUMENT_TYPES)
+    assert len(run_payload["message_turns"]) == 5
+    assert any(entry["request"].get("purpose") == "poll_material_understanding" for entry in api_log)
+    assert any(entry["request"].get("purpose") == "final_export" for entry in api_log)
+    assert secret not in (tmp_path / "run.json").read_text(encoding="utf-8")
+    assert secret not in (tmp_path / "api-log.json").read_text(encoding="utf-8")
 
 
 def test_validation_payload_requires_real_uploads_completed_materials_and_five_turns() -> None:
@@ -485,6 +618,14 @@ def test_publish_validated_archive_creates_listable_source_package(tmp_path: Pat
             assert packages[0]["label"] == PACKAGE_LABEL
             assert packages[0]["status"] == "ready"
             assert packages[0]["document_count"] == len(REQUIRED_DOCUMENT_TYPES)
+            assert packages[0]["visa_family"] == "f1"
+            assert packages[0]["validation_status"] == "passed"
+            assert packages[0]["source_validation_session_id"] == "sess-validated"
+            assert packages[0]["demo_template_id"] == DEFAULT_TEMPLATE_ID
+            assert (
+                packages[0]["archive_source_reason"]
+                == "validated_f1_demo_material_package"
+            )
             assert "自洽" not in json.dumps(packages[0], ensure_ascii=False)
     finally:
         Base.metadata.drop_all(bind=engine)

@@ -348,6 +348,8 @@ export interface MaterialPackageDocument {
 export interface MaterialPackageArchiveItem {
   package_id: string
   label: string
+  template_id?: string | null
+  template_label?: string | null
   scenario?: string | null
   scenario_label?: string | null
   source_session_id?: string | null
@@ -361,6 +363,8 @@ export interface MaterialPackageArchiveItem {
   archive_source_reason?: string | null
   intent?: string | null
   visa_family?: string | null
+  is_validated_template?: boolean
+  is_importable?: boolean
   document_count: number
   document_types: string[]
   documents: MaterialPackageDocument[]
@@ -854,6 +858,8 @@ export interface UploadedMaterial {
   fields?: Record<string, string>
   synthetic_bundle_id?: string | null
   debug_bundle_scenario?: string | null
+  material_package_id?: string | null
+  material_package_source?: string | null
   expected_findings?: DebugBundleExpectedFinding[]
 }
 

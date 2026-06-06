@@ -32,6 +32,10 @@ import type {
   FileUploadResponse,
   InterviewReviewResponse,
   GateProgress,
+  MaterialPackageArchiveItem,
+  MaterialPackageDocument,
+  MaterialPackageImportResponse,
+  MaterialPackageListResponse,
   MessageResponse,
   MissingEvidence,
   PublicReasoning,
@@ -88,6 +92,35 @@ const DOCUMENT_LABELS: Record<string, string> = {
   bank_statement: "银行流水",
   sponsor_letter: "资助说明信",
   scholarship_letter: "奖学金证明",
+}
+
+const VALIDATED_MATERIAL_PACKAGE_SOURCE_REASON =
+  "validated_f1_demo_material_package"
+const VALIDATED_F1_TEMPLATE_ID = "f1_parent_sponsored_consistent_v1"
+
+export function isValidatedMaterialTemplatePackage(
+  item: Pick<
+    MaterialPackageArchiveItem,
+    | "validation_status"
+    | "archive_source_reason"
+    | "demo_template_id"
+    | "template_id"
+    | "is_validated_template"
+  >,
+): boolean {
+  return Boolean(
+    item.is_validated_template ||
+      item.validation_status === "passed" ||
+      item.archive_source_reason === VALIDATED_MATERIAL_PACKAGE_SOURCE_REASON ||
+      item.demo_template_id === VALIDATED_F1_TEMPLATE_ID ||
+      item.template_id === VALIDATED_F1_TEMPLATE_ID,
+  )
+}
+
+export function isImportableMaterialPackage(
+  item: Pick<MaterialPackageArchiveItem, "status" | "is_importable">,
+): boolean {
+  return item.is_importable ?? item.status === "ready"
 }
 
 const INTERVIEW_STATUS_LABELS: Record<string, string> = {
@@ -598,6 +631,84 @@ function compactMapped<TInput, TOutput>(
   mapper: (value: TInput) => TOutput | null,
 ): TOutput[] {
   return (values ?? []).map(mapper).filter((value): value is TOutput => value !== null)
+}
+
+export function mapMaterialPackageDocument(
+  document: MaterialPackageDocument,
+): MaterialPackageDocument {
+  return {
+    ...document,
+    document_type: document.document_type ?? null,
+    document_type_label:
+      document.document_type_label ??
+      nullableDocumentLabel(document.document_type),
+    content_url: document.content_url ?? null,
+    status: document.status ?? null,
+    understanding_status: document.understanding_status ?? null,
+    raw_text: document.raw_text ?? null,
+    fields: document.fields ?? {},
+  }
+}
+
+export function mapMaterialPackageArchiveItem(
+  item: MaterialPackageArchiveItem,
+): MaterialPackageArchiveItem {
+  const templateId = firstNonEmptyText(item.template_id, item.demo_template_id)
+  const templateLabel = humanizeBackendText(item.template_label) || null
+  const documents = compactMapped(item.documents, mapMaterialPackageDocument)
+  const nextItem: MaterialPackageArchiveItem = {
+    ...item,
+    label:
+      humanizeBackendText(templateLabel ?? item.label) ||
+      item.package_id,
+    template_id: templateId,
+    template_label: templateLabel,
+    scenario: item.scenario ?? null,
+    scenario_label: item.scenario_label ?? null,
+    source_session_id: item.source_session_id ?? null,
+    created_at: item.created_at ?? null,
+    warning: humanizeBackendText(item.warning) || null,
+    validation_status: item.validation_status ?? null,
+    source_validation_session_id: item.source_validation_session_id ?? null,
+    demo_template_id: item.demo_template_id ?? null,
+    archive_source_reason: item.archive_source_reason ?? null,
+    intent: item.intent ?? null,
+    visa_family: item.visa_family ?? null,
+    document_count: item.document_count ?? documents.length,
+    document_types: normalizeStringList(item.document_types),
+    documents,
+  }
+  return {
+    ...nextItem,
+    is_validated_template: isValidatedMaterialTemplatePackage(nextItem),
+    is_importable: isImportableMaterialPackage(nextItem),
+  }
+}
+
+export function mapMaterialPackageListResponse(
+  payload: MaterialPackageListResponse,
+): MaterialPackageListResponse {
+  return {
+    packages: compactMapped(payload.packages, mapMaterialPackageArchiveItem),
+  }
+}
+
+export function mapMaterialPackageImportResponse(
+  payload: MaterialPackageImportResponse,
+): MaterialPackageImportResponse {
+  const requestedDocuments = payload.requested_documents ?? []
+  const remainingRequiredDocuments = payload.remaining_required_documents ?? []
+  return {
+    ...payload,
+    documents: compactMapped(payload.documents, mapMaterialPackageDocument),
+    assistant_message: humanizeBackendText(payload.assistant_message) || null,
+    governor_decision: payload.governor_decision ?? null,
+    requested_documents: requestedDocuments,
+    remaining_required_documents: remainingRequiredDocuments,
+    phase_state: payload.phase_state,
+    gate_status: payload.gate_status ?? null,
+    main_flow_refresh_error: payload.main_flow_refresh_error ?? null,
+  }
 }
 
 function mapCaseBoardDelta(

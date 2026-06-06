@@ -418,14 +418,15 @@ function materialPackageDocumentToMaterial(
       document.document_type_label ??
       (document.document_type ? toDocumentLabel(document.document_type) : null),
     relevance: "high",
-    feedback_message: `存档材料包 / ${result.package_id}`,
+    feedback_message: `material package archive / ${result.package_id}`,
     requested_document_labels: [],
     current_focus_document_label: null,
     counts_toward_gate: true,
     raw_text: rawText,
     fields: document.fields ?? {},
-    synthetic_bundle_id: result.imported_bundle_id,
-    debug_bundle_scenario: "material_package_import",
+    synthetic_bundle_id: null,
+    material_package_id: result.package_id,
+    material_package_source: "archive_import",
   }
 }
 
@@ -1912,6 +1913,16 @@ export function useSessionWorkbench() {
     }
   }, [getErrorMessage, mockMode])
 
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshMaterialPackages()
+    }, 0)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [refreshMaterialPackages])
+
   const refreshRagStatus = useCallback(async () => {
     if (mockMode) {
       setRagStatus({
@@ -3302,19 +3313,21 @@ export function useSessionWorkbench() {
     async (packageId: string) => {
       if (!sessionId || isImportingMaterialPackage) {
         setSettingsFeedback(
-          !sessionId ? "当前没有可导入材料包的会话。" : "材料包正在导入中。",
+          !sessionId
+            ? "当前没有可导入 material package 的会话。"
+            : "material package 正在导入中。",
         )
         return
       }
       if (mockMode) {
-        setSettingsFeedback("Mock 模式不导入后端材料包。")
+        setSettingsFeedback("Mock 模式不导入后端 material package。")
         return
       }
 
       setIsImportingMaterialPackage(true)
       const progressMessageId = appendActivityEvent({
-        kind: "debug",
-        content: "正在导入已验证案例包...",
+        kind: "upload",
+        content: "正在导入 validated template / case package...",
         status: "sending",
       })
       try {
@@ -3324,7 +3337,7 @@ export function useSessionWorkbench() {
         if (importWarning) {
           updateActivityEventContent(
             progressMessageId,
-            `案例包导入未完全成功：${importWarning}`,
+            `case package 导入未完全成功：${importWarning}`,
           )
         }
         setUploadedMaterials((prev) => {
@@ -3352,10 +3365,10 @@ export function useSessionWorkbench() {
             : prev,
         )
         appendActivityEvent({
-          kind: importWarning ? "error" : "debug",
+          kind: importWarning ? "error" : "upload",
           content: importWarning
-            ? `案例包已复制 ${result.documents.length} 份材料，但存在风险：${importWarning}`
-            : `已导入已验证案例包：${result.documents.length} 份材料。`,
+            ? `case package 已复制 ${result.documents.length} 份材料，但存在风险：${importWarning}`
+            : `已导入 validated template / case package：${result.documents.length} 份材料。`,
           status: importWarning ? "error" : "sent",
         })
         if (result.assistant_message) {
@@ -3373,13 +3386,13 @@ export function useSessionWorkbench() {
         await refreshRuntimeDebugSnapshot(sessionId)
         await refreshMaterialPackages()
         if (importWarning) {
-          setSettingsFeedback(`案例包导入需要处理：${importWarning}`)
+          setSettingsFeedback(`case package 导入需要处理：${importWarning}`)
         } else {
-          setSettingsFeedback("已验证案例包已导入当前会话。")
+          setSettingsFeedback("validated template / case package 已导入当前会话。")
         }
       } catch (error) {
         updateActivityEventStatus(progressMessageId, "error")
-        setSettingsFeedback(getErrorMessage(error, "导入材料包失败。"))
+        setSettingsFeedback(getErrorMessage(error, "导入 material package 失败。"))
       } finally {
         setIsImportingMaterialPackage(false)
       }

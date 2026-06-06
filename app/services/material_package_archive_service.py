@@ -173,6 +173,9 @@ class MaterialPackageArchiveService:
         scenario_label = self._string_or_none(
             first_metadata.get("debug_bundle_scenario_label")
         )
+        visa_family = self._string_or_none(first_metadata.get("visa_family"))
+        if visa_family is None:
+            visa_family = self._source_session_visa_family(documents)
         document_payloads = [
             self._document_payload(document, include_raw_text=False)
             for document in documents
@@ -214,7 +217,7 @@ class MaterialPackageArchiveService:
                 first_metadata.get("archive_source_reason")
             ),
             "intent": self._string_or_none(first_metadata.get("intent")),
-            "visa_family": self._string_or_none(first_metadata.get("visa_family")),
+            "visa_family": visa_family,
             "documents": document_payloads,
         }
 
@@ -261,10 +264,11 @@ class MaterialPackageArchiveService:
         return "ready", "可导入", None
 
     def _is_validated_archive_source(self, metadata: dict[str, Any]) -> bool:
-        return (
-            metadata.get("archive_source_reason") == VALIDATED_ARCHIVE_SOURCE_REASON
-            or metadata.get("demo_template_archive_source") is True
-        )
+        if self._string_or_none(metadata.get("source_validation_session_id")) is None:
+            return False
+        if metadata.get("archive_source_reason") == VALIDATED_ARCHIVE_SOURCE_REASON:
+            return True
+        return metadata.get("demo_template_archive_source") is True
 
     def _missing_required_document_types(
         self,
@@ -505,6 +509,20 @@ class MaterialPackageArchiveService:
         if "document_type" not in metadata and artifact.get("document_type"):
             metadata["document_type"] = artifact.get("document_type")
         return metadata
+
+    def _source_session_visa_family(
+        self,
+        documents: list[DocumentRecord],
+    ) -> str | None:
+        session_id = (
+            self._string_or_none(documents[0].session_id) if documents else None
+        )
+        if session_id is None:
+            return None
+        record = self.sessions.get(session_id)
+        if record is None:
+            return None
+        return self._string_or_none(record.declared_family)
 
     def _string_or_none(self, value: Any) -> str | None:
         if not isinstance(value, str):

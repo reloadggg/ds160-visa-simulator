@@ -19,6 +19,10 @@ import {
 import { PROJECT_INFO } from "@/lib/project-info"
 import { appVersionDetailLabel } from "@/lib/app-version"
 import {
+  isImportableMaterialPackage,
+  isValidatedMaterialTemplatePackage,
+} from "@/lib/api/mappers"
+import {
   DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO,
   getDebugMaterialBundleOptionsForVisaFamily,
   getDefaultDebugMaterialBundleScenarioForVisaFamily,
@@ -75,30 +79,20 @@ const EMPTY_RAG_UPLOAD_FORM = {
 }
 
 
-function isValidatedMaterialPackage(item: MaterialPackageArchiveItem): boolean {
-  return (
-    item.validation_status === "passed" ||
-    item.archive_source_reason === "validated_f1_demo_material_package" ||
-    item.demo_template_id === "f1_parent_sponsored_consistent_v1"
-  )
-}
-
-function isImportableMaterialPackage(item: MaterialPackageArchiveItem): boolean {
-  return item.status === "ready"
-}
-
 function materialPackageBadgeLabel(item: MaterialPackageArchiveItem): string {
-  if (isValidatedMaterialPackage(item)) {
-    return item.validation_status === "passed" ? "validated" : "template"
+  if (isValidatedMaterialTemplatePackage(item)) {
+    return item.validation_status === "passed" ? "validated template" : "template"
   }
-  return item.validation_status ?? "archive"
+  return item.validation_status ?? "material package"
 }
 
 function materialPackageMetaSummary(item: MaterialPackageArchiveItem): string {
   const parts = [
     item.visa_family ? item.visa_family.toUpperCase() : null,
     item.intent,
-    item.demo_template_id ? `模板 ${item.demo_template_id}` : null,
+    item.template_id || item.demo_template_id
+      ? `template ${item.template_id ?? item.demo_template_id}`
+      : null,
     item.source_validation_session_id
       ? `验证会话 ${item.source_validation_session_id}`
       : item.source_session_id
@@ -204,11 +198,15 @@ export function SettingsPanel({
   const sortedMaterialPackages = useMemo(
     () =>
       [...materialPackages].sort((left, right) => {
-        const validatedDelta = Number(isValidatedMaterialPackage(right)) - Number(isValidatedMaterialPackage(left))
+        const validatedDelta =
+          Number(isValidatedMaterialTemplatePackage(right)) -
+          Number(isValidatedMaterialTemplatePackage(left))
         if (validatedDelta !== 0) {
           return validatedDelta
         }
-        const readyDelta = Number(isImportableMaterialPackage(right)) - Number(isImportableMaterialPackage(left))
+        const readyDelta =
+          Number(isImportableMaterialPackage(right)) -
+          Number(isImportableMaterialPackage(left))
         if (readyDelta !== 0) {
           return readyDelta
         }
@@ -659,6 +657,114 @@ export function SettingsPanel({
               <Camera className="h-4 w-4" />
               导出完整会话长截图
             </Button>
+
+            <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    Validated template / case package
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    选择已通过完整材料理解与面签跑通的 material package archive，并导入当前会话。
+                    partial/failed package 会被禁用，避免把未验证材料当作模板使用。
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onRefreshMaterialPackages}
+                  disabled={isLoadingMaterialPackages}
+                >
+                  <RefreshCw
+                    className={
+                      isLoadingMaterialPackages
+                        ? "h-4 w-4 animate-spin"
+                        : "h-4 w-4"
+                    }
+                  />
+                  刷新
+                </Button>
+              </div>
+
+              {materialPackages.length ? (
+                <Select
+                  onValueChange={handleImportPackage}
+                  disabled={
+                    !sessionId ||
+                    isLoadingMaterialPackages ||
+                    isImportingMaterialPackage
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue
+                      placeholder={
+                        isImportingMaterialPackage
+                          ? "正在导入 case package"
+                          : "选择 template / material package 导入"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sortedMaterialPackages.map((item) => (
+                      <SelectItem
+                        key={item.package_id}
+                        value={item.package_id}
+                        disabled={!isImportableMaterialPackage(item)}
+                      >
+                        {isValidatedMaterialTemplatePackage(item) ? "✅ " : ""}
+                        {item.label} · {item.document_count} 份 · {item.status_label}
+                        {!isImportableMaterialPackage(item) ? " · 不可导入" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                  {isLoadingMaterialPackages
+                    ? "正在读取 template / material package archive..."
+                    : "暂无可导入的 validated template / material package。"}
+                </div>
+              )}
+
+              {sortedMaterialPackages.slice(0, 3).map((item) => (
+                <div
+                  key={`${item.package_id}-summary`}
+                  className="flex items-start justify-between gap-3 rounded-md border border-border/70 bg-background/70 px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-medium text-foreground">
+                      {item.label}
+                    </div>
+                    <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                      {item.document_count} 份材料 / {materialPackageMetaSummary(item)}
+                    </div>
+                    {item.warning || !isImportableMaterialPackage(item) ? (
+                      <div
+                        className={
+                          item.status === "failed"
+                            ? "mt-1 text-[11px] leading-4 text-destructive"
+                            : "mt-1 text-[11px] leading-4 text-amber-700"
+                        }
+                      >
+                        {item.warning ?? "该 material package 尚未 ready，当前不可导入。"}
+                      </div>
+                    ) : null}
+                  </div>
+                  <Badge
+                    variant={
+                      item.status === "failed"
+                        ? "destructive"
+                        : item.status === "ready"
+                          ? "secondary"
+                          : "outline"
+                    }
+                  >
+                    {materialPackageBadgeLabel(item)} · {item.status_label}
+                  </Badge>
+                </div>
+              ))}
+            </div>
             {showDebugTools ? (
               <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
@@ -753,113 +859,6 @@ export function SettingsPanel({
                   </div>
                 ) : null}
 
-                <div className="space-y-2 rounded-lg border border-border bg-background px-3 py-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-sm font-medium text-foreground">
-                        已验证案例包 / 材料包
-                      </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">
-                        只应选择通过完整材料理解与面签验证的案例包；partial/failed 会被禁用。
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={onRefreshMaterialPackages}
-                      disabled={isLoadingMaterialPackages}
-                    >
-                      <RefreshCw
-                        className={
-                          isLoadingMaterialPackages
-                            ? "h-4 w-4 animate-spin"
-                            : "h-4 w-4"
-                        }
-                      />
-                      刷新
-                    </Button>
-                  </div>
-
-                  {materialPackages.length ? (
-                    <Select
-                      onValueChange={handleImportPackage}
-                      disabled={
-                        !sessionId ||
-                        isLoadingMaterialPackages ||
-                        isImportingMaterialPackage
-                      }
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue
-                          placeholder={
-                            isImportingMaterialPackage
-                              ? "正在导入案例包"
-                              : "选择已验证案例包导入"
-                          }
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {sortedMaterialPackages.map((item) => (
-                          <SelectItem
-                            key={item.package_id}
-                            value={item.package_id}
-                            disabled={!isImportableMaterialPackage(item)}
-                          >
-                            {isValidatedMaterialPackage(item) ? "✅ " : ""}
-                            {item.label} · {item.document_count} 份 ·{" "}
-                            {item.status_label}
-                            {!isImportableMaterialPackage(item) ? " · 不可导入" : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                      {isLoadingMaterialPackages
-                        ? "正在读取已验证案例包..."
-                        : "暂无可导入的已验证案例包。"}
-                    </div>
-                  )}
-
-                  {sortedMaterialPackages.slice(0, 3).map((item) => (
-                    <div
-                      key={`${item.package_id}-summary`}
-                      className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-xs font-medium text-foreground">
-                          {item.label}
-                        </div>
-                        <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                          {item.document_count} 份材料 / {materialPackageMetaSummary(item)}
-                        </div>
-                        {item.warning || !isImportableMaterialPackage(item) ? (
-                          <div
-                            className={
-                              item.status === "failed"
-                                ? "mt-1 text-[11px] leading-4 text-destructive"
-                                : "mt-1 text-[11px] leading-4 text-amber-700"
-                            }
-                          >
-                            {item.warning ?? "该案例包尚未 ready，当前不可导入。"}
-                          </div>
-                        ) : null}
-                      </div>
-                      <Badge
-                        variant={
-                          item.status === "failed"
-                            ? "destructive"
-                            : item.status === "ready"
-                              ? "secondary"
-                              : "outline"
-                        }
-                      >
-                        {materialPackageBadgeLabel(item)} · {item.status_label}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
               </div>
             ) : null}
             <Button

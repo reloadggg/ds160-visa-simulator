@@ -146,7 +146,11 @@ function RawTextBlock({ rawText }: { rawText?: string | null }) {
 }
 
 function ExpectedFindings({ material }: { material: UploadedMaterial }) {
-  if (!material.expected_findings?.length || !material.synthetic_bundle_id) {
+  if (
+    !material.expected_findings?.length ||
+    !material.synthetic_bundle_id ||
+    material.material_package_source === "archive_import"
+  ) {
     return null
   }
 
@@ -391,7 +395,9 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                             ? "图片"
                             : "文件"}
                       </Badge>
-                      {material.synthetic_bundle_id ? (
+                      {material.material_package_id ? (
+                        <Badge variant="outline">case package</Badge>
+                      ) : material.synthetic_bundle_id ? (
                         <Badge variant="outline">材料包</Badge>
                       ) : null}
                       <span className="break-words text-xs leading-5 text-muted-foreground">
@@ -473,7 +479,11 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                 : "文件"}
           </Badge>
         </div>
-        {material.synthetic_bundle_id ? (
+        {material.material_package_id ? (
+          <Badge variant="outline" className="w-fit">
+            case package
+          </Badge>
+        ) : material.synthetic_bundle_id ? (
           <Badge variant="outline" className="w-fit">
             材料包
           </Badge>
