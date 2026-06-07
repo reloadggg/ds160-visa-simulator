@@ -774,7 +774,7 @@ export default function AdminPage() {
                   </div>
                 )}
                 <button
-                  className="mt-3 rounded-xl bg-black/60 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+                  className="mt-3 rounded-xl bg-cyan-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100 disabled:bg-white/[0.08] disabled:text-slate-500 disabled:shadow-none"
                   disabled={!revealedSecret}
                   onClick={() => void copySecret()}
                 >
@@ -968,7 +968,7 @@ export default function AdminPage() {
           </div>
           <div className="mt-4 flex flex-wrap gap-2 text-sm">
             <button
-              className="rounded-2xl bg-white px-4 py-2 font-semibold text-white"
+              className="rounded-2xl bg-white px-4 py-2 font-semibold text-slate-950 shadow-lg shadow-white/10 transition hover:bg-cyan-50"
               onClick={() => void saveModelSettings()}
             >
               Save
@@ -1086,7 +1086,7 @@ export default function AdminPage() {
               className="rounded-2xl border border-white/10 bg-white/[0.055] px-3 py-2 text-sm"
             />
             <button
-              className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-white/10 transition hover:bg-cyan-50 disabled:opacity-50"
               onClick={() => void uploadRagFile()}
               disabled={!ragFile}
             >
@@ -1100,8 +1100,8 @@ export default function AdminPage() {
       </div>
 
       {createDialogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-[28px] border border-white/70 bg-white/[0.08] p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-[28px] border border-white/12 bg-[#07101f]/95 p-6 text-white shadow-2xl shadow-black/40">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-xl font-semibold">创建客户访问 Key</h2>
@@ -1110,7 +1110,7 @@ export default function AdminPage() {
                 </p>
               </div>
               <button
-                className="rounded-xl border border-white/10 px-3 py-1 text-sm"
+                className="rounded-xl border border-white/10 px-3 py-1 text-sm text-slate-200 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                 onClick={() => {
                   setCreateDialogOpen(false)
                   resetCreateForm()
@@ -1124,7 +1124,7 @@ export default function AdminPage() {
                 <label className="grid gap-2 text-sm font-medium">
                   客户备注
                   <input
-                    className="h-11 rounded-2xl border border-white/10 px-4 font-normal"
+                    className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 font-normal text-white placeholder:text-slate-500 focus:border-cyan-200/40 focus:outline-none"
                     value={keyLabel}
                     onChange={(event) => setKeyLabel(event.target.value)}
                     placeholder="例如：客户 A / 6 月批次"
@@ -1133,7 +1133,7 @@ export default function AdminPage() {
                 <label className="grid gap-2 text-sm font-medium">
                   会话额度
                   <input
-                    className="h-11 rounded-2xl border border-white/10 px-4 font-normal"
+                    className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 font-normal text-white placeholder:text-slate-500 focus:border-cyan-200/40 focus:outline-none"
                     type="number"
                     min={1}
                     max={1000}
@@ -1162,7 +1162,7 @@ export default function AdminPage() {
                   </div>
                   {validityPreset === "custom" ? (
                     <input
-                      className="h-11 rounded-2xl border border-white/10 px-4 font-normal"
+                      className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 font-normal text-white placeholder:text-slate-500 focus:border-cyan-200/40 focus:outline-none"
                       type="number"
                       min={1}
                       max={3650}
@@ -1184,7 +1184,7 @@ export default function AdminPage() {
                 </label>
                 <div className="flex justify-end gap-2">
                   <button
-                    className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold"
+                    className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                     onClick={() => {
                       setCreateDialogOpen(false)
                       resetCreateForm()
@@ -1193,7 +1193,7 @@ export default function AdminPage() {
                     取消
                   </button>
                   <button
-                    className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-white"
+                    className="rounded-2xl bg-cyan-200 px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100"
                     onClick={() => setCreateStep("confirm")}
                   >
                     继续确认
@@ -1213,13 +1213,13 @@ export default function AdminPage() {
                 </div>
                 <div className="flex justify-end gap-2">
                   <button
-                    className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold"
+                    className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                     onClick={() => setCreateStep("form")}
                   >
                     返回修改
                   </button>
                   <button
-                    className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-white"
+                    className="rounded-2xl bg-cyan-200 px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100"
                     onClick={() => {
                       void createKey()
                       setCreateDialogOpen(false)
@@ -1235,8 +1235,8 @@ export default function AdminPage() {
       ) : null}
 
       {toggleTarget ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-[28px] bg-white/[0.08] p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-white/12 bg-[#07101f]/95 p-6 text-white shadow-2xl shadow-black/40">
             <h2 className="text-xl font-semibold">
               确认{toggleTarget.nextEnabled ? "启用" : "停用"}访问 Key
             </h2>
@@ -1248,13 +1248,13 @@ export default function AdminPage() {
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button
-                className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold"
+                className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                 onClick={() => setToggleTarget(null)}
               >
                 取消
               </button>
               <button
-                className="rounded-2xl bg-black/60 px-4 py-2 text-sm font-semibold text-white"
+                className="rounded-2xl bg-cyan-200 px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100"
                 onClick={() => void applyToggle()}
               >
                 确认
@@ -1265,8 +1265,8 @@ export default function AdminPage() {
       ) : null}
 
       {quotaTarget ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-[28px] bg-white/[0.08] p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-white/12 bg-[#07101f]/95 p-6 text-white shadow-2xl shadow-black/40">
             <h2 className="text-xl font-semibold">调整访问额度</h2>
             <p className="mt-2 text-sm text-slate-400">
               当前额度 {quotaTarget.key.usage_limit}，已使用{" "}
@@ -1312,13 +1312,13 @@ export default function AdminPage() {
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
-                className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold"
+                className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
                 onClick={() => setQuotaTarget(null)}
               >
                 取消
               </button>
               <button
-                className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-white"
+                className="rounded-2xl bg-cyan-200 px-4 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100"
                 onClick={() => void applyQuota()}
               >
                 保存额度

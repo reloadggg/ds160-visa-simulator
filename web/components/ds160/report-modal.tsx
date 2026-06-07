@@ -60,32 +60,32 @@ function ReviewListCard({
 }
 
 const riskLevelConfig = {
-  none: { label: "无明显风险", color: "bg-slate-400", textColor: "text-slate-600" },
-  low: { label: "低风险", color: "bg-emerald-500", textColor: "text-emerald-600" },
-  medium: { label: "中风险", color: "bg-amber-500", textColor: "text-amber-600" },
-  high: { label: "高风险", color: "bg-red-500", textColor: "text-red-600" },
+  none: { label: "无明显风险", color: "bg-slate-400", textColor: "text-slate-600 dark:text-slate-200" },
+  low: { label: "低风险", color: "bg-emerald-500", textColor: "text-emerald-600 dark:text-emerald-200" },
+  medium: { label: "中风险", color: "bg-amber-500", textColor: "text-amber-600 dark:text-amber-200" },
+  high: { label: "高风险", color: "bg-red-500", textColor: "text-red-600 dark:text-red-200" },
 }
 
 const interviewResultConfig: Record<string, { color: string; textColor: string; bgColor: string }> = {
   passed: {
     color: "bg-emerald-500",
-    textColor: "text-emerald-700",
-    bgColor: "bg-emerald-50 border-emerald-200",
+    textColor: "text-emerald-700 dark:text-emerald-100",
+    bgColor: "bg-emerald-50 border-emerald-200 dark:border-emerald-300/25 dark:bg-emerald-300/10",
   },
   refused: {
     color: "bg-red-500",
-    textColor: "text-red-700",
-    bgColor: "bg-red-50 border-red-200",
+    textColor: "text-red-700 dark:text-red-100",
+    bgColor: "bg-red-50 border-red-200 dark:border-red-300/25 dark:bg-red-300/10",
   },
   not_passed: {
     color: "bg-amber-500",
-    textColor: "text-amber-700",
-    bgColor: "bg-amber-50 border-amber-200",
+    textColor: "text-amber-700 dark:text-amber-100",
+    bgColor: "bg-amber-50 border-amber-200 dark:border-amber-300/25 dark:bg-amber-300/10",
   },
   in_progress: {
     color: "bg-sky-500",
-    textColor: "text-sky-700",
-    bgColor: "bg-sky-50 border-sky-200",
+    textColor: "text-sky-700 dark:text-sky-100",
+    bgColor: "bg-sky-50 border-sky-200 dark:border-sky-300/25 dark:bg-sky-300/10",
   },
 }
 
@@ -182,14 +182,14 @@ export function ReportModal({
                     </CardHeader>
                     <CardContent className="space-y-2">
                       <div className={cn("rounded-xl border px-3 py-2", resultConfig?.bgColor)}>
-                        <div className="mb-1 text-xs text-muted-foreground">面签结论</div>
+                        <div className="mb-1 text-xs text-slate-600 dark:text-slate-300">面签结论</div>
                         <div className="flex items-center gap-2">
                           <div className={cn("h-2.5 w-2.5 shrink-0 rounded-full", resultConfig?.color)} />
                           <span className={cn("text-base font-semibold", resultConfig?.textColor)}>
                             {userReport.interview_result_label}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
                           {userReport.interview_result_reason}
                         </p>
                       </div>

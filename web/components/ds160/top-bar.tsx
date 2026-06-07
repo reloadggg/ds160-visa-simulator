@@ -5,6 +5,7 @@ import { useMemo, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { WorkbenchThemeToggle } from "@/components/ds160/workbench-theme-toggle"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -103,20 +104,20 @@ export function TopBar({
       .join("") || "U"
 
   return (
-    <header className="flex h-16 min-w-0 items-center border-b border-border bg-card px-4 lg:px-6">
+    <header className="flex h-16 min-w-0 items-center border-b border-border bg-card px-4 dark:border-white/10 dark:bg-black/35 dark:shadow-2xl dark:shadow-black/20 dark:backdrop-blur-2xl lg:px-6">
       {/* Left section - Session info */}
       <div className="min-w-0 flex-1 lg:flex-none">
         <div className="flex min-w-0 items-center gap-2 lg:gap-3">
           <h2 className="truncate text-base font-semibold text-foreground lg:text-lg">
             {visaType} 签证模拟
           </h2>
-          <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-100">
+          <Badge className="border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-300/20 dark:bg-emerald-300/10 dark:text-emerald-100 dark:hover:bg-emerald-300/15">
             进行中
           </Badge>
           {mockMode ? (
             <Badge
               variant="outline"
-              className="border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-50"
+              className="border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-50 dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100 dark:hover:bg-amber-300/15"
             >
               Mock 模式
             </Badge>
@@ -136,6 +137,7 @@ export function TopBar({
 
       {/* Right section - Timer and controls */}
       <div className="flex min-w-0 shrink-0 items-center gap-2 lg:gap-3">
+        <WorkbenchThemeToggle />
         <div className="hidden items-center gap-2 sm:flex lg:gap-3">
           <Button
             variant="outline"

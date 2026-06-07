@@ -14,6 +14,7 @@ import { SettingsPanel } from "@/components/ds160/settings-panel"
 import { Sidebar, navItems } from "@/components/ds160/sidebar"
 import { TopBar } from "@/components/ds160/top-bar"
 import { VisaSelector } from "@/components/ds160/visa-selector"
+import { WorkbenchThemeToggle } from "@/components/ds160/workbench-theme-toggle"
 import { AuthGuard } from "@/components/ds160/auth-guard"
 import { useAuth } from "@/hooks/use-auth"
 import { useSessionWorkbench } from "@/hooks/use-session-workbench"
@@ -189,13 +190,13 @@ function Workbench() {
     }
 
     return (
-      <header className="m-3 flex h-16 shrink-0 items-center justify-between rounded-[28px] border border-white/70 bg-white/60 px-4 shadow-lg shadow-blue-950/5 backdrop-blur-2xl md:mx-4 md:px-6">
+      <header className="m-3 flex h-16 shrink-0 items-center justify-between rounded-[28px] border border-white/70 bg-white/60 px-4 shadow-lg shadow-blue-950/5 backdrop-blur-2xl dark:border-white/10 dark:bg-black/35 dark:shadow-black/25 md:mx-4 md:px-6">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <h2 className="truncate text-base font-semibold text-foreground md:text-lg">
               模拟面签工作台
             </h2>
-            <span className="shrink-0 rounded-xl border border-blue-100 bg-blue-50/70 px-2 py-0.5 font-mono text-[11px] text-blue-700">
+            <span className="shrink-0 rounded-xl border border-blue-100 bg-blue-50/70 px-2 py-0.5 font-mono text-[11px] text-blue-700 dark:border-cyan-200/15 dark:bg-cyan-200/[0.06] dark:text-cyan-100/80">
               {APP_VERSION_LABEL}
             </span>
           </div>
@@ -204,8 +205,9 @@ function Workbench() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <WorkbenchThemeToggle />
           {mockMode ? (
-            <div className="rounded-full border border-amber-300 bg-amber-50/95 px-3 py-1 text-[10px] font-medium text-amber-800 shadow-sm backdrop-blur md:text-xs">
+            <div className="rounded-full border border-amber-300 bg-amber-50/95 px-3 py-1 text-[10px] font-medium text-amber-800 shadow-sm backdrop-blur dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100 md:text-xs">
               {sessionId ? "MOCK" : "开发模式：Mock 数据"}
             </div>
           ) : null}
@@ -213,7 +215,7 @@ function Workbench() {
             variant="outline"
             size="sm"
             onClick={() => void logout()}
-            className="gap-2 rounded-full bg-white/70"
+            className="gap-2 rounded-full bg-white/70 dark:border-white/12 dark:bg-white/[0.06] dark:text-slate-100 dark:hover:bg-white/[0.1]"
           >
             <LogOut className="h-4 w-4" />
             <span className="hidden sm:inline">退出当前 Key</span>
@@ -276,7 +278,8 @@ function Workbench() {
 
   return (
     <>
-      <div className="relative flex h-[100dvh] overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(37,99,235,.14),transparent_32%),radial-gradient(circle_at_85%_0%,rgba(14,165,233,.12),transparent_28%),linear-gradient(135deg,#f8fbff,#edf4ff)]">
+      <div className="relative flex h-[100dvh] overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(37,99,235,.14),transparent_32%),radial-gradient(circle_at_85%_0%,rgba(14,165,233,.12),transparent_28%),linear-gradient(135deg,#f8fbff,#edf4ff)] dark:bg-[#050608] dark:bg-[radial-gradient(circle_at_18%_10%,rgba(59,130,246,0.20),transparent_32%),radial-gradient(circle_at_82%_16%,rgba(168,85,247,0.16),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.045),transparent_32%)]">
+        <div className="pointer-events-none fixed left-1/2 top-0 hidden h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-300/8 blur-3xl dark:block" />
         <div className="absolute left-4 top-4 z-50 hidden items-center gap-2 lg:flex">
           <div className="h-3 w-3 rounded-full border border-[#E0443E] bg-[#FF5F57]" />
           <div className="h-3 w-3 rounded-full border border-[#DEA123] bg-[#FEBC2E]" />

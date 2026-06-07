@@ -29,11 +29,11 @@ export function Sidebar({
 }: SidebarProps) {
   const visibleNavItems = navItems.filter((item) => item.id !== "debug" || showDebug)
   return (
-    <aside className="hidden h-full w-64 flex-col border-r border-white/60 bg-white/55 shadow-xl shadow-blue-950/5 backdrop-blur-2xl lg:flex">
+    <aside className="hidden h-full w-64 flex-col border-r border-white/60 bg-white/55 shadow-xl shadow-blue-950/5 backdrop-blur-2xl dark:border-white/10 dark:bg-black/30 dark:shadow-black/30 lg:flex">
       {/* Logo */}
-      <div className="border-b border-white/60 px-5 pb-6 pt-12">
+      <div className="border-b border-white/60 px-5 pb-6 pt-12 dark:border-white/10">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-white/70 bg-blue-50/80 shadow-sm">
+          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-white/70 bg-blue-50/80 shadow-sm dark:border-white/12 dark:bg-white/[0.06] dark:shadow-inner dark:shadow-white/10">
             <Image src="/brand-icon.svg" alt="面签模拟器" width={40} height={40} className="h-10 w-10" />
           </div>
           <div className="min-w-0">
@@ -56,8 +56,8 @@ export function Sidebar({
                   className={cn(
                     "flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition-all duration-200",
                     isActive
-                      ? "border border-blue-200/70 bg-blue-600/10 text-blue-700 shadow-sm"
-                      : "text-slate-600 hover:-translate-y-0.5 hover:bg-white/70 hover:text-slate-950"
+                      ? "border border-blue-200/70 bg-blue-600/10 text-blue-700 shadow-sm dark:border-cyan-200/25 dark:bg-cyan-200/10 dark:text-cyan-100"
+                      : "text-slate-600 hover:-translate-y-0.5 hover:bg-white/70 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/[0.08] dark:hover:text-white"
                   )}
                 >
                   <Icon className="w-5 h-5" />
@@ -69,8 +69,8 @@ export function Sidebar({
         </ul>
       </nav>
 
-      {showGithub ? <div className="border-t border-white/60 p-4">
-        <div className="rounded-3xl border border-white/70 bg-white/55 px-3 py-3 shadow-sm backdrop-blur-xl">
+      {showGithub ? <div className="border-t border-white/60 p-4 dark:border-white/10">
+        <div className="rounded-3xl border border-white/70 bg-white/55 px-3 py-3 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.045] dark:shadow-black/20">
           <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Created by
           </div>
@@ -84,7 +84,7 @@ export function Sidebar({
             href={PROJECT_INFO.githubUrl}
             target="_blank"
             rel="noreferrer"
-            className="mt-3 inline-flex max-w-full items-center gap-2 rounded-xl text-sm font-medium text-blue-700 transition-colors hover:text-blue-600"
+            className="mt-3 inline-flex max-w-full items-center gap-2 rounded-xl text-sm font-medium text-blue-700 transition-colors hover:text-blue-600 dark:text-cyan-100 dark:hover:text-white"
           >
             <Github className="h-4 w-4 shrink-0" />
             <span className="truncate">GitHub</span>

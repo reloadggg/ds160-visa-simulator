@@ -87,11 +87,11 @@ export function VisaSelector({
           <p className="text-muted-foreground">
             选择您要模拟的签证类型，确认后会创建一个新的面签会话
           </p>
-          <div className="mt-3 inline-flex rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+          <div className="mt-3 inline-flex rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 dark:border-cyan-200/15 dark:bg-cyan-200/[0.06] dark:text-cyan-100/80">
             创建额度：{quotaLabel}
           </div>
           {mockMode && (
-            <div className="mt-3 inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800">
+            <div className="mt-3 inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800 dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100">
               开发模式：当前使用 Mock 数据
             </div>
           )}

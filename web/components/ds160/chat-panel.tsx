@@ -274,7 +274,7 @@ export function ChatPanel({
   const visibleActivityEvents = activityEvents.slice(-4)
 
   return (
-    <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-white/70 bg-white/62 shadow-xl shadow-blue-950/10 backdrop-blur-2xl md:rounded-[32px]">
+    <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-white/70 bg-white/62 shadow-xl shadow-blue-950/10 backdrop-blur-2xl dark:border-white/10 dark:bg-black/30 dark:shadow-black/30 md:rounded-[32px]">
       {/* Loading overlay */}
       {isLoading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/80">
@@ -294,7 +294,7 @@ export function ChatPanel({
       )}
 
       {visibleActivityEvents.length ? (
-        <div className="shrink-0 border-b border-white/60 bg-white/45 px-3 py-2 backdrop-blur-xl md:px-4">
+        <div className="shrink-0 border-b border-white/60 bg-white/45 px-3 py-2 backdrop-blur-xl dark:border-white/10 dark:bg-black/20 md:px-4">
           <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
             {visibleActivityEvents.map((event) => (
               <div
@@ -303,7 +303,7 @@ export function ChatPanel({
                   "flex min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-xs leading-5",
                   event.status === "error" || event.kind === "error"
                     ? "bg-destructive/10 text-destructive"
-                    : "bg-white/65 text-slate-600",
+                    : "bg-white/65 text-slate-600 dark:bg-white/[0.06] dark:text-slate-300",
                 )}
               >
                 {renderActivityIcon(event)}
@@ -493,7 +493,7 @@ export function ChatPanel({
       />
 
       {/* Input area */}
-      <div className="shrink-0 border-t border-white/60 bg-white/55 px-3 py-3 backdrop-blur-2xl md:px-6 md:py-4">
+      <div className="shrink-0 border-t border-white/60 bg-white/55 px-3 py-3 backdrop-blur-2xl dark:border-white/10 dark:bg-black/25 md:px-6 md:py-4">
         <div className="mx-auto max-w-3xl space-y-3">
           {/* Attachments list */}
           {attachments.length > 0 && (
@@ -555,7 +555,7 @@ export function ChatPanel({
                 }
                 rows={1}
                 disabled={isDisabled}
-                className="max-h-32 min-h-[44px] w-full resize-none overflow-y-auto rounded-2xl border border-white/70 bg-white/70 px-3 py-3 pr-12 text-sm shadow-inner shadow-blue-950/5 transition-all duration-200 placeholder:text-muted-foreground focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400/20 disabled:opacity-50 md:px-4 md:pr-14"
+                className="max-h-32 min-h-[44px] w-full resize-none overflow-y-auto rounded-2xl border border-white/70 bg-white/70 px-3 py-3 pr-12 text-sm text-foreground shadow-inner shadow-blue-950/5 transition-all duration-200 placeholder:text-muted-foreground focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400/20 disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.06] dark:shadow-black/20 dark:focus:border-cyan-200/40 dark:focus:ring-cyan-200/20 md:px-4 md:pr-14"
                 onInput={(e) => {
                   const target = e.target as HTMLTextAreaElement
                   target.style.height = "auto"
