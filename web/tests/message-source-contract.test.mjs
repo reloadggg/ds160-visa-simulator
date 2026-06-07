@@ -193,7 +193,7 @@ test("failed stream user messages stay visible and can be retried", () => {
   )
   assert.match(chatPanelSource, /重试本条/)
 
-  const pageSource = readFileSync(resolve(rootDir, "app/page.tsx"), "utf8")
+  const pageSource = readFileSync(resolve(rootDir, "app/login/page.tsx"), "utf8")
   assert.match(pageSource, /onRetryMessage=\{handleRetryMessage\}/)
 })
 

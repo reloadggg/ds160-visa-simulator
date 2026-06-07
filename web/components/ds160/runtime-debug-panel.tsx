@@ -15,6 +15,8 @@ import type {
 
 interface RuntimeDebugPanelProps {
   sessionId: string | null
+  mockMode: boolean
+  apiBaseUrl: string
   snapshot: RuntimeDebugSnapshot | null
   liveEvents: RuntimeDebugEvent[]
   latestDebugBundle: DebugMaterialBundleResponse | null
@@ -68,6 +70,8 @@ function jsonPreview(value: unknown): string {
 
 export function RuntimeDebugPanel({
   sessionId,
+  mockMode,
+  apiBaseUrl,
   snapshot,
   liveEvents,
   latestDebugBundle,
@@ -150,7 +154,7 @@ export function RuntimeDebugPanel({
 
           <Card className="py-4">
             <CardHeader className="px-5 pb-3">
-              <CardTitle className="text-sm">版本</CardTitle>
+              <CardTitle className="text-sm">版本 / 运行信息</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 px-5 text-sm">
               <div className="flex justify-between gap-3">
@@ -167,6 +171,18 @@ export function RuntimeDebugPanel({
                 <span className="text-muted-foreground">Git</span>
                 <span className="truncate font-mono">
                   {displayValue(backend.git_sha)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Mock 模式</span>
+                <span className="truncate font-mono">
+                  {mockMode ? "enabled" : "disabled"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">API 地址</span>
+                <span className="truncate font-mono">
+                  {apiBaseUrl || "未配置"}
                 </span>
               </div>
             </CardContent>

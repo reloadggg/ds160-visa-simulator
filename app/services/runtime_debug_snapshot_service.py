@@ -10,7 +10,7 @@ from app.core.settings import settings
 from app.db.models import DocumentRecord, SessionRecord, SessionTurnRecord
 from app.repositories.session_repo import SessionRepository
 from app.repositories.session_turn_repo import SessionTurnRepository
-from app.services.case_memory_service import CaseMemoryService
+from app.services.case_memory_service import CASE_MEMORY_TOMBSTONE_KEY, CaseMemoryService
 from app.services.session_read_model_service import SessionReadModelService
 
 
@@ -194,6 +194,8 @@ class RuntimeDebugSnapshotService:
         latest_bundle_id = self._latest_synthetic_bundle_id(turns)
         grouped: dict[str, list[DocumentRecord]] = {}
         for document in documents:
+            if self._document_tombstoned(document):
+                continue
             metadata = self._document_metadata(document)
             if not metadata.get("debug_material_bundle"):
                 continue
@@ -243,6 +245,8 @@ class RuntimeDebugSnapshotService:
         )
         payloads: list[dict[str, Any]] = []
         for document in documents:
+            if self._document_tombstoned(document):
+                continue
             artifact = dict(document.artifact_json or {})
             case_board_delta = self._payload(artifact.get("case_board_delta"))
             latest_material = self._payload(
@@ -528,6 +532,12 @@ class RuntimeDebugSnapshotService:
         if "document_type" not in metadata and artifact.get("document_type"):
             metadata["document_type"] = artifact.get("document_type")
         return metadata
+
+    def _document_tombstoned(self, document: DocumentRecord) -> bool:
+        artifact = dict(document.artifact_json or {})
+        return document.status == "tombstoned" or bool(
+            artifact.get(CASE_MEMORY_TOMBSTONE_KEY)
+        )
 
     def _limit_list(self, value: list[Any]) -> list[Any]:
         return list(value[-MAX_TRACE_ITEMS:])

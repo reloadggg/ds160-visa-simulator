@@ -45,6 +45,7 @@ import type {
   FileUploadResponse,
   InternalReport,
   InterviewReviewResponse,
+  MaterialCleanupResponse,
   MaterialPackageImportResponse,
   MaterialPackageListResponse,
   MessageResponse,
@@ -221,6 +222,14 @@ export async function clearAccountSessions(
     headers: getAuthHeaders(),
   })
   return handleResponse<ClearSessionsResponse>(response)
+}
+
+export async function clearCurrentKeyMaterials(): Promise<MaterialCleanupResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/materials/current-key"), {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<MaterialCleanupResponse>(response)
 }
 
 export async function getRequiredPackage(
@@ -804,6 +813,19 @@ export async function revealAdminAccessKeySecret(
     },
   )
   return handleResponse<AdminAccessKeySecretResponse>(response)
+}
+
+export async function clearAdminAccessKeyMaterials(
+  keyId: string,
+): Promise<MaterialCleanupResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/access-keys/${keyId}/materials`),
+    {
+      method: "DELETE",
+      headers: getAuthHeaders(),
+    },
+  )
+  return handleResponse<MaterialCleanupResponse>(response)
 }
 
 export async function fetchAdminModelConfigModels(

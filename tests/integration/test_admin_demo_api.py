@@ -21,8 +21,16 @@ from app.db.models import (
     SessionTurnRecord,
 )
 from app.db.session import get_db
+from app.domain.case_memory import (
+    CaseClaim,
+    EvidenceCard,
+    MaterialUnderstandingJob,
+    MaterialUnderstandingResult,
+)
 from app.main import app
 from app.services.access_key_service import hash_secret
+from app.services.case_memory_service import CaseMemoryService
+from app.services.material_package_archive_service import VALIDATED_ARCHIVE_SOURCE_REASON
 
 
 @pytest.fixture()
@@ -310,6 +318,237 @@ def test_user_can_clear_own_session_history_without_removing_current_session(
     client.post("/v1/auth/logout")
     assert client.post("/v1/auth/login", json={"password": second_key}).status_code == 200
     assert client.get("/v1/sessions").json()["sessions"][0]["session_id"] == second_session
+
+
+def _material_result(document_id: str, claim_id: str, value: str) -> MaterialUnderstandingResult:
+    evidence_id = f"ev-{claim_id}"
+    return MaterialUnderstandingResult(
+        evidence_cards=[
+            EvidenceCard(
+                evidence_id=evidence_id,
+                source_type="uploaded_file",
+                document_id=document_id,
+                excerpt=value,
+                claim_refs=[claim_id],
+                confidence=0.92,
+            )
+        ],
+        extracted_claims=[
+            CaseClaim(
+                claim_id=claim_id,
+                field_path="/education/school_name",
+                value=value,
+                status="documented",
+                supporting_evidence_ids=[evidence_id],
+                confidence=0.92,
+            )
+        ],
+        confidence=0.92,
+    )
+
+
+def test_current_key_material_cleanup_tombstones_owned_uploads_only(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    assert client.post("/v1/admin/login", json={"password": "admin-pass"}).status_code == 200
+    first_key_payload = client.post(
+        "/v1/admin/access-keys",
+        json={"label": "first cleanup customer", "usage_limit": 2},
+    ).json()
+    second_key_payload = client.post(
+        "/v1/admin/access-keys",
+        json={"label": "second cleanup customer", "usage_limit": 1},
+    ).json()
+    first_key = first_key_payload["key"]
+    second_key = second_key_payload["key"]
+
+    client.post("/v1/admin/logout")
+    assert client.post("/v1/auth/login", json={"password": first_key}).status_code == 200
+    first_current_session = client.post(
+        "/v1/sessions",
+        json={"declared_family": "f1"},
+    ).json()["session_id"]
+    first_old_session = client.post(
+        "/v1/sessions",
+        json={"declared_family": "f1"},
+    ).json()["session_id"]
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/auth/login", json={"password": second_key}).status_code == 200
+    second_session = client.post(
+        "/v1/sessions",
+        json={"declared_family": "f1"},
+    ).json()["session_id"]
+
+    with db_session_factory() as db:
+        documents = [
+            DocumentRecord(
+                document_id="doc-first-current-upload",
+                session_id=first_current_session,
+                filename="current-i20.pdf",
+                status="parsed",
+                artifact_json={"document_type": "i20"},
+                raw_bytes=b"i20",
+                raw_text="Example University",
+            ),
+            DocumentRecord(
+                document_id="doc-first-old-upload",
+                session_id=first_old_session,
+                filename="old-bank.pdf",
+                status="parsed",
+                artifact_json={"document_type": "funding_proof"},
+                raw_bytes=b"bank",
+                raw_text="Bank statement",
+            ),
+            DocumentRecord(
+                document_id="doc-first-template-source",
+                session_id=first_current_session,
+                filename="validated-template-i20.pdf",
+                status="parsed",
+                artifact_json={
+                    "document_type": "i20",
+                    "metadata": {
+                        "debug_material_bundle": True,
+                        "source_validation_session_id": "sess-validation",
+                        "archive_source_reason": VALIDATED_ARCHIVE_SOURCE_REASON,
+                        "validation_status": "passed",
+                    },
+                },
+                raw_bytes=b"template",
+                raw_text="Template source",
+            ),
+            DocumentRecord(
+                document_id="doc-second-upload",
+                session_id=second_session,
+                filename="second-i20.pdf",
+                status="parsed",
+                artifact_json={"document_type": "i20"},
+                raw_bytes=b"second",
+                raw_text="Other University",
+            ),
+        ]
+        db.add_all(documents)
+        db.commit()
+        service = CaseMemoryService(db)
+        before = service.upsert_material_understanding(
+            document_id="doc-first-current-upload",
+            job=MaterialUnderstandingJob(
+                job_id="job-first-current-upload",
+                document_id="doc-first-current-upload",
+                status="completed",
+                result=_material_result(
+                    "doc-first-current-upload",
+                    "claim-first-school",
+                    "Example University",
+                ),
+            ),
+        )
+        assert before.claims
+        db.commit()
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/auth/login", json={"password": first_key}).status_code == 200
+    response = client.delete("/v1/materials/current-key")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "key_id": first_key_payload["record"]["key_id"],
+        "session_count": 2,
+        "cleared_document_count": 2,
+        "skipped_template_count": 1,
+        "affected_session_ids": sorted([first_current_session, first_old_session]),
+    }
+    exported_documents = client.get(
+        f"/v1/sessions/{first_current_session}/reports/export"
+    ).json()["documents"]
+    exported_document_ids = {item["document_id"] for item in exported_documents}
+    assert "doc-first-current-upload" not in exported_document_ids
+    assert "doc-first-template-source" in exported_document_ids
+
+    with db_session_factory() as db:
+        assert db.get(DocumentRecord, "doc-first-current-upload").status == "tombstoned"
+        assert db.get(DocumentRecord, "doc-first-old-upload").status == "tombstoned"
+        template_document = db.get(DocumentRecord, "doc-first-template-source")
+        assert template_document is not None
+        assert template_document.status == "parsed"
+        assert db.get(DocumentRecord, "doc-second-upload").status == "parsed"
+        assert db.get(SessionRecord, first_current_session) is not None
+        assert db.get(SessionRecord, first_old_session) is not None
+        assert db.get(SessionRecord, second_session) is not None
+        assert db.get(CaseMemorySnapshotRecord, first_current_session) is not None
+        snapshot = db.get(CaseMemorySnapshotRecord, first_current_session)
+        assert snapshot is not None
+        assert snapshot.snapshot_json["claims"] == []
+        assert (
+            db.query(AccessKeySessionRecord)
+            .filter(AccessKeySessionRecord.session_id == first_current_session)
+            .one_or_none()
+            is not None
+        )
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/auth/login", json={"password": second_key}).status_code == 200
+    second_list = client.get("/v1/sessions")
+    assert [item["session_id"] for item in second_list.json()["sessions"]] == [
+        second_session
+    ]
+
+
+def test_admin_can_clear_materials_for_selected_access_key(
+    client: TestClient,
+    db_session_factory,
+) -> None:
+    assert client.post("/v1/admin/login", json={"password": "admin-pass"}).status_code == 200
+    key_payload = client.post(
+        "/v1/admin/access-keys",
+        json={"label": "admin cleanup target", "usage_limit": 1},
+    ).json()
+    key_id = key_payload["record"]["key_id"]
+    plaintext_key = key_payload["key"]
+
+    client.post("/v1/admin/logout")
+    assert client.post("/v1/auth/login", json={"password": plaintext_key}).status_code == 200
+    session_id = client.post("/v1/sessions", json={"declared_family": "f1"}).json()[
+        "session_id"
+    ]
+
+    with db_session_factory() as db:
+        db.add(
+            DocumentRecord(
+                document_id="doc-admin-cleanup",
+                session_id=session_id,
+                filename="admin-cleanup.pdf",
+                status="parsed",
+                artifact_json={"document_type": "passport_bio"},
+                raw_bytes=b"passport",
+                raw_text="Passport",
+            )
+        )
+        db.commit()
+
+    client.post("/v1/auth/logout")
+    assert client.post("/v1/admin/login", json={"password": "admin-pass"}).status_code == 200
+    assert client.delete("/v1/materials/current-key").status_code == 403
+    response = client.delete(f"/v1/admin/access-keys/{key_id}/materials")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "key_id": key_id,
+        "session_count": 1,
+        "cleared_document_count": 1,
+        "skipped_template_count": 0,
+        "affected_session_ids": [session_id],
+    }
+
+    missing = client.delete("/v1/admin/access-keys/missing-key/materials")
+    assert missing.status_code == 404
+
+    with db_session_factory() as db:
+        document = db.get(DocumentRecord, "doc-admin-cleanup")
+        assert document is not None
+        assert document.status == "tombstoned"
+        assert db.get(SessionRecord, session_id) is not None
 
 
 def test_access_key_secret_storage_list_masking_legacy_and_filters(

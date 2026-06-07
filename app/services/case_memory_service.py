@@ -228,6 +228,41 @@ class CaseMemoryService:
         self._persist_snapshot(document.session_id, snapshot)
         return snapshot
 
+    def tombstone_documents(
+        self,
+        *,
+        document_ids: list[str],
+        reason: str = "documents_removed",
+    ) -> dict[str, CaseMemorySnapshot]:
+        """Tombstone multiple documents and rebuild each affected session once."""
+
+        normalized_ids = _dedupe(document_ids)
+        if not normalized_ids:
+            return {}
+
+        affected_session_ids: set[str] = set()
+        for document_id in normalized_ids:
+            document = self.documents.get_document(document_id)
+            if document is None:
+                raise LookupError(f"Document not found: {document_id}")
+            artifact = dict(document.artifact_json or {})
+            artifact[CASE_MEMORY_TOMBSTONE_KEY] = {
+                "status": "tombstoned",
+                "reason": reason,
+            }
+            document.artifact_json = artifact
+            document.status = "tombstoned"
+            self.documents.save_document(document)
+            affected_session_ids.add(document.session_id)
+
+        self.db.flush()
+        snapshots: dict[str, CaseMemorySnapshot] = {}
+        for session_id in sorted(affected_session_ids):
+            snapshot = self.build_snapshot(session_id)
+            self._persist_snapshot(session_id, snapshot)
+            snapshots[session_id] = snapshot
+        return snapshots
+
     def build_snapshot(self, session_id: str) -> CaseMemorySnapshot:
         documents = self.documents.list_session_documents(session_id)
         claims_by_id: dict[str, CaseClaim] = {}

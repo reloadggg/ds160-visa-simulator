@@ -36,6 +36,7 @@ from app.agents.user_model_config import normalize_openai_base_url
 from app.services.access_key_service import AccessKeyService
 from app.services.admin_config_service import AdminConfigService
 from app.services.admin_model_config_service import AdminModelConfigService
+from app.services.material_cleanup_service import MaterialCleanupService
 from app.services.runtime_errors import ModelRuntimeError
 from app.services.visa_policy_ingest_service import PolicyKnowledgeIngestService
 
@@ -380,6 +381,20 @@ def list_key_sessions(
             }
         )
     return {"key_id": key_id, "sessions": sessions}
+
+
+@router.delete("/access-keys/{key_id}/materials")
+def clear_access_key_materials(
+    key_id: str,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        result = MaterialCleanupService(db).clear_access_key_materials(key_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.commit()
+    return result.to_payload()
 
 
 @router.get("/sessions/{session_id}/messages")

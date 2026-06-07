@@ -17,7 +17,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { PROJECT_INFO } from "@/lib/project-info"
-import { appVersionDetailLabel } from "@/lib/app-version"
 import {
   isImportableMaterialPackage,
   isValidatedMaterialTemplatePackage,
@@ -103,8 +102,6 @@ function materialPackageMetaSummary(item: MaterialPackageArchiveItem): string {
 }
 
 interface SettingsPanelProps {
-  mockMode: boolean
-  apiBaseUrl: string
   sessionId: string | null
   visaType: VisaFamily | null
   historyCount: number
@@ -132,6 +129,7 @@ interface SettingsPanelProps {
   onImportMaterialPackage: (packageId: string) => void
   onResetCurrentSession: () => void
   onClearHistory: () => void
+  onClearCurrentKeyMaterials: () => void
   onLogout: () => void
   accessKeyQuota?: AccessKeyQuota | null
   showGithub?: boolean
@@ -141,8 +139,6 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({
-  mockMode,
-  apiBaseUrl,
   sessionId,
   visaType,
   historyCount,
@@ -167,6 +163,7 @@ export function SettingsPanel({
   onImportMaterialPackage,
   onResetCurrentSession,
   onClearHistory,
+  onClearCurrentKeyMaterials,
   onLogout,
   accessKeyQuota = null,
   showGithub = true,
@@ -295,40 +292,10 @@ export function SettingsPanel({
           <CardHeader className="px-5 pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Settings2 className="h-4 w-4 text-primary" />
-              运行配置
+              当前会话
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 px-5">
-            <div className="flex items-center justify-between rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div>
-                <div className="text-sm font-medium text-foreground">
-                  Mock 模式
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  通过 `NEXT_PUBLIC_MOCK` 控制，运行时不可直接切换。
-                </div>
-              </div>
-              <Badge variant="outline">{mockMode ? "已开启" : "已关闭"}</Badge>
-            </div>
-
-            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="text-sm font-medium text-foreground">
-                前端版本
-              </div>
-              <div className="mt-1 break-all font-mono text-xs leading-6 text-muted-foreground">
-                {appVersionDetailLabel()}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
-              <div className="text-sm font-medium text-foreground">
-                API 地址
-              </div>
-              <div className="mt-1 break-all text-xs leading-6 text-muted-foreground">
-                {apiBaseUrl || "未配置"}
-              </div>
-            </div>
-
             <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
               <div className="text-sm font-medium text-foreground">
                 当前会话 ID
@@ -372,6 +339,39 @@ export function SettingsPanel({
                 ) : null}
               </div>
             </div>
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="w-full justify-center gap-2 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  清理本 Key 上传资料
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent className="rounded-2xl">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>确认清理本 Key 上传资料？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    此操作只会清理当前授权 Key
+                    名下所有会话里的非模板上传资料，包括当前会话；不会删除 validated
+                    template / material package、会话记录、消息记录或访问 Key。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="rounded-xl">
+                    取消
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={onClearCurrentKeyMaterials}
+                    className="rounded-xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    确认清理资料
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
 
             <Button
               variant="outline"

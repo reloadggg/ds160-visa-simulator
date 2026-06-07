@@ -5,6 +5,7 @@ import Link from "next/link"
 import { ArrowRight, BarChart3, KeyRound, LockKeyhole, Radar, Sparkles } from "lucide-react"
 import { buildApiUrl } from "@/lib/api/config"
 import {
+  clearAdminAccessKeyMaterials,
   createAdminAccessKey,
   fetchAdminModelConfigModels,
   getAdminLoginAudit,
@@ -69,6 +70,7 @@ type QuotaTarget = {
   mode: QuotaMode
   value: number
 } | null
+type MaterialCleanupTarget = AdminAccessKeyRecord | null
 
 type ModelDraft = {
   baseUrl: string
@@ -171,6 +173,8 @@ export default function AdminPage() {
   const [revealDetail, setRevealDetail] = useState<string | null>(null)
   const [toggleTarget, setToggleTarget] = useState<ToggleTarget>(null)
   const [quotaTarget, setQuotaTarget] = useState<QuotaTarget>(null)
+  const [materialCleanupTarget, setMaterialCleanupTarget] =
+    useState<MaterialCleanupTarget>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [keySessions, setKeySessions] = useState<KeySession[]>([])
   const [selectedMessages, setSelectedMessages] = useState<AdminMessage[]>([])
@@ -399,6 +403,27 @@ export default function AdminPage() {
       setNotice("访问 Key 额度已更新。")
     } catch (err) {
       setError(errorMessage(err, "访问 Key 额度更新失败"))
+    }
+  }
+
+  const applyMaterialCleanup = async () => {
+    if (!materialCleanupTarget) return
+    setError(null)
+    try {
+      const result = await clearAdminAccessKeyMaterials(
+        materialCleanupTarget.key_id,
+      )
+      setMaterialCleanupTarget(null)
+      await refreshKeys()
+      if (selectedKey === result.key_id) {
+        await loadKeySessions(result.key_id)
+        setSelectedMessages([])
+      }
+      setNotice(
+        `已清理 ${result.cleared_document_count} 份资料，保留 ${result.skipped_template_count} 份模板/归档资料；会话、消息和访问 Key 未删除。`,
+      )
+    } catch (err) {
+      setError(errorMessage(err, "访问 Key 资料清理失败"))
     }
   }
 
@@ -747,6 +772,12 @@ export default function AdminPage() {
                       }
                     >
                       调整额度
+                    </button>
+                    <button
+                      className="rounded-xl border border-red-300/20 bg-red-500/10 px-3 py-1.5 font-medium text-red-100"
+                      onClick={() => setMaterialCleanupTarget(item)}
+                    >
+                      清理该 Key 资料
                     </button>
                   </div>
                 </article>
@@ -1322,6 +1353,36 @@ export default function AdminPage() {
                 onClick={() => void applyQuota()}
               >
                 保存额度
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {materialCleanupTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-red-300/20 bg-[#07101f]/95 p-6 text-white shadow-2xl shadow-black/40">
+            <h2 className="text-xl font-semibold">确认清理该 Key 资料</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-300">
+              目标：{materialCleanupTarget.label || materialCleanupTarget.key_id}。
+              此操作只会 tombstone 该访问 Key 名下所有会话里的非模板上传资料；
+              不会删除 validated template / material package、会话、消息或访问 Key。
+            </p>
+            <div className="mt-4 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-xs leading-5 text-amber-100">
+              清理范围通过 access_key_sessions 限定，不会跨 Key 处理其它客户资料。
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
+                onClick={() => setMaterialCleanupTarget(null)}
+              >
+                取消
+              </button>
+              <button
+                className="rounded-2xl bg-red-200 px-4 py-2 text-sm font-semibold text-red-950 shadow-lg shadow-red-950/20 transition hover:bg-red-100"
+                onClick={() => void applyMaterialCleanup()}
+              >
+                确认清理资料
               </button>
             </div>
           </div>

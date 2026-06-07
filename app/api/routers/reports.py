@@ -2,15 +2,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_session_access
+from app.db.models import DocumentRecord
 from app.db.session import get_db
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
-from app.services.case_memory_service import CaseMemoryService
+from app.services.case_memory_service import CASE_MEMORY_TOMBSTONE_KEY, CaseMemoryService
 from app.services.interview_review_service import InterviewReviewService
 from app.services.report_service import ReportService
 from app.services.session_read_model_service import SessionReadModelService
 
 router = APIRouter(prefix="/v1/sessions/{session_id}/reports", tags=["reports"])
+
+
+def _document_tombstoned(document: DocumentRecord) -> bool:
+    artifact = dict(document.artifact_json or {})
+    tombstone = artifact.get(CASE_MEMORY_TOMBSTONE_KEY)
+    return document.status in {"deleted", "tombstoned"} or (
+        isinstance(tombstone, dict) and tombstone.get("status") == "tombstoned"
+    )
 
 
 @router.get("/user")
@@ -90,7 +99,11 @@ def export_session_report(
     read_model = SessionReadModelService(db).build_from_record(record)
     case_memory = CaseMemoryService(db)
     case_board = case_memory.public_case_board(session_id)
-    documents = DocumentRepository(db).list_session_document_exports(session_id)
+    documents = [
+        document
+        for document in DocumentRepository(db).list_session_document_exports(session_id)
+        if not _document_tombstoned(document)
+    ]
     user_report = ReportService().user_report(
         session_id=session_id,
         visa_family=record.declared_family or "unknown",

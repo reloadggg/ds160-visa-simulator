@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
@@ -52,6 +53,7 @@ export default function DS160Workbench() {
 }
 
 function Workbench() {
+  const router = useRouter()
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG)
   const { userProfile, accessKeyQuota, logout } = useAuth()
@@ -121,9 +123,15 @@ function Workbench() {
     handleDebugMaterialBundleScenario,
     refreshMaterialPackages,
     handleImportMaterialPackage,
+    handleClearCurrentKeyMaterials,
     handleClearHistory,
     handleRestoreSession,
   } = useSessionWorkbench()
+
+  const handleLogoutToHome = async () => {
+    await logout()
+    router.replace("/")
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -184,7 +192,7 @@ function Workbench() {
           }
           isDebugBundleGenerating={isDebugBundleGenerating}
           onExportConversationImage={handleExportConversationImage}
-          onLogout={() => void logout()}
+          onLogout={() => void handleLogoutToHome()}
         />
       )
     }
@@ -214,7 +222,7 @@ function Workbench() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void logout()}
+            onClick={() => void handleLogoutToHome()}
             className="gap-2 rounded-full bg-white/70 dark:border-white/12 dark:bg-white/[0.06] dark:text-slate-100 dark:hover:bg-white/[0.1]"
           >
             <LogOut className="h-4 w-4" />
@@ -338,6 +346,8 @@ function Workbench() {
             >
               <RuntimeDebugPanel
                 sessionId={sessionId}
+                mockMode={mockMode}
+                apiBaseUrl={apiBaseUrl}
                 snapshot={runtimeDebugSnapshot}
                 liveEvents={runtimeDebugEvents}
                 latestDebugBundle={latestDebugMaterialBundle}
@@ -354,8 +364,6 @@ function Workbench() {
               )}
             >
               <SettingsPanel
-                mockMode={mockMode}
-                apiBaseUrl={apiBaseUrl}
                 sessionId={sessionId}
                 visaType={visaType}
                 historyCount={sessionHistory.length}
@@ -382,7 +390,8 @@ function Workbench() {
                 onImportMaterialPackage={handleImportMaterialPackage}
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
-                onLogout={() => void logout()}
+                onClearCurrentKeyMaterials={handleClearCurrentKeyMaterials}
+                onLogout={() => void handleLogoutToHome()}
                 accessKeyQuota={accessKeyQuota}
                 showGithub={appConfig.show_github_link}
                 showUserModelConfig={appConfig.user_model_config_enabled}

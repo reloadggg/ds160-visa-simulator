@@ -33,7 +33,7 @@ test("visa selector confirms before creating an account-consuming session", () =
 })
 
 test("workbench passes quota state to session creation UI", () => {
-  const source = readProjectFile("app/page.tsx")
+  const source = readProjectFile("app/login/page.tsx")
 
   assert.match(source, /const \{ userProfile, accessKeyQuota(?:, logout)? \} = useAuth\(\)/)
   assert.match(source, /accessKeyQuota=\{accessKeyQuota\}/)

@@ -13,6 +13,7 @@ import { toPng } from "html-to-image"
 import {
   ApiError,
   clearAccountSessions,
+  clearCurrentKeyMaterials,
   createSession,
   createDebugMaterialBundleStream,
   exportSession,
@@ -3590,6 +3591,73 @@ export function useSessionWorkbench() {
     }
   }, [getErrorMessage, mockMode, refreshServerHistory, sessionId])
 
+  const handleClearCurrentKeyMaterials = useCallback(async () => {
+    if (mockMode) {
+      setUploadedMaterials([])
+      setUserReport(null)
+      setInternalReport(null)
+      setInterviewReview(null)
+      setRuntimeDebugSnapshot(null)
+      setRuntimeDebugEvents([])
+      setLatestDebugMaterialBundle(null)
+      updateHistoryStore((prev) =>
+        prev.map((entry) => ({
+          ...entry,
+          materials: [],
+        })),
+      )
+      setSettingsFeedback("本 Key 上传资料已清理。")
+      return
+    }
+
+    try {
+      const result = await clearCurrentKeyMaterials()
+      setUploadedMaterials([])
+      setUserReport(null)
+      setInternalReport(null)
+      setInterviewReview(null)
+      setRuntimeDebugSnapshot(null)
+      setRuntimeDebugEvents([])
+      setLatestDebugMaterialBundle(null)
+      updateHistoryStore((prev) =>
+        prev.map((entry) => ({
+          ...entry,
+          materials: [],
+        })),
+      )
+      if (sessionId) {
+        await Promise.all([
+          fetchUserReport(sessionId),
+          refreshRuntimeDebugSnapshot(sessionId).catch(() => null),
+        ])
+      }
+      await refreshMaterialPackages()
+      const clearedSummary =
+        result.cleared_document_count > 0
+          ? `已清理 ${result.cleared_document_count} 份上传资料`
+          : "没有发现需要清理的上传资料"
+      const skippedSummary =
+        result.skipped_template_count > 0
+          ? `；保留 ${result.skipped_template_count} 份模板/归档资料`
+          : ""
+      setSettingsFeedback(
+        `${clearedSummary}${skippedSummary}。会话、消息和当前 Key 未删除。`,
+      )
+    } catch (error) {
+      setSettingsFeedback(
+        `本 Key 上传资料清理失败：${getErrorMessage(error, "请稍后重试。")}`,
+      )
+    }
+  }, [
+    fetchUserReport,
+    getErrorMessage,
+    mockMode,
+    refreshMaterialPackages,
+    refreshRuntimeDebugSnapshot,
+    sessionId,
+    updateHistoryStore,
+  ])
+
   const handleRestoreSession = useCallback((entry: SessionHistoryEntry) => {
     setSession({
       session_id: entry.session_id,
@@ -3717,6 +3785,7 @@ export function useSessionWorkbench() {
     handleImportMaterialPackage,
     handleDebugFillCurrentGap,
     handleClearHistory,
+    handleClearCurrentKeyMaterials,
     handleRestoreSession,
   }
 }

@@ -978,6 +978,14 @@ export interface ClearSessionsResponse {
   remaining_session_id?: string | null
 }
 
+export interface MaterialCleanupResponse {
+  key_id: string
+  session_count: number
+  cleared_document_count: number
+  skipped_template_count: number
+  affected_session_ids: string[]
+}
+
 export interface BackendSessionGateStatus {
   declared_family?: string | null
   scenario_key?: string | null
