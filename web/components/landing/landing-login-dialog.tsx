@@ -3,7 +3,7 @@
 import type { FormEvent } from "react"
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowRight, KeyRound, ShieldAlert, Sparkles, UserRound } from "lucide-react"
+import { ArrowRight, KeyRound, ShieldAlert, Sparkles } from "lucide-react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
@@ -17,6 +17,11 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/hooks/use-auth"
+import {
+  maskAccessKeyForDisplay,
+  parseSharedAccessKeyFromLocation,
+  stripSharedAccessKeyFromCurrentUrl,
+} from "@/lib/access-key-share"
 import { cn } from "@/lib/utils"
 
 type LandingLoginDialogProps = {
@@ -28,6 +33,17 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
   const router = useRouter()
   const { login, isLoggingIn, error } = useAuth()
   const [localError, setLocalError] = useState<string | null>(null)
+  const [sharedAccessKey, setSharedAccessKey] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null
+    }
+    return parseSharedAccessKeyFromLocation(window.location)
+  })
+
+  const hasSharedAccessKey = Boolean(sharedAccessKey)
+  const maskedSharedAccessKey = sharedAccessKey
+    ? maskAccessKeyForDisplay(sharedAccessKey)
+    : ""
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -36,8 +52,9 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
     }
 
     const formData = new FormData(event.currentTarget)
-    const displayName = String(formData.get("displayName") ?? "").trim()
-    const password = String(formData.get("password") ?? "").trim()
+    const password = (
+      sharedAccessKey ?? String(formData.get("password") ?? "")
+    ).trim()
 
     if (!password) {
       setLocalError("请输入后台发放的授权 Key")
@@ -45,8 +62,12 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
     }
 
     setLocalError(null)
-    const ok = await login(password, displayName)
+    const ok = await login(password)
     if (ok) {
+      if (sharedAccessKey) {
+        stripSharedAccessKeyFromCurrentUrl()
+        setSharedAccessKey(null)
+      }
       onOpenChange(false)
       router.push("/login")
     }
@@ -86,7 +107,7 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
               进入模拟面签
             </DialogTitle>
             <DialogDescription className="text-sm leading-6 text-slate-300">
-              使用后台发放的授权 Key 解锁工作台。用户名可留空，系统会自动生成一个临时身份。
+              使用后台发放的授权 Key 解锁工作台。用户名进入后可在工作台设置里修改。
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -99,46 +120,42 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
             </Alert>
           ) : null}
 
-          <div className="space-y-2.5">
-            <Label htmlFor="landing-login-display-name" className="text-sm font-semibold text-slate-200">
-              用户名
-              <span className="font-normal text-slate-500">可选</span>
-            </Label>
-            <div className="relative">
-              <UserRound className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/34" />
-              <Input
-                id="landing-login-display-name"
-                name="displayName"
-                type="text"
-                placeholder="不填则自动生成 User_123456"
-                autoComplete="nickname"
-                disabled={isLoggingIn}
-                className="h-12 rounded-2xl border-white/10 bg-white/[0.055] pl-11 pr-4 text-base text-white shadow-inner shadow-white/[0.03] placeholder:text-slate-500 focus-visible:border-cyan-200/40 focus-visible:ring-cyan-200/18 sm:h-13"
-              />
+          {hasSharedAccessKey ? (
+            <div className="rounded-2xl border border-cyan-200/15 bg-cyan-200/[0.06] p-4 text-sm leading-6 text-cyan-50">
+              <div className="flex items-center gap-2 font-semibold">
+                <KeyRound className="h-4 w-4" />
+                已识别分享链接中的授权 Key
+              </div>
+              <div className="mt-1 font-mono text-xs text-cyan-100/80">
+                {maskedSharedAccessKey}
+              </div>
+              <p className="mt-2 text-xs text-slate-400">
+                点击“启用并进入工作台”即可使用；验证成功后会清理地址栏中的 Key。
+              </p>
             </div>
-          </div>
-
-          <div className="space-y-2.5">
-            <Label htmlFor="landing-login-password" className="text-sm font-semibold text-slate-200">
-              授权 Key
-              <span className="font-normal text-cyan-100/58">必填</span>
-            </Label>
-            <div className="relative">
-              <KeyRound className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/34" />
-              <Input
-                id="landing-login-password"
-                name="password"
-                type="password"
-                placeholder="ds160_..."
-                autoComplete="current-password"
-                required
-                autoFocus
-                disabled={isLoggingIn}
-                aria-invalid={Boolean(visibleError)}
-                className="h-12 rounded-2xl border-white/10 bg-white/[0.055] pl-11 pr-4 text-base text-white shadow-inner shadow-white/[0.03] placeholder:text-slate-500 focus-visible:border-cyan-200/40 focus-visible:ring-cyan-200/18 sm:h-13"
-              />
+          ) : (
+            <div className="space-y-2.5">
+              <Label htmlFor="landing-login-password" className="text-sm font-semibold text-slate-200">
+                授权 Key
+                <span className="font-normal text-cyan-100/58">必填</span>
+              </Label>
+              <div className="relative">
+                <KeyRound className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/34" />
+                <Input
+                  id="landing-login-password"
+                  name="password"
+                  type="password"
+                  placeholder="ds160_..."
+                  autoComplete="current-password"
+                  required
+                  autoFocus
+                  disabled={isLoggingIn}
+                  aria-invalid={Boolean(visibleError)}
+                  className="h-12 rounded-2xl border-white/10 bg-white/[0.055] pl-11 pr-4 text-base text-white shadow-inner shadow-white/[0.03] placeholder:text-slate-500 focus-visible:border-cyan-200/40 focus-visible:ring-cyan-200/18 sm:h-13"
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <button
             type="submit"
@@ -147,7 +164,11 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
           >
             <span className="inline-flex items-center gap-2">
               <Sparkles className="h-4 w-4" />
-              {isLoggingIn ? "正在验证授权..." : "验证并进入工作台"}
+              {isLoggingIn
+                ? "正在验证授权..."
+                : hasSharedAccessKey
+                  ? "启用并进入工作台"
+                  : "验证并进入工作台"}
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-black text-white transition group-hover:translate-x-0.5">
               <ArrowRight className="h-4 w-4" />

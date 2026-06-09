@@ -167,3 +167,17 @@ class CaseMemorySnapshotRecord(Base):
         DateTime(timezone=False),
         default=utc_now_naive,
     )
+
+
+class WxUploadTicketRecord(Base):
+    __tablename__ = "wx_upload_tickets"
+
+    ticket_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    access_key_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=utc_now_naive)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True)
+    max_files: Mapped[int] = mapped_column(Integer, default=5)
+    uploaded_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    upload_results_json: Mapped[list] = mapped_column(JSON, default=list)

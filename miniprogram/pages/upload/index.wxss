@@ -1,0 +1,166 @@
+.upload-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+}
+
+.header-card,
+.form-card,
+.action-card,
+.status-card,
+.files-card,
+.debug-card {
+  border: 1rpx solid #e2e8f0;
+  border-radius: 28rpx;
+  background: #ffffff;
+  box-shadow: 0 16rpx 48rpx rgba(15, 23, 42, 0.06);
+}
+
+.header-card {
+  padding: 36rpx;
+  background: linear-gradient(135deg, #0f172a, #1d4ed8);
+  color: #ffffff;
+}
+
+.eyebrow {
+  font-size: 24rpx;
+  opacity: 0.78;
+}
+
+.title {
+  margin-top: 12rpx;
+  font-size: 40rpx;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.subtitle {
+  margin-top: 18rpx;
+  font-size: 28rpx;
+  line-height: 1.55;
+  opacity: 0.88;
+}
+
+.form-card,
+.action-card,
+.status-card,
+.files-card,
+.debug-card {
+  padding: 28rpx;
+}
+
+.label,
+.section-title,
+.notice-title,
+.status-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.context-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 150rpx;
+  margin-top: 18rpx;
+  padding: 22rpx;
+  border: 1rpx solid #cbd5e1;
+  border-radius: 20rpx;
+  background: #f8fafc;
+  font-size: 28rpx;
+  line-height: 1.5;
+}
+
+.hint,
+.status-body,
+.notice-body,
+.file-meta,
+.file-error,
+.debug-card {
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.hint {
+  margin-top: 12rpx;
+}
+
+.primary {
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.secondary {
+  margin-top: 18rpx;
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.notice {
+  padding: 24rpx 28rpx;
+  border-radius: 24rpx;
+}
+
+.notice.error,
+.status-card.is-error {
+  border: 1rpx solid #fecaca;
+  background: #fef2f2;
+}
+
+.status-card.is-success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.status-card.is-uploading,
+.status-card.is-ready,
+.status-card.is-choosing {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.status-body {
+  margin-top: 10rpx;
+  color: #334155;
+}
+
+.file-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18rpx;
+  margin-top: 22rpx;
+}
+
+.file-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 28rpx;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.progress-text {
+  min-width: 76rpx;
+  text-align: right;
+  font-size: 26rpx;
+  color: #2563eb;
+}
+
+.file-error {
+  margin-top: 8rpx;
+  color: #dc2626;
+}
+
+.debug-card {
+  overflow-wrap: anywhere;
+  background: #f8fafc;
+}

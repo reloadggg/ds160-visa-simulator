@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/webview/index",
+    "pages/upload/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "DS-160 面签助手",
+    "navigationBarBackgroundColor": "#0f172a",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#f8fafc",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents"
+}

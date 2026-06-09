@@ -1,0 +1,33 @@
+{
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "libVersion": "latest",
+  "miniprogramRoot": "./",
+  "projectname": "ds160-wechat-webview-mvp",
+  "setting": {
+    "coverView": true,
+    "es6": true,
+    "enhance": true,
+    "minified": true,
+    "postcss": true,
+    "urlCheck": true
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "id": 0,
+          "name": "web-view shell",
+          "pathName": "pages/webview/index",
+          "query": ""
+        },
+        {
+          "id": 1,
+          "name": "native upload page",
+          "pathName": "pages/upload/index",
+          "query": "session_id=demo_session&ticket=demo_ticket&api_base_url=https%3A%2F%2FYOUR_DOMAIN"
+        }
+      ]
+    }
+  }
+}

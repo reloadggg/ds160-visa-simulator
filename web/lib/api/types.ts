@@ -782,6 +782,29 @@ export interface FileUploadResponse {
   [key: string]: unknown
 }
 
+export interface WxUploadTicketResponse {
+  ticket: string
+  session_id: string
+  expires_at?: string | null
+  max_files: number
+  uploaded_count: number
+  remaining_files?: number | null
+  status?: "active" | "expired" | "completed" | "revoked" | string
+}
+
+export interface WxUploadTicketUploadResult {
+  document_id?: string | null
+  file_name?: string | null
+  mime_type?: string | null
+  size?: number | null
+  uploaded_at?: string | null
+  upload: FileUploadResponse
+}
+
+export interface WxUploadTicketStatusResponse extends WxUploadTicketResponse {
+  upload_results: WxUploadTicketUploadResult[]
+}
+
 export interface InternalReport {
   session_id?: string
   policy_pack_trace?: Record<string, unknown>
@@ -1229,6 +1252,30 @@ export interface BackendFileUploadResponse {
   /** Global unresolved documents/evidence; not a CTA source by itself. */
   remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null
+}
+
+export interface BackendWxUploadTicketUploadResult {
+  document_id?: string | null
+  file_name?: string | null
+  filename?: string | null
+  name?: string | null
+  mime_type?: string | null
+  size?: number | null
+  uploaded_at?: string | null
+  upload?: BackendFileUploadResponse | null
+  result?: BackendFileUploadResponse | null
+}
+
+export interface BackendWxUploadTicketStatusResponse {
+  ticket: string
+  session_id: string
+  expires_at?: string | null
+  max_files?: number
+  uploaded_count?: number
+  remaining_files?: number | null
+  status?: "active" | "expired" | "completed" | "revoked" | string
+  upload_results?: BackendWxUploadTicketUploadResult[]
+  uploads?: BackendWxUploadTicketUploadResult[]
 }
 
 export type BackendInternalReport = InternalReport

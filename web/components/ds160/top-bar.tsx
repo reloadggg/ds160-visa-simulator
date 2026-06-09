@@ -34,6 +34,7 @@ import {
   StopCircle,
   Bell,
   ChevronDown,
+  Pencil,
   RotateCcw,
   FlaskConical,
   Camera,
@@ -59,6 +60,7 @@ interface TopBarProps {
   isDebugBundleGenerating?: boolean
   onExportConversationImage?: () => void
   onLogout: () => void
+  onEditUserName?: () => void
 }
 
 export function TopBar({
@@ -74,6 +76,7 @@ export function TopBar({
   isDebugBundleGenerating = false,
   onExportConversationImage,
   onLogout,
+  onEditUserName,
 }: TopBarProps) {
   const [debugBundleDialogOpen, setDebugBundleDialogOpen] = useState(false)
   const [selectedDebugBundleScenario, setSelectedDebugBundleScenario] =
@@ -218,6 +221,12 @@ export function TopBar({
               <RotateCcw className="h-4 w-4" />
               重新选择
             </DropdownMenuItem>
+            {onEditUserName ? (
+              <DropdownMenuItem onClick={onEditUserName}>
+                <Pencil className="h-4 w-4" />
+                修改用户名
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onLogout}>
               <LogOut className="h-4 w-4" />
@@ -235,7 +244,13 @@ export function TopBar({
           <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive" />
         </Button>
 
-        <div className="hidden min-w-0 items-center gap-2 border-l border-border pl-3 lg:flex">
+        <button
+          type="button"
+          onClick={onEditUserName}
+          disabled={!onEditUserName}
+          className="hidden min-w-0 items-center gap-2 border-l border-border pl-3 text-left transition hover:opacity-80 disabled:pointer-events-none lg:flex"
+          title="修改用户名"
+        >
           <Avatar className="h-8 w-8 shrink-0">
             <AvatarImage src={userAvatarUrl} alt={`${displayName} 的头像`} />
             <AvatarFallback>{fallbackInitials}</AvatarFallback>
@@ -244,7 +259,7 @@ export function TopBar({
             {displayName}
           </span>
           <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </div>
+        </button>
       </div>
       {onDebugMaterialBundleScenario ? (
         <Dialog

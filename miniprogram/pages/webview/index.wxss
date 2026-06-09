@@ -1,0 +1,43 @@
+.webview-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card {
+  width: 100%;
+  padding: 36rpx;
+  border: 1rpx solid #e2e8f0;
+  border-radius: 28rpx;
+  background: #ffffff;
+  box-shadow: 0 24rpx 60rpx rgba(15, 23, 42, 0.08);
+}
+
+.title {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.desc {
+  margin-top: 18rpx;
+  font-size: 28rpx;
+  line-height: 1.6;
+  color: #475569;
+}
+
+.url {
+  margin-top: 20rpx;
+  padding: 18rpx;
+  overflow-wrap: anywhere;
+  border-radius: 16rpx;
+  background: #f1f5f9;
+  font-size: 24rpx;
+  color: #334155;
+}
+
+.primary {
+  margin-top: 28rpx;
+  background: #2563eb;
+  color: #ffffff;
+}

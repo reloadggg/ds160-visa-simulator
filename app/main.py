@@ -20,6 +20,10 @@ from app.api.routers.openai_responses import router as openai_responses_router
 from app.api.routers.rag import router as rag_router
 from app.api.routers.reports import router as reports_router
 from app.api.routers.sessions import router as sessions_router
+from app.api.routers.wx_upload import (
+    session_router as wx_upload_session_router,
+    ticket_router as wx_upload_ticket_router,
+)
 from app.core.app_version import APP_VERSION, backend_version_payload
 from app.core.health import build_health_payload
 from app.core.logging_config import configure_logging
@@ -396,6 +400,8 @@ app.include_router(rag_router)
 app.include_router(reports_router)
 app.include_router(openai_compat_router)
 app.include_router(openai_responses_router)
+app.include_router(wx_upload_session_router)
+app.include_router(wx_upload_ticket_router)
 
 
 @app.get("/livez")

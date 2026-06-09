@@ -1,12 +1,18 @@
 "use client"
 
 import type { FormEvent, ReactNode } from "react"
+import { useState } from "react"
 import { useAuth } from "@/hooks/use-auth"
+import {
+  maskAccessKeyForDisplay,
+  parseSharedAccessKeyFromLocation,
+  stripSharedAccessKeyFromCurrentUrl,
+} from "@/lib/access-key-share"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
-import { ArrowRight, LockKeyhole, ShieldAlert, Sparkles } from "lucide-react"
+import { ArrowRight, KeyRound, LockKeyhole, ShieldAlert, Sparkles } from "lucide-react"
 
 interface AuthGuardProps {
   children: ReactNode
@@ -17,16 +23,32 @@ const previewPoints = ["真实面签节奏", "材料与风险联动", "Agent 2.0
 export function AuthGuard({ children }: AuthGuardProps) {
   const { isAuthenticated, isCheckingAuth, isLoggingIn, error, login } =
     useAuth()
+  const [sharedAccessKey, setSharedAccessKey] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null
+    }
+    return parseSharedAccessKeyFromLocation(window.location)
+  })
+
+  const hasSharedAccessKey = Boolean(sharedAccessKey)
+  const maskedSharedAccessKey = sharedAccessKey
+    ? maskAccessKeyForDisplay(sharedAccessKey)
+    : ""
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
-    const password = String(formData.get("password") ?? "").trim()
-    const displayName = String(formData.get("displayName") ?? "").trim()
+    const password = (
+      sharedAccessKey ?? String(formData.get("password") ?? "")
+    ).trim()
     if (!password || isLoggingIn) {
       return
     }
-    await login(password, displayName)
+    const ok = await login(password)
+    if (ok && sharedAccessKey) {
+      stripSharedAccessKeyFromCurrentUrl()
+      setSharedAccessKey(null)
+    }
   }
 
   if (isAuthenticated) {
@@ -132,56 +154,54 @@ export function AuthGuard({ children }: AuthGuardProps) {
                   </Alert>
                 ) : null}
 
-                <div className="space-y-2">
-                  <Label
-                    htmlFor="auth-display-name"
-                    className="text-sm font-medium text-slate-700"
-                  >
-                    用户名
-                  </Label>
-                  <Input
-                    id="auth-display-name"
-                    name="displayName"
-                    type="text"
-                    placeholder="不填则自动生成 User_123456"
-                    autoComplete="nickname"
-                    disabled={isLoggingIn}
-                    className={cn(
-                      "h-12 rounded-2xl border-slate-200 bg-white/80 px-4 text-base shadow-sm transition-all sm:h-13",
-                      "placeholder:text-slate-400 focus-visible:border-sky-400/20 focus-visible:ring-sky-400/20",
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label
-                    htmlFor="auth-password"
-                    className="text-sm font-medium text-slate-700"
-                  >
-                    授权 Key
-                  </Label>
-                  <Input
-                    id="auth-password"
-                    name="password"
-                    type="password"
-                    placeholder="ds160_..."
-                    autoComplete="current-password"
-                    autoFocus
-                    required
-                    disabled={isLoggingIn}
-                    className={cn(
-                      "h-12 rounded-2xl border-slate-200 bg-white/80 px-4 text-base shadow-sm transition-all sm:h-13",
-                      "placeholder:text-slate-400 focus-visible:border-sky-400 focus-visible:ring-sky-400/20",
-                    )}
-                  />
-                </div>
+                {hasSharedAccessKey ? (
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50/80 p-4 text-sm leading-6 text-sky-900">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <KeyRound className="h-4 w-4" />
+                      已识别分享链接中的授权 Key
+                    </div>
+                    <div className="mt-1 font-mono text-xs text-sky-700">
+                      {maskedSharedAccessKey}
+                    </div>
+                    <p className="mt-2 text-xs text-sky-700">
+                      点击下方按钮即可启用并进入工作台；验证成功后会自动清理地址栏中的 Key。
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label
+                      htmlFor="auth-password"
+                      className="text-sm font-medium text-slate-700"
+                    >
+                      授权 Key
+                    </Label>
+                    <Input
+                      id="auth-password"
+                      name="password"
+                      type="password"
+                      placeholder="ds160_..."
+                      autoComplete="current-password"
+                      autoFocus
+                      required
+                      disabled={isLoggingIn}
+                      className={cn(
+                        "h-12 rounded-2xl border-slate-200 bg-white/80 px-4 text-base shadow-sm transition-all sm:h-13",
+                        "placeholder:text-slate-400 focus-visible:border-sky-400 focus-visible:ring-sky-400/20",
+                      )}
+                    />
+                  </div>
+                )}
 
                 <button
                   type="submit"
                   disabled={isLoggingIn}
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 text-base font-semibold text-white shadow-lg shadow-slate-950/18 transition-all hover:-translate-y-0.5 hover:bg-slate-800 disabled:opacity-50 sm:h-13"
                 >
-                  {isLoggingIn ? "正在验证..." : "使用授权 Key 进入"}
+                  {isLoggingIn
+                    ? "正在验证..."
+                    : hasSharedAccessKey
+                      ? "启用分享 Key 并进入"
+                      : "使用授权 Key 进入"}
                   <ArrowRight className="h-4 w-4" />
                 </button>
               </form>

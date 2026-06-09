@@ -131,6 +131,8 @@ interface SettingsPanelProps {
   onClearHistory: () => void
   onClearCurrentKeyMaterials: () => void
   onLogout: () => void
+  userDisplayName?: string
+  onUpdateUserDisplayName?: (displayName: string) => void
   accessKeyQuota?: AccessKeyQuota | null
   showGithub?: boolean
   showUserModelConfig?: boolean
@@ -165,6 +167,8 @@ export function SettingsPanel({
   onClearHistory,
   onClearCurrentKeyMaterials,
   onLogout,
+  userDisplayName = "",
+  onUpdateUserDisplayName,
   accessKeyQuota = null,
   showGithub = true,
   showUserModelConfig = true,
@@ -179,6 +183,7 @@ export function SettingsPanel({
       DEFAULT_DEBUG_MATERIAL_BUNDLE_SCENARIO,
     )
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
+  const [displayNameDraft, setDisplayNameDraft] = useState(userDisplayName)
   const materialSeedText = materialSeedOverride
   const debugBundleOptions = useMemo(
     () => getDebugMaterialBundleOptionsForVisaFamily(visaType),
@@ -252,6 +257,14 @@ export function SettingsPanel({
     onImportMaterialPackage(packageId)
   }
 
+  const handleDisplayNameSubmit = () => {
+    const nextName = displayNameDraft.trim()
+    if (!nextName || !onUpdateUserDisplayName) {
+      return
+    }
+    onUpdateUserDisplayName(nextName)
+  }
+
   const ragStatusLabel = (() => {
     if (!ragStatus) {
       return "未知"
@@ -302,6 +315,43 @@ export function SettingsPanel({
               </div>
               <div className="mt-1 break-all text-xs leading-6 text-muted-foreground">
                 {sessionId ?? "当前没有进行中的会话"}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="py-4">
+          <CardHeader className="px-5 pb-3">
+            <CardTitle className="text-base">工作台用户名</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 px-5">
+            <div className="rounded-xl border border-border bg-muted/20 px-4 py-3">
+              <div className="text-sm font-medium text-foreground">
+                当前显示名
+              </div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                用户名只用于本浏览器工作台显示；授权 Key 登录时不再要求提前固定。
+              </div>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <Input
+                  value={displayNameDraft}
+                  onChange={(event) => setDisplayNameDraft(event.target.value)}
+                  placeholder={userDisplayName || "输入工作台显示名"}
+                  maxLength={40}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={handleDisplayNameSubmit}
+                  disabled={
+                    !onUpdateUserDisplayName ||
+                    !displayNameDraft.trim() ||
+                    displayNameDraft.trim() === userDisplayName.trim()
+                  }
+                >
+                  保存用户名
+                </Button>
               </div>
             </div>
           </CardContent>

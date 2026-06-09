@@ -223,7 +223,9 @@ test("admin console uses metadata-first key operations and runtime model actions
   assert.match(clientSource, /function testAdminModelConfig/)
   assert.match(clientSource, /\/v1\/admin\/model-config\/test/)
 
-  assert.match(adminSource, /读取\/复制该 Key/)
+  assert.match(adminSource, /显示明文/)
+  assert.match(adminSource, /复制 Key/)
+  assert.match(adminSource, /一键分享链接/)
   assert.match(adminSource, /确认创建/)
   assert.match(adminSource, /精确设置总额度/)
   assert.match(adminSource, /Fetch Models/)

@@ -161,13 +161,22 @@ export function useAuth() {
     }
   }, [])
 
+  const updateUserProfile = useCallback((displayName: string) => {
+    const profile = buildUserProfile(displayName)
+    writeStoredUserProfile(profile)
+    setUserProfile(profile)
+  }, [])
+
   const login = useCallback(async (password: string, displayName?: string) => {
     setIsLoggingIn(true)
     setError(null)
     try {
       const response = await apiLogin(password)
       syncHistoryNamespace(response.history_namespace)
-      const profile = buildUserProfile(displayName)
+      const storedProfile = readStoredUserProfile()
+      const profile = displayName?.trim()
+        ? buildUserProfile(displayName)
+        : (storedProfile ?? buildUserProfile())
       writeStoredUserProfile(profile)
       setUserProfile(profile)
       setAccessKeyQuota(response.access_key_quota ?? null)
@@ -199,5 +208,6 @@ export function useAuth() {
     accessKeyQuota,
     login,
     logout,
+    updateUserProfile,
   }
 }

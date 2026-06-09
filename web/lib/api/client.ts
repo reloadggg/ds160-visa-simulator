@@ -38,6 +38,7 @@ import type {
   ClearSessionsResponse,
   BackendSessionMessagesResponse,
   BackendUserReport,
+  BackendWxUploadTicketStatusResponse,
   DebugMaterialBundleResponse,
   DebugMaterialBundleScenario,
   DebugMaterialBundleStreamEvent,
@@ -63,6 +64,9 @@ import type {
   UserModelRuntimeConfig,
   UserReport,
   VisaFamily,
+  WxUploadTicketResponse,
+  WxUploadTicketStatusResponse,
+  WxUploadTicketUploadResult,
 } from "./types"
 
 class ApiError extends Error {
@@ -691,6 +695,62 @@ export async function uploadFile(
   return mapFileUploadResponse(
     await handleResponse<BackendFileUploadResponse>(response),
   )
+}
+
+export async function createWxUploadTicket(
+  sessionId: string,
+): Promise<WxUploadTicketResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/upload-ticket`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+    },
+  )
+
+  return handleResponse<WxUploadTicketResponse>(response)
+}
+
+function mapWxUploadTicketUploadResult(
+  payload: NonNullable<
+    BackendWxUploadTicketStatusResponse["upload_results"]
+  >[number],
+): WxUploadTicketUploadResult {
+  const uploadPayload = payload.upload ?? payload.result ?? {}
+  const mappedUpload = mapFileUploadResponse(uploadPayload)
+  return {
+    document_id:
+      payload.document_id ?? mappedUpload.document_id ?? null,
+    file_name:
+      payload.file_name ?? payload.filename ?? payload.name ?? null,
+    mime_type: payload.mime_type ?? null,
+    size: payload.size ?? null,
+    uploaded_at: payload.uploaded_at ?? null,
+    upload: mappedUpload,
+  }
+}
+
+export async function getWxUploadTicketStatus(
+  ticket: string,
+): Promise<WxUploadTicketStatusResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/wx/upload-tickets/${encodeURIComponent(ticket)}`),
+    { headers: getAuthHeaders() },
+  )
+  const payload = await handleResponse<BackendWxUploadTicketStatusResponse>(
+    response,
+  )
+  const uploadResults = payload.upload_results ?? payload.uploads ?? []
+  return {
+    ticket: payload.ticket,
+    session_id: payload.session_id,
+    expires_at: payload.expires_at ?? null,
+    max_files: payload.max_files ?? 5,
+    uploaded_count: payload.uploaded_count ?? uploadResults.length,
+    remaining_files: payload.remaining_files ?? null,
+    status: payload.status ?? "active",
+    upload_results: uploadResults.map(mapWxUploadTicketUploadResult),
+  }
 }
 
 export function getFileContentUrl(

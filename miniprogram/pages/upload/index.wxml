@@ -1,0 +1,61 @@
+<view class="safe-area-page upload-page">
+  <view class="header-card">
+    <view class="eyebrow">微信聊天文件上传</view>
+    <view class="title">选择聊天里的资料并上传</view>
+    <view class="subtitle">支持 PDF、Word、图片等材料。文件只会在你主动选择后上传到当前 DS-160 会话。</view>
+  </view>
+
+  <view wx:if="{{configError}}" class="notice error">
+    <view class="notice-title">缺少上传参数</view>
+    <view class="notice-body">{{configError}}</view>
+  </view>
+
+  <view class="form-card">
+    <view class="label">补充说明（可选）</view>
+    <textarea
+      class="context-input"
+      value="{{contextText}}"
+      maxlength="500"
+      placeholder="例如：这是 I-20、银行流水或护照照片"
+      bindinput="handleContextInput"
+    />
+    <view class="hint">会作为 context_text 随文件一起提交。</view>
+  </view>
+
+  <view class="action-card">
+    <button
+      class="primary"
+      loading="{{isChoosing || isUploading}}"
+      disabled="{{!canChoose}}"
+      bindtap="chooseAndUpload"
+    >
+      {{primaryButtonText}}
+    </button>
+    <button class="secondary" bindtap="goBack">返回</button>
+  </view>
+
+  <view wx:if="{{statusText}}" class="status-card {{statusClass}}">
+    <view class="status-title">{{statusText}}</view>
+    <view wx:if="{{errorMessage}}" class="status-body">{{errorMessage}}</view>
+  </view>
+
+  <view wx:if="{{uploadItems.length}}" class="files-card">
+    <view class="section-title">上传进度</view>
+    <block wx:for="{{uploadItems}}" wx:key="id">
+      <view class="file-row">
+        <view class="file-main">
+          <view class="file-name">{{item.name}}</view>
+          <view class="file-meta">{{item.sizeText}} · {{item.stateText}}</view>
+        </view>
+        <view class="progress-text">{{item.progress}}%</view>
+      </view>
+      <progress percent="{{item.progress}}" stroke-width="4" activeColor="{{item.progressColor}}" backgroundColor="#e2e8f0" />
+      <view wx:if="{{item.error}}" class="file-error">{{item.error}}</view>
+    </block>
+  </view>
+
+  <view class="debug-card">
+    <view>session_id：{{sessionId || '-'}}</view>
+    <view>api_base_url：{{apiBaseUrl || '-'}}</view>
+  </view>
+</view>

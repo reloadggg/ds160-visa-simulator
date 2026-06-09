@@ -56,7 +56,7 @@ function Workbench() {
   const router = useRouter()
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG)
-  const { userProfile, accessKeyQuota, logout } = useAuth()
+  const { userProfile, accessKeyQuota, logout, updateUserProfile } = useAuth()
 
   const {
     apiBaseUrl,
@@ -162,6 +162,14 @@ function Workbench() {
     }
   }, [appConfig.user_model_config_enabled, handleUserModelConfigChange])
 
+  const openProfileSettings = () => {
+    setActiveNavItem("settings")
+  }
+
+  const handleUpdateUserDisplayName = (displayName: string) => {
+    updateUserProfile(displayName)
+  }
+
   const onRestoreSession = (entry: SessionHistoryEntry) => {
     handleRestoreSession(entry)
     setActiveNavItem("workbench")
@@ -193,6 +201,7 @@ function Workbench() {
           isDebugBundleGenerating={isDebugBundleGenerating}
           onExportConversationImage={handleExportConversationImage}
           onLogout={() => void handleLogoutToHome()}
+          onEditUserName={openProfileSettings}
         />
       )
     }
@@ -397,6 +406,8 @@ function Workbench() {
                 showUserModelConfig={appConfig.user_model_config_enabled}
                 showRagStatus={appConfig.rag_status_user_visible}
                 showDebugTools={appConfig.debug_material_enabled}
+                userDisplayName={userProfile?.displayName ?? ""}
+                onUpdateUserDisplayName={handleUpdateUserDisplayName}
               />
             </div>
           </div>

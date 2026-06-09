@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { ArrowRight, BarChart3, KeyRound, LockKeyhole, Radar, Sparkles } from "lucide-react"
+import { ArrowRight, BarChart3, KeyRound, LinkIcon, LockKeyhole, Radar, Sparkles } from "lucide-react"
 import { buildApiUrl } from "@/lib/api/config"
 import {
   clearAdminAccessKeyMaterials,
@@ -25,6 +25,7 @@ import type {
   AdminSettings,
   ModelListItem,
 } from "@/lib/api/types"
+import { buildAccessKeyShareLink } from "@/lib/access-key-share"
 
 type KeySession = {
   session_id: string
@@ -135,6 +136,15 @@ function isQuotaMode(value: string): value is QuotaMode {
   return QUOTA_MODES.some((item) => item === value)
 }
 
+async function copyTextToClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function adminApi<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(buildApiUrl(path), {
     credentials: "include",
@@ -171,6 +181,7 @@ export default function AdminPage() {
   const [revealedKeyId, setRevealedKeyId] = useState<string | null>(null)
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null)
   const [revealDetail, setRevealDetail] = useState<string | null>(null)
+  const [revealedShareLink, setRevealedShareLink] = useState<string | null>(null)
   const [toggleTarget, setToggleTarget] = useState<ToggleTarget>(null)
   const [quotaTarget, setQuotaTarget] = useState<QuotaTarget>(null)
   const [materialCleanupTarget, setMaterialCleanupTarget] =
@@ -306,6 +317,12 @@ export default function AdminPage() {
     setCreateStep("form")
   }
 
+  const rememberRevealedSecret = (keyId: string, secret: string | null) => {
+    setRevealedKeyId(keyId)
+    setRevealedSecret(secret)
+    setRevealedShareLink(secret ? buildAccessKeyShareLink(secret) : null)
+  }
+
   const createKey = async () => {
     setError(null)
     setNotice(null)
@@ -316,8 +333,7 @@ export default function AdminPage() {
         expires_at: createExpiresAt,
         enabled: keyEnabled,
       })
-      setRevealedKeyId(payload.record.key_id)
-      setRevealedSecret(payload.key)
+      rememberRevealedSecret(payload.record.key_id, payload.key)
       setRevealDetail(null)
       resetCreateForm()
       await Promise.all([refreshKeys(), refreshAudit()])
@@ -348,11 +364,10 @@ export default function AdminPage() {
   const revealKey = async (key: AdminAccessKeyRecord) => {
     setError(null)
     setRevealDetail(null)
-    setRevealedSecret(null)
+    rememberRevealedSecret(key.key_id, null)
     try {
       const payload = await revealAdminAccessKeySecret(key.key_id)
-      setRevealedKeyId(key.key_id)
-      setRevealedSecret(payload.key)
+      rememberRevealedSecret(key.key_id, payload.key)
       setRevealDetail(
         payload.available
           ? null
@@ -365,8 +380,60 @@ export default function AdminPage() {
 
   const copySecret = async () => {
     if (!revealedSecret) return
-    await navigator.clipboard.writeText(revealedSecret)
-    setNotice("已复制选中的访问 Key 明文。")
+    const ok = await copyTextToClipboard(revealedSecret)
+    setNotice(ok ? "已复制访问 Key。" : "复制失败，请手动复制当前 Key。")
+  }
+
+  const copySecretForKey = async (key: AdminAccessKeyRecord) => {
+    setError(null)
+    setNotice(null)
+    try {
+      const payload = await revealAdminAccessKeySecret(key.key_id)
+      rememberRevealedSecret(key.key_id, payload.key)
+      setRevealDetail(
+        payload.available
+          ? null
+          : (payload.detail ?? "该访问 Key 的明文不可找回。"),
+      )
+      if (!payload.key) {
+        setNotice(payload.detail ?? "该访问 Key 的明文不可找回。")
+        return
+      }
+      const ok = await copyTextToClipboard(payload.key)
+      setNotice(ok ? "已复制访问 Key。" : "读取成功，但复制失败；请在右侧确认区手动复制。")
+    } catch (err) {
+      setError(errorMessage(err, "访问 Key 复制失败"))
+    }
+  }
+
+  const copyShareLink = async () => {
+    if (!revealedShareLink) return
+    const ok = await copyTextToClipboard(revealedShareLink)
+    setNotice(ok ? "已复制一键分享链接。" : "复制失败，请手动复制当前分享链接。")
+  }
+
+  const copyShareLinkForKey = async (key: AdminAccessKeyRecord) => {
+    setError(null)
+    setNotice(null)
+    try {
+      const payload = await revealAdminAccessKeySecret(key.key_id)
+      rememberRevealedSecret(key.key_id, payload.key)
+      setRevealDetail(
+        payload.available
+          ? null
+          : (payload.detail ?? "该访问 Key 的明文不可找回。"),
+      )
+      if (!payload.key) {
+        setNotice(payload.detail ?? "该访问 Key 的明文不可找回。")
+        return
+      }
+      const link = buildAccessKeyShareLink(payload.key)
+      setRevealedShareLink(link)
+      const ok = await copyTextToClipboard(link)
+      setNotice(ok ? "已复制一键分享链接。" : "读取成功，但复制失败；请在右侧确认区手动复制分享链接。")
+    } catch (err) {
+      setError(errorMessage(err, "分享链接生成失败"))
+    }
   }
 
   const applyToggle = async () => {
@@ -752,7 +819,21 @@ export default function AdminPage() {
                       disabled={item.secret_available === false}
                       onClick={() => void revealKey(item)}
                     >
-                      读取/复制该 Key
+                      显示明文
+                    </button>
+                    <button
+                      className="rounded-xl border border-cyan-200/20 bg-cyan-200/10 px-3 py-1.5 font-medium text-cyan-200 disabled:opacity-50"
+                      disabled={item.secret_available === false}
+                      onClick={() => void copySecretForKey(item)}
+                    >
+                      复制 Key
+                    </button>
+                    <button
+                      className="rounded-xl border border-violet-200/20 bg-violet-200/10 px-3 py-1.5 font-medium text-violet-100 disabled:opacity-50"
+                      disabled={item.secret_available === false}
+                      onClick={() => void copyShareLinkForKey(item)}
+                    >
+                      一键分享链接
                     </button>
                     <button
                       className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-1.5 font-medium text-slate-200"
@@ -796,21 +877,43 @@ export default function AdminPage() {
                   当前选择：{revealedKeyId ?? "未选择"}
                 </div>
                 {revealedSecret ? (
-                  <code className="mt-2 block break-all rounded-xl bg-white/[0.08] p-3 text-sm text-slate-100">
-                    {revealedSecret}
-                  </code>
+                  <>
+                    <code className="mt-2 block break-all rounded-xl bg-white/[0.08] p-3 text-sm text-slate-100">
+                      {revealedSecret}
+                    </code>
+                    {revealedShareLink ? (
+                      <div className="mt-3 rounded-xl border border-violet-200/15 bg-violet-200/[0.06] p-3">
+                        <div className="flex items-center gap-2 text-xs font-semibold text-violet-100">
+                          <LinkIcon className="h-3.5 w-3.5" />
+                          一键分享链接
+                        </div>
+                        <code className="mt-2 block break-all text-xs leading-5 text-slate-200">
+                          {revealedShareLink}
+                        </code>
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="mt-2 text-sm text-slate-400">
                     {revealDetail ?? "请选择一个可读取的访问 Key。"}
                   </div>
                 )}
-                <button
-                  className="mt-3 rounded-xl bg-cyan-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100 disabled:bg-white/[0.08] disabled:text-slate-500 disabled:shadow-none"
-                  disabled={!revealedSecret}
-                  onClick={() => void copySecret()}
-                >
-                  复制当前 Key
-                </button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    className="rounded-xl bg-cyan-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:bg-cyan-100 disabled:bg-white/[0.08] disabled:text-slate-500 disabled:shadow-none"
+                    disabled={!revealedSecret}
+                    onClick={() => void copySecret()}
+                  >
+                    复制当前 Key
+                  </button>
+                  <button
+                    className="rounded-xl bg-violet-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg shadow-violet-950/20 transition hover:bg-violet-100 disabled:bg-white/[0.08] disabled:text-slate-500 disabled:shadow-none"
+                    disabled={!revealedShareLink}
+                    onClick={() => void copyShareLink()}
+                  >
+                    复制分享链接
+                  </button>
+                </div>
               </div>
             </div>
 

@@ -35,6 +35,9 @@ DOC_PATHS = {
     "/docs/oauth2-redirect",
     "/redoc",
 }
+PUBLIC_PREFIXES = (
+    "/v1/wx/upload-tickets/",
+)
 LOGIN_FAILURES: dict[str, list[float]] = {}
 
 
@@ -505,6 +508,8 @@ def _is_public_request(request: Request) -> bool:
         return True
     path = request.url.path.rstrip("/") or "/"
     if path in BASE_PUBLIC_PATHS:
+        return True
+    if any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
         return True
     return settings.app_auth_docs_public and path in DOC_PATHS
 

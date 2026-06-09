@@ -1,0 +1,15 @@
+<view wx:if="{{loadError}}" class="safe-area-page webview-fallback">
+  <view class="card">
+    <view class="title">页面加载失败</view>
+    <view class="desc">请确认 WEBVIEW_URL 已替换为 HTTPS 业务域名，并已在微信小程序后台配置业务域名。</view>
+    <view class="url">{{webviewUrl}}</view>
+    <button class="primary" bindtap="retry">重新打开</button>
+  </view>
+</view>
+
+<web-view
+  wx:else
+  src="{{webviewUrl}}"
+  bindload="handleWebviewLoad"
+  binderror="handleWebviewError"
+/>

@@ -43,6 +43,8 @@ docker compose up -d nginx
 推荐的低负载发布路径是：在本地或 CI 构建镜像，传输到服务器 `docker load`，服务器只做
 `docker compose up -d --no-build` 重建容器。
 
+如果一次改动同时包含后端模型/路由、数据库表、Next.js 前端或 worker 逻辑，必须发布完整镜像；不要只使用 `scripts/deploy-web-hotfix.sh` 传 `.next` 产物。本次微信 upload ticket 这类功能会新增后端表和 API，适合走下面的预构建镜像路径。
+
 ### 推荐：预构建镜像后在服务器无构建发布
 
 本地或 CI：
@@ -78,6 +80,22 @@ RELEASE_IMAGE="ds160-agent2:${BUILD_SHA}" APP_GIT_SHA="$BUILD_SHA" APP_BUILD_TIM
 
 这个路径不会在服务器上运行 Docker build / pnpm build / uv sync；服务器只解压镜像、更新 `.env`
 中的发布 metadata、重启容器。
+
+应用启动时会执行 `Base.metadata.create_all(bind=engine)`，因此新增表会在目标数据库不存在时自动创建；发布前仍建议先在本地跑对应 integration test，并在服务器发布后检查 API 日志，确认没有缺表或 schema 兼容错误。
+
+### 仅前端静态产物的应急同步
+
+只有在确认改动完全局限于 `web/` 展示层、没有改 Dockerfile、没有后端代码、没有 API type contract、没有数据库 schema、没有 worker 行为时，才考虑热同步前端产物。若服务器无法编译，优先在本地完成：
+
+```bash
+cd web
+pnpm install
+pnpm lint
+pnpm type-check
+pnpm build
+```
+
+随后按项目已有脚本同步产物并重启 web 容器。凡是包含后端或 schema 改动的发布，一律回到“预构建镜像后在服务器无构建发布”。
 
 ### 仅适合资源充足主机：服务器直接重建
 
@@ -161,6 +179,21 @@ ALLOW_DEBUG_FILL=false
 ```
 
 如果受控演示必须临时开放 material package import，请确认入口已被访问控制保护、只使用已验证 archive 包，并在演示窗口结束后关闭 debug material 开关。不要把现场 debug generation 当作公开用户能力，也不要把未验证 bundle 发布为 demo 模板。
+
+## 微信小程序 web-view / upload ticket 部署注意
+
+微信 MVP 包含两条入口：
+
+- Web/H5：`/wx`，由 Next.js web 容器提供，和 `/`、`/login` 一样必须走 HTTPS。
+- 原生上传 API：`/api/v1/sessions/{session_id}/upload-ticket`、`/api/v1/wx/upload-tickets/{ticket}`、`/api/v1/wx/upload-tickets/{ticket}/files`，经 Nginx `/api/` 反代到 FastAPI。
+
+上线前检查：
+
+1. 小程序后台把主站域名配置为 `web-view` 业务域名。
+2. 如果原生页调用 `wx.request` / `wx.uploadFile`，同一域名也要配置到 request / uploadFile 合法域名。
+3. Nginx `client_max_body_size` 要不小于后端 `FileService` 上传大小限制，避免文件先被 Nginx 以 `413` 拦截。
+4. upload ticket 默认 300 秒有效、最多 5 个文件；ticket 会出现在 URL path 中，Nginx/access log 可能记录它，只适合作短期凭证。
+5. 分享链接优先使用 `/#ds160_access_key=...` hash 形式；不要生成 query 形式的新链接，避免 access key 被反代日志记录。
 
 ## 本机验证
 

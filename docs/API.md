@@ -10,13 +10,14 @@
 | --- | --- | --- |
 | 前端产品首页 | Web 根路径 | `GET /` |
 | 前端用户工作台 | Web 路由 | `GET /login` |
+| 前端微信 web-view 工作台 | Web 路由，小程序壳内打开同一套轻量工作台 | `GET /wx` |
 | 前端项目状态页 | Web 路由，读取后端 `/healthz` | `GET /health` |
 | 前端后台入口 | Web 路由 | `GET /admin` |
 | 直接访问后端 FastAPI | `http://localhost:8000/v1` | `GET http://localhost:8000/v1/app-config` |
 | 浏览器经 Next / Nginx 反代 | `/api/v1` | `GET /api/v1/app-config` |
 | 健康检查 / 版本 | 后端根路径 | `GET /healthz`、`GET /version` |
 
-本文示例默认使用直接后端路径 `http://localhost:8000/v1`。如果你从生产前端或 Nginx 入口调用，把 `/v1/...` 替换成 `/api/v1/...` 即可。公开首页 `/` 只负责产品展示和入口组织；真正的授权会话、材料、复盘和调试能力仍在 `/login` 工作台中完成，首页授权弹窗成功后也会进入该工作台。
+本文示例默认使用直接后端路径 `http://localhost:8000/v1`。如果你从生产前端或 Nginx 入口调用，把 `/v1/...` 替换成 `/api/v1/...` 即可。公开首页 `/` 只负责产品展示和入口组织；真正的授权会话、材料、复盘和调试能力仍在 `/login` 工作台中完成，首页授权弹窗成功后也会进入该工作台。`/wx` 是微信小程序 web-view MVP 的 H5 入口，使用同一个 access key 登录体系，不依赖 `wx.login` / OpenID。
 
 FastAPI 自动文档在 `/docs`、`/redoc`、`/openapi.json`；生产默认受 `APP_AUTH_PROTECT_DOCS=true` 保护。
 
@@ -26,6 +27,7 @@ FastAPI 自动文档在 `/docs`、`/redoc`、`/openapi.json`；生产默认受 `
 | --- | --- | --- |
 | User / workbench | 普通工作台：登录、会话、消息、材料、报告 | Web Cookie；本地未设置 `APP_AUTH_PASSWORD` 时可关闭 |
 | Admin | 后台登录、access key、运行时模型配置、后台设置、后台 RAG 状态 | Admin Cookie |
+| WeChat / wx-upload | `/wx` H5 工作台创建短期 upload ticket；小程序原生页用 ticket 上传微信聊天文件 | 创建 ticket 需要 Session access；ticket status/upload 是短期 public scoped 凭证 |
 | Debug / controlled demo | runtime snapshot、debug material generation、runtime trace；material package archive/list/import 仅用于受控 demo/模板资产 | 普通或 admin session + debug 开关 |
 | OpenAI-compatible | `/v1/chat/completions`、`/v1/responses` 的状态化 DS-160 adapter | Cookie 或 `Authorization: Bearer <APP_COMPAT_API_KEY>` |
 
@@ -53,6 +55,16 @@ Content-Type: application/json
 如果 password 是管理员发放的 access key，`history_namespace` 会变成 `key_<key_id>`。前端用它隔离本地历史记录。
 
 Access key 登录只建立普通 user cookie，不消耗使用次数。使用次数、禁用和过期检查发生在 `POST /v1/sessions` 创建新会话时；这样已耗尽、禁用或过期的 key 仍可回到已绑定的服务器历史，但不能继续开新 session。
+
+登录请求不再接收或要求用户显示名。前端会保留已有本地 profile，或生成临时显示名；用户可以进入工作台后在设置里修改显示名。该显示名是前端工作台资料，不是后端账号身份字段。
+
+后台 access key 卡片提供三类显式动作：
+
+- `显示明文`：只在当前后台界面 reveal 该 Key；
+- `复制 Key`：读取该 Key 的 secret 并直接写入剪贴板；
+- `一键分享链接`：生成 `/#ds160_access_key=<access-key-secret>`，让用户打开首页、`/login` 或 `/wx` 后点击启用进入工作台。
+
+分享链接优先使用 hash 参数，因为普通页面请求不会把 hash 发给后端。兼容解析仍支持 `?ds160_access_key=`、`?access_key=`、`?key=` 等 query 形式，但不推荐新链接使用 query，避免 access key 进入服务端访问日志、代理日志或 Referer。分享链接登录成功后，前端会用 `history.replaceState` 清理地址栏中的 Key。
 
 ### 3.2 Admin Cookie 登录
 
@@ -145,6 +157,50 @@ curl -b admin.txt \
 ```
 
 `key` 只应在创建响应或可 reveal 的受控后台界面中短暂出现，不要写入文档、日志或截图。
+
+后台 UI 可以直接复制 Key 或生成一键分享链接。分享链接示例只使用占位符：
+
+```text
+https://YOUR_DOMAIN/#ds160_access_key=<access-key-secret>
+```
+
+收到链接的用户打开后，在首页授权弹窗、`/login` guard 或 `/wx` 授权卡片里点击启用即可进入工作台；无需再次输入 Key，也无需在登录时填写名字。
+
+### 4.4 微信小程序上传材料
+
+`/wx` H5 工作台在用户已登录并选择 session 后，先创建一个短期 upload ticket：
+
+```bash
+curl -b cookie.txt -c cookie.txt \
+  -X POST \
+  http://localhost:8000/v1/sessions/sess_123/upload-ticket
+```
+
+返回：
+
+```json
+{
+  "ticket":"wxup_<short-lived-token>",
+  "session_id":"sess_123",
+  "expires_at":"2026-06-09T08:05:00Z",
+  "max_files":5,
+  "uploaded_count":0,
+  "remaining_files":5,
+  "status":"active",
+  "upload_results":[]
+}
+```
+
+小程序原生页随后用 `wx.uploadFile` 上传：
+
+```bash
+curl -F 'file=@fixtures/sample-i20.pdf' \
+  -F 'session_id=sess_123' \
+  -F 'context_text=I-20 from WeChat chat' \
+  http://localhost:8000/v1/wx/upload-tickets/wxup_xxx/files
+```
+
+ticket 默认 300 秒有效、最多 5 个文件；后端只保存 ticket hash。ticket 出现在 URL path 中，反代 access log 可能记录它，因此只能作为短期上传凭证使用。
 
 ## 5. 常用概念与合同
 
@@ -252,8 +308,9 @@ SSE `error` event 常见形态：
 | `400` | 后台模型配置不完整，或测试请求缺少必要配置 |
 | `401` | 未登录、Cookie 失效、machine bearer token 缺失/错误 |
 | `403` | CSRF 失败、access key 无权访问该 session、feature flag 未开启 |
-| `404` | session、document、runtime trace、access key 不存在 |
-| `409` | 会话已关闭、重复消息仍在处理中、签证类别未锁定 |
+| `404` | session、document、runtime trace、access key 或 upload ticket 不存在 |
+| `409` | 会话已关闭、重复消息仍在处理中、签证类别未锁定、upload ticket 已完成/停用/超限 |
+| `410` | upload ticket 已过期 |
 | `413` | 上传文件超过限制 |
 | `415` | 不支持的文件类型 |
 | `422` | 请求字段不合法、签证类别不支持、debug scenario / generation mode 不合法 |
@@ -468,6 +525,9 @@ data: {"assistant_message":"...","requested_documents":[]}
 | `POST` | `/v1/sessions/{session_id}/files` | Session access | 上传材料 |
 | `GET` | `/v1/sessions/{session_id}/files/{document_id}/content` | Session access | 预览/下载原始材料内容 |
 | `DELETE` | `/v1/sessions/{session_id}/files/{document_id}` | Session access | tombstone 一份材料 |
+| `POST` | `/v1/sessions/{session_id}/upload-ticket` | Session access | 为微信小程序原生上传页创建短期 upload ticket |
+| `GET` | `/v1/wx/upload-tickets/{ticket}` | Short-lived ticket | 查询 ticket 状态和已上传结果 |
+| `POST` | `/v1/wx/upload-tickets/{ticket}/files` | Short-lived ticket | 用 ticket 上传微信聊天文件，返回 `202` |
 | `GET` | `/v1/material-packages` | Session access + debug material switch | 列出已验证 material package archive |
 | `POST` | `/v1/sessions/{session_id}/material-packages/{package_id}/import` | Session access + debug material switch | 导入已验证 material package |
 
@@ -510,6 +570,100 @@ Notes:
 - 已关闭/已拒签/已完成 session 不能继续上传，返回 `409`；
 - 图片不走 OCR 文件名猜测，视觉理解由多模态材料理解服务处理；
 - `case_board_refresh.message_policy="case_board_timeline_only"` 表示只刷新 Case Board / timeline。
+
+#### `POST /v1/sessions/{session_id}/upload-ticket`
+
+为微信小程序原生上传页创建一个短期上传凭证。创建该 ticket 需要当前用户有访问该 session 的权限；ticket 本身只用于后续 status/upload，不需要 cookie。
+
+Response:
+
+```json
+{
+  "ticket":"wxup_<short-lived-token>",
+  "session_id":"sess_abc123",
+  "expires_at":"2026-06-09T08:05:00Z",
+  "max_files":5,
+  "uploaded_count":0,
+  "remaining_files":5,
+  "status":"active",
+  "upload_results":[]
+}
+```
+
+默认合同：
+
+- `ticket` 原文只在响应和小程序路由里短期流转，数据库保存 `sha256(ticket)`；
+- 默认 TTL 是 300 秒；
+- 默认最多 5 个文件，服务端当前把上限限制在 10 以内；
+- ticket 绑定创建时的 `session_id` 和 access key 语境，不能跨 session 使用。
+
+#### `GET /v1/wx/upload-tickets/{ticket}`
+
+查询 ticket 状态，供 `/wx` 从原生上传页返回后刷新材料状态。
+
+```json
+{
+  "ticket":"wxup_<short-lived-token>",
+  "session_id":"sess_abc123",
+  "expires_at":"2026-06-09T08:05:00Z",
+  "max_files":5,
+  "uploaded_count":1,
+  "remaining_files":4,
+  "status":"active",
+  "upload_results":[
+    {
+      "document_id":"doc_abc123",
+      "file_name":"i20.pdf",
+      "mime_type":"application/pdf",
+      "size":12345,
+      "uploaded_at":"2026-06-09T08:01:00Z"
+    }
+  ]
+}
+```
+
+#### `POST /v1/wx/upload-tickets/{ticket}/files`
+
+`multipart/form-data` fields:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `file` | yes | `wx.uploadFile` 选择的微信聊天文件 |
+| `session_id` | no | 小程序回传的 session id；若传入且与 ticket 不匹配，返回 `403` |
+| `document_type` | no | 用户显式纠偏的材料类型 |
+| `context_text` | no | 用户在小程序上传页输入的补充说明 |
+| `original_name` | no | 微信文件原名；优先用于后端材料 filename |
+
+成功返回 `202`，body 包含 ticket 状态和标准材料上传 payload：
+
+```json
+{
+  "ticket":"wxup_<short-lived-token>",
+  "session_id":"sess_abc123",
+  "status":"active",
+  "uploaded_count":1,
+  "remaining_files":4,
+  "upload_results":[{"document_id":"doc_abc123","file_name":"i20.pdf"}],
+  "upload":{
+    "document_id":"doc_abc123",
+    "document_status":"uploaded",
+    "job_status":"queued",
+    "understanding_status":"queued",
+    "case_board_refresh":{"message_policy":"case_board_timeline_only"}
+  }
+}
+```
+
+Ticket-specific errors:
+
+| Status | Detail |
+| --- | --- |
+| `403` | `session_id` 与 ticket 绑定的 session 不匹配 |
+| `404` | ticket 或绑定 session 不存在 |
+| `409` | ticket 已完成、停用、文件数超限，或 session 已结束 |
+| `410` | ticket 过期 |
+| `413` | 文件超过后端上传大小限制 |
+| `415` | 文件类型不支持 |
 
 #### `DELETE /v1/sessions/{session_id}/files/{document_id}`
 
@@ -718,6 +872,15 @@ Response:
 ```
 
 `key` 是敏感 secret；不要提交到代码、文档或公开日志。后续列表通常只返回 masked preview / record。
+
+后台界面行为：
+
+- `显示明文` 会 reveal 当前选中的 Key，并在页面内显示；
+- `复制 Key` 会 reveal 当前选中 Key 后直接写入剪贴板，不需要先点选列表再到右侧详情复制；
+- `一键分享链接` 会生成 `/#ds160_access_key=...` 链接并写入剪贴板，供用户打开后点击启用进入工作台；
+- 如果 secret 不可 reveal 或剪贴板失败，界面应明确提示，并保留可手动复制的受控文本。
+
+分享链接等同于持有 access key。运营上应给这类 Key 设置合理 `usage_limit`、`expires_at` 和标签，避免长期公开转发。
 
 #### `GET /v1/admin/access-keys`
 
@@ -1078,6 +1241,9 @@ POST   /v1/sessions/{session_id}/messages/stream
 POST   /v1/sessions/{session_id}/files
 GET    /v1/sessions/{session_id}/files/{document_id}/content
 DELETE /v1/sessions/{session_id}/files/{document_id}
+POST   /v1/sessions/{session_id}/upload-ticket
+GET    /v1/wx/upload-tickets/{ticket}
+POST   /v1/wx/upload-tickets/{ticket}/files
 GET    /v1/sessions/{session_id}/reports/user
 GET    /v1/sessions/{session_id}/reports/internal
 POST   /v1/sessions/{session_id}/reports/review
@@ -1120,6 +1286,7 @@ POST   /v1/responses
 - `tests/integration/test_sessions_api.py`
 - `tests/integration/test_messages_api.py`
 - `tests/integration/test_files_api.py`
+- `tests/integration/test_wx_upload_ticket_api.py`
 - `tests/integration/test_reports_api.py`
 - `tests/integration/test_rag_api.py`
 - `tests/integration/test_model_config_api.py`
