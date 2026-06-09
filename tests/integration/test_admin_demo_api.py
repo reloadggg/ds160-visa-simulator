@@ -712,6 +712,34 @@ def test_user_model_config_requires_admin_toggle(
     assert client.get("/v1/app-config").json()["user_model_config_enabled"] is False
 
 
+def test_wx_entry_config_defaults_closed_and_follows_admin_toggle(
+    client: TestClient,
+) -> None:
+    config = client.get("/v1/app-config").json()
+    assert config["wx_entry_enabled"] is False
+
+    assert client.post("/v1/admin/login", json={"password": "admin-pass"}).status_code == 200
+    admin_settings = client.get("/v1/admin/settings")
+    assert admin_settings.status_code == 200
+    assert admin_settings.json()["wx_entry_enabled"] is False
+
+    enabled = client.patch(
+        "/v1/admin/settings",
+        json={"wx_entry_enabled": True},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["wx_entry_enabled"] is True
+    assert client.get("/v1/app-config").json()["wx_entry_enabled"] is True
+
+    disabled = client.patch(
+        "/v1/admin/settings",
+        json={"wx_entry_enabled": False},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["wx_entry_enabled"] is False
+    assert client.get("/v1/app-config").json()["wx_entry_enabled"] is False
+
+
 def test_admin_runtime_model_config_preserves_key_and_fetches_models(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

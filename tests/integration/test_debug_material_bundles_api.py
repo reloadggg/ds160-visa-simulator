@@ -95,6 +95,7 @@ def _set_demo_debug_settings(
                 "model_streaming_enabled": True,
                 "user_model_config_enabled": False,
                 "show_github_link": False,
+                "wx_entry_enabled": False,
                 "debug_console_enabled": console,
                 "debug_material_enabled": materials,
                 "rag_status_user_visible": False,

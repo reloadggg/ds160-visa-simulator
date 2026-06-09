@@ -923,6 +923,7 @@ export default function AdminPage() {
                 {(
                   [
                     ["show_github_link", "显示 GitHub 信息"],
+                    ["wx_entry_enabled", "微信端入口 / 微信 web-view MVP"],
                     ["debug_console_enabled", "开放调试台"],
                     ["debug_material_enabled", "开放调试材料"],
                     ["rag_status_user_visible", "用户侧显示知识库状态"],

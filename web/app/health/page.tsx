@@ -33,6 +33,7 @@ type HealthState =
 
 const DEFAULT_APP_CONFIG: AppConfig = {
   show_github_link: false,
+  wx_entry_enabled: false,
   debug_console_enabled: false,
   debug_material_enabled: false,
   user_model_config_enabled: false,

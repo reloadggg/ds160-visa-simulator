@@ -12,6 +12,21 @@ test("/wx route and lightweight workbench files exist", () => {
   assert.ok(existsSync(join(root, "components/wx/wx-shell.tsx")))
 })
 
+test("/wx reads app config and stays closed when wx entry is disabled", () => {
+  const shell = read("components/wx/wx-shell.tsx")
+  const types = read("lib/api/types.ts")
+  const client = read("lib/api/client.ts")
+  assert.match(types, /wx_entry_enabled: boolean/)
+  assert.match(client, /export async function getAppConfig/)
+  assert.match(shell, /getAppConfig\(\)/)
+  assert.match(shell, /wx_entry_enabled/)
+  assert.match(shell, /微信端暂未开放\/内测中/)
+  assert.match(shell, /返回首页/)
+  assert.match(shell, /setWxEntryEnabled\(config\.wx_entry_enabled\)/)
+  assert.match(shell, /setWxEntryEnabled\(false\)/)
+  assert.match(shell, /<WxWorkbenchShell \/>/)
+})
+
 test("wx workbench reuses existing non-streaming API contracts only", () => {
   const source = read("hooks/use-wx-workbench.ts")
   assert.match(source, /sendMessage\(/)
@@ -42,4 +57,14 @@ test("api client exposes wx upload ticket functions", () => {
   assert.match(client, /\/v1\/wx\/upload-tickets\/\$\{encodeURIComponent\(ticket\)\}/)
   assert.match(types, /interface WxUploadTicketResponse/)
   assert.match(types, /interface WxUploadTicketStatusResponse/)
+})
+
+test("admin settings expose wx entry feature switch", () => {
+  const admin = read("app/admin/page.tsx")
+  const types = read("lib/api/types.ts")
+  assert.match(types, /wx_entry_enabled\?: boolean/)
+  assert.match(admin, /wx_entry_enabled/)
+  assert.match(admin, /微信端入口 \/ 微信 web-view MVP/)
+  assert.match(admin, /updateFeatureFlag/)
+  assert.match(admin, /updateAdminSettings\(patch\)/)
 })

@@ -45,6 +45,7 @@ export interface ModelListResponse {
 
 export interface AdminSettings {
   show_github_link?: boolean
+  wx_entry_enabled?: boolean
   debug_console_enabled?: boolean
   debug_material_enabled?: boolean
   user_model_config_enabled?: boolean
@@ -971,6 +972,7 @@ export interface AuthStatusResponse {
 
 export interface AppConfig {
   show_github_link: boolean
+  wx_entry_enabled: boolean
   debug_console_enabled: boolean
   debug_material_enabled: boolean
   user_model_config_enabled: boolean

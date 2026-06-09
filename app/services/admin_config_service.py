@@ -20,6 +20,7 @@ DEFAULT_DEMO_SETTINGS: dict[str, Any] = {
     "model_streaming_enabled": True,
     "user_model_config_enabled": False,
     "show_github_link": False,
+    "wx_entry_enabled": False,
     "debug_console_enabled": False,
     "debug_material_enabled": False,
     "rag_status_user_visible": False,
@@ -102,6 +103,7 @@ class AdminConfigService:
         current = self.get_settings()
         return {
             "show_github_link": bool(current.get("show_github_link")),
+            "wx_entry_enabled": bool(current.get("wx_entry_enabled")),
             "debug_console_enabled": bool(current.get("debug_console_enabled")),
             "debug_material_enabled": bool(
                 current.get("debug_console_enabled")

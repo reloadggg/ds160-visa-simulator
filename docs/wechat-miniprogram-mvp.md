@@ -4,6 +4,17 @@ This folder is a source-only WeChat Mini Program shell for the DS-160 web-view M
 
 The current MVP intentionally uses the existing access-key auth boundary. It does **not** implement `wx.login`, OpenID binding, or a separate Mini Program account system. A user can enter `/wx` with a normal access key, or open an admin-generated share link such as `https://YOUR_DOMAIN/#ds160_access_key=<access-key-secret>` and click enable/use before entering the workbench. After a shared-key login succeeds, the H5 page clears the key from the address bar.
 
+## Backend release switch
+
+The `/wx` entry is controlled by the admin/backend setting `wx_entry_enabled`.
+
+- Default: `false`.
+- Public contract: `GET /v1/app-config` returns `wx_entry_enabled`.
+- Admin contract: `GET /v1/admin/settings` and `PATCH /v1/admin/settings` include `wx_entry_enabled`.
+- Admin UI: `/admin` → **功能开关** → **微信端入口 / 微信 web-view MVP**.
+
+When the flag is `false`, `/wx` shows a closed-state notice (`微信端暂未开放/内测中`) and a **返回首页** button. It does not render or enable the WeChat workbench until the flag is enabled.
+
 ## Files
 
 ```text

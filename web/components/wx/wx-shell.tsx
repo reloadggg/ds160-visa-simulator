@@ -1,5 +1,7 @@
 "use client"
 
+import { useEffect, useState } from "react"
+import Link from "next/link"
 import { LogOut, PlusCircle, RefreshCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
@@ -10,8 +12,87 @@ import { WxReportSummary } from "@/components/wx/wx-report-summary"
 import { WxUploadEntry } from "@/components/wx/wx-upload-entry"
 import { WxVisaPicker } from "@/components/wx/wx-visa-picker"
 import { useWxWorkbench } from "@/hooks/use-wx-workbench"
+import { getAppConfig } from "@/lib/api/client"
+
+function WxEntryClosedNotice({ detail }: { detail?: string | null }) {
+  return (
+    <main className="flex min-h-dvh items-center justify-center bg-slate-950 px-5 py-8 text-white">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(124,58,237,0.16),_transparent_42%)]" />
+      <section className="relative w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[0.08] p-6 text-center shadow-2xl backdrop-blur-2xl">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-cyan-300/15 text-2xl">
+          微信
+        </div>
+        <h1 className="mt-5 text-2xl font-semibold">微信端暂未开放/内测中</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-300">
+          微信 web-view MVP 入口目前由后台开关控制。开放前请先使用首页或桌面工作台体验模拟面签。
+        </p>
+        {detail ? (
+          <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100">
+            {detail}
+          </p>
+        ) : null}
+        <Button
+          asChild
+          className="mt-6 h-11 w-full rounded-2xl bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+        >
+          <Link href="/">返回首页</Link>
+        </Button>
+      </section>
+    </main>
+  )
+}
 
 export function WxShell() {
+  const [wxEntryEnabled, setWxEntryEnabled] = useState(false)
+  const [configError, setConfigError] = useState<string | null>(null)
+  const [isConfigLoading, setIsConfigLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+
+    getAppConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setWxEntryEnabled(config.wx_entry_enabled)
+          setConfigError(null)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setWxEntryEnabled(false)
+          setConfigError(err instanceof Error ? err.message : "无法读取微信入口配置")
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsConfigLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (isConfigLoading) {
+    return (
+      <main className="flex min-h-dvh items-center justify-center bg-slate-950 text-white">
+        <div className="flex items-center gap-3 rounded-3xl border border-white/10 bg-white/[0.06] px-5 py-4">
+          <Spinner className="h-5 w-5" />
+          <span className="text-sm text-slate-200">正在读取微信入口配置...</span>
+        </div>
+      </main>
+    )
+  }
+
+  if (!wxEntryEnabled) {
+    return <WxEntryClosedNotice detail={configError} />
+  }
+
+  return <WxWorkbenchShell />
+}
+
+function WxWorkbenchShell() {
   const workbench = useWxWorkbench()
   const { auth } = workbench
 

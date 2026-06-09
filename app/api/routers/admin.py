@@ -69,6 +69,7 @@ class AdminSettingsPatch(BaseModel):
     model_streaming_enabled: bool | None = None
     user_model_config_enabled: bool | None = None
     show_github_link: bool | None = None
+    wx_entry_enabled: bool | None = None
     debug_console_enabled: bool | None = None
     debug_material_enabled: bool | None = None
     rag_status_user_visible: bool | None = None
