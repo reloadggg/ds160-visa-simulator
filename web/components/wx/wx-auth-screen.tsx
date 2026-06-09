@@ -61,7 +61,7 @@ export function WxAuthScreen({
           <div>
             <CardTitle className="text-2xl">微信面签模拟 MVP</CardTitle>
             <p className="mt-2 text-sm leading-6 text-slate-300">
-              输入 access key，或启用后台分享链接中的 Key 后，在手机里完成一轮轻量面签练习。
+              输入 access key，或启用分享链接中的 Key 后，在手机里完成一轮轻量面签练习。
             </p>
           </div>
         </CardHeader>

@@ -2,7 +2,7 @@
 
 This folder is a source-only WeChat Mini Program shell for the DS-160 web-view MVP. It does not depend on npm or a Mini Program SDK package; open `miniprogram/` directly with WeChat Developer Tools.
 
-The current MVP intentionally uses the existing access-key auth boundary. It does **not** implement `wx.login`, OpenID binding, or a separate Mini Program account system. A user can enter `/wx` with a normal access key, or open an admin-generated share link such as `https://YOUR_DOMAIN/#ds160_access_key=<access-key-secret>` and click enable/use before entering the workbench. After a shared-key login succeeds, the H5 page clears the key from the address bar.
+The current MVP intentionally uses the existing access-key auth boundary. It does **not** implement `wx.login`, OpenID binding, or a separate Mini Program account system. A user can enter `/wx` with a normal access key, open an admin-generated share link, or copy their current Key share link from workbench Settings after a Key login, then use `https://YOUR_DOMAIN/#ds160_access_key=<access-key-secret>` to click enable/use before entering the workbench. After a shared-key login succeeds, the H5 page clears the key from the address bar.
 
 ## Backend release switch
 

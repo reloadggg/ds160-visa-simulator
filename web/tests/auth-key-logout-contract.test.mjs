@@ -21,7 +21,9 @@ test("logout broadcasts to every auth hook instance", () => {
 test("workbench exposes current-key logout from session and pre-session chrome", () => {
   const source = readProjectFile("app/login/page.tsx")
 
-  assert.match(source, /const \{ userProfile, accessKeyQuota, logout(?:, updateUserProfile)? \} = useAuth\(\)/)
+  assert.match(source, /currentAccessKeyShareLink/)
+  assert.match(source, /maskedCurrentAccessKey/)
+  assert.match(source, /logout/)
   assert.match(source, /const router = useRouter\(\)/)
   assert.match(source, /await logout\(\)/)
   assert.match(source, /router\.replace\("\/"\)/)

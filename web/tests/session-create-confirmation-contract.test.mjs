@@ -17,8 +17,9 @@ test("auth responses expose safe access-key quota metadata", () => {
   assert.match(typeSource, /remaining_uses: number/)
   assert.match(typeSource, /can_create_session: boolean/)
   assert.match(typeSource, /access_key_quota\?: AccessKeyQuota \| null/)
-  assert.match(hookSource, /setAccessKeyQuota\(response\.access_key_quota \?\? null\)/)
-  assert.match(hookSource, /setAccessKeyQuota\(status\.access_key_quota \?\? null\)/)
+  assert.match(hookSource, /const quota = response\.access_key_quota \?\? null/)
+  assert.match(hookSource, /const quota = status\.access_key_quota \?\? null/)
+  assert.match(hookSource, /setAccessKeyQuota\(quota\)/)
 })
 
 test("visa selector confirms before creating an account-consuming session", () => {
@@ -35,6 +36,7 @@ test("visa selector confirms before creating an account-consuming session", () =
 test("workbench passes quota state to session creation UI", () => {
   const source = readProjectFile("app/login/page.tsx")
 
-  assert.match(source, /const \{ userProfile, accessKeyQuota(?:, logout)?(?:, updateUserProfile)? \} = useAuth\(\)/)
+  assert.match(source, /accessKeyQuota/)
+  assert.match(source, /useAuth\(\)/)
   assert.match(source, /accessKeyQuota=\{accessKeyQuota\}/)
 })

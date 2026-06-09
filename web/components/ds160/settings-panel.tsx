@@ -130,10 +130,12 @@ interface SettingsPanelProps {
   onResetCurrentSession: () => void
   onClearHistory: () => void
   onClearCurrentKeyMaterials: () => void
+  onCopyCurrentKeyShareLink?: () => boolean | Promise<boolean>
   onLogout: () => void
   userDisplayName?: string
   onUpdateUserDisplayName?: (displayName: string) => void
   accessKeyQuota?: AccessKeyQuota | null
+  currentAccessKeyPreview?: string | null
   showGithub?: boolean
   showUserModelConfig?: boolean
   showRagStatus?: boolean
@@ -166,10 +168,12 @@ export function SettingsPanel({
   onResetCurrentSession,
   onClearHistory,
   onClearCurrentKeyMaterials,
+  onCopyCurrentKeyShareLink,
   onLogout,
   userDisplayName = "",
   onUpdateUserDisplayName,
   accessKeyQuota = null,
+  currentAccessKeyPreview = null,
   showGithub = true,
   showUserModelConfig = true,
   showRagStatus = true,
@@ -184,6 +188,7 @@ export function SettingsPanel({
     )
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
   const [displayNameDraft, setDisplayNameDraft] = useState(userDisplayName)
+  const [keyShareFeedback, setKeyShareFeedback] = useState<string | null>(null)
   const materialSeedText = materialSeedOverride
   const debugBundleOptions = useMemo(
     () => getDebugMaterialBundleOptionsForVisaFamily(visaType),
@@ -263,6 +268,19 @@ export function SettingsPanel({
       return
     }
     onUpdateUserDisplayName(nextName)
+  }
+
+  const handleCopyCurrentKeyShareLink = async () => {
+    if (!currentAccessKeyPreview || !onCopyCurrentKeyShareLink) {
+      setKeyShareFeedback("当前浏览器没有可分享的明文 Key，请重新用 Key 登录后再试。")
+      return
+    }
+    const copied = await onCopyCurrentKeyShareLink()
+    setKeyShareFeedback(
+      copied
+        ? "本 Key 的分享链接已复制到剪贴板。"
+        : "复制失败，请按弹窗提示手动复制分享链接。",
+    )
   }
 
   const ragStatusLabel = (() => {
@@ -388,6 +406,33 @@ export function SettingsPanel({
                   </Badge>
                 ) : null}
               </div>
+              {accessKeyQuota ? (
+                <div className="mt-4 rounded-xl border border-border bg-background/60 px-3 py-3">
+                  <div className="text-sm font-medium text-foreground">
+                    分享当前 Key
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                    {currentAccessKeyPreview
+                      ? `将复制当前授权 Key 的一键分享链接（${currentAccessKeyPreview}）。收到链接的人点击启用后可直接进入工作台。`
+                      : "当前浏览器没有保留本次登录的明文 Key。为避免从后端反查或长期保存密钥，请退出后重新用 Key 登录，再复制分享链接。"}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-3 w-full justify-center gap-2"
+                    disabled={!currentAccessKeyPreview || !onCopyCurrentKeyShareLink}
+                    onClick={() => void handleCopyCurrentKeyShareLink()}
+                  >
+                    <Copy className="h-4 w-4" />
+                    复制本 Key 分享链接
+                  </Button>
+                  {keyShareFeedback ? (
+                    <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                      {keyShareFeedback}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
 
             <AlertDialog>

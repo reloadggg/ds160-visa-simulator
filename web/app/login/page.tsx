@@ -57,7 +57,14 @@ function Workbench() {
   const router = useRouter()
   const [activeNavItem, setActiveNavItem] = useState("workbench")
   const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_APP_CONFIG)
-  const { userProfile, accessKeyQuota, logout, updateUserProfile } = useAuth()
+  const {
+    userProfile,
+    accessKeyQuota,
+    currentAccessKeyShareLink,
+    maskedCurrentAccessKey,
+    logout,
+    updateUserProfile,
+  } = useAuth()
 
   const {
     apiBaseUrl,
@@ -169,6 +176,19 @@ function Workbench() {
 
   const handleUpdateUserDisplayName = (displayName: string) => {
     updateUserProfile(displayName)
+  }
+
+  const handleCopyCurrentKeyShareLink = async () => {
+    if (!currentAccessKeyShareLink) {
+      return false
+    }
+    try {
+      await navigator.clipboard.writeText(currentAccessKeyShareLink)
+      return true
+    } catch {
+      window.prompt("复制失败，请手动复制当前 Key 分享链接：", currentAccessKeyShareLink)
+      return false
+    }
   }
 
   const onRestoreSession = (entry: SessionHistoryEntry) => {
@@ -401,8 +421,10 @@ function Workbench() {
                 onResetCurrentSession={handleReset}
                 onClearHistory={handleClearHistory}
                 onClearCurrentKeyMaterials={handleClearCurrentKeyMaterials}
+                onCopyCurrentKeyShareLink={handleCopyCurrentKeyShareLink}
                 onLogout={() => void handleLogoutToHome()}
                 accessKeyQuota={accessKeyQuota}
+                currentAccessKeyPreview={maskedCurrentAccessKey}
                 showGithub={appConfig.show_github_link}
                 showUserModelConfig={appConfig.user_model_config_enabled}
                 showRagStatus={appConfig.rag_status_user_visible}

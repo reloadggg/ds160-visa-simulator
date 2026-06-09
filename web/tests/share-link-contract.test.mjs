@@ -79,3 +79,23 @@ test("workbench settings own display-name editing", () => {
   assert.match(settings, /onUpdateUserDisplayName/)
   assert.match(loginPage, /onUpdateUserDisplayName=\{handleUpdateUserDisplayName\}/)
 })
+
+test("key-authenticated users can copy their own share link from settings", () => {
+  const settings = read("components/ds160/settings-panel.tsx")
+  const loginPage = read("app/login/page.tsx")
+  const authHook = read("hooks/use-auth.ts")
+
+  assert.match(authHook, /AUTH_CURRENT_ACCESS_KEY_STORAGE_KEY/)
+  assert.match(authHook, /sessionStorage\.setItem/)
+  assert.doesNotMatch(authHook, /localStorage\.setItem\(AUTH_CURRENT_ACCESS_KEY_STORAGE_KEY/)
+  assert.match(authHook, /response\.access_key_quota/)
+  assert.match(authHook, /buildAccessKeyShareLink\(trimmedKey\)/)
+  assert.match(authHook, /maskAccessKeyForDisplay\(trimmedKey\)/)
+  assert.match(loginPage, /currentAccessKeyShareLink/)
+  assert.match(loginPage, /maskedCurrentAccessKey/)
+  assert.match(loginPage, /navigator\.clipboard\.writeText\(currentAccessKeyShareLink\)/)
+  assert.match(loginPage, /onCopyCurrentKeyShareLink=\{handleCopyCurrentKeyShareLink\}/)
+  assert.match(settings, /复制本 Key 分享链接/)
+  assert.match(settings, /onCopyCurrentKeyShareLink/)
+  assert.match(settings, /当前浏览器没有保留本次登录的明文 Key/)
+})

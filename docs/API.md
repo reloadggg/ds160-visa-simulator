@@ -64,6 +64,8 @@ Access key 登录只建立普通 user cookie，不消耗使用次数。使用次
 - `复制 Key`：读取该 Key 的 secret 并直接写入剪贴板；
 - `一键分享链接`：生成 `/#ds160_access_key=<access-key-secret>`，让用户打开首页、`/login` 或 `/wx` 后点击启用进入工作台。
 
+用 Key 登录后的普通用户也可以在工作台设置里复制本 Key 分享链接。该能力只复用本次 Key 登录时前端拿到的明文 Key，并绑定 `access_key_quota.key_id` 存在 sessionStorage；不会从后端 hash 反推 Key，也不会把 Key 长期写入 localStorage。
+
 分享链接优先使用 hash 参数，因为普通页面请求不会把 hash 发给后端。兼容解析仍支持 `?ds160_access_key=`、`?access_key=`、`?key=` 等 query 形式，但不推荐新链接使用 query，避免 access key 进入服务端访问日志、代理日志或 Referer。分享链接登录成功后，前端会用 `history.replaceState` 清理地址栏中的 Key。
 
 ### 3.2 Admin Cookie 登录
@@ -878,6 +880,7 @@ Response:
 - `显示明文` 会 reveal 当前选中的 Key，并在页面内显示；
 - `复制 Key` 会 reveal 当前选中 Key 后直接写入剪贴板，不需要先点选列表再到右侧详情复制；
 - `一键分享链接` 会生成 `/#ds160_access_key=...` 链接并写入剪贴板，供用户打开后点击启用进入工作台；
+- 普通用户工作台设置里的 `复制本 Key 分享链接` 使用同一 hash-link 合同；只有当前浏览器还保留本次 Key 登录明文时才启用，否则提示重新用 Key 登录；
 - 如果 secret 不可 reveal 或剪贴板失败，界面应明确提示，并保留可手动复制的受控文本。
 
 分享链接等同于持有 access key。运营上应给这类 Key 设置合理 `usage_limit`、`expires_at` 和标签，避免长期公开转发。
