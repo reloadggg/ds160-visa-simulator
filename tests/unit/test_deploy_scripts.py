@@ -66,3 +66,18 @@ def test_production_recover_combined_script_restarts_existing_container_without_
     assert "cat .env" not in script
     assert "combined-recovery" in script
     assert "https://127.0.0.1:18000/healthz" in script
+
+
+def test_preloaded_image_release_recreates_nginx_after_app_services() -> None:
+    script = Path("scripts/production-release-preloaded-image.sh").read_text()
+
+    app_up_position = script.index('docker compose up -d --no-build "${APP_SERVICES[@]}"')
+    nginx_position = script.index(
+        'docker compose up -d --no-build --force-recreate "$NGINX_SERVICE"'
+    )
+
+    assert "APP_SERVICES=(postgres ds160-api ds160-web ds160-worker)" in script
+    assert "NGINX_SERVICE=nginx" in script
+    assert app_up_position < nginx_position
+    assert "stale upstream IPs" in script
+    assert "--build" not in script

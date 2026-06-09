@@ -6,7 +6,8 @@ APP_IMAGE_TAG="${APP_IMAGE_TAG:-ds160-agent2:latest}"
 APP_GIT_SHA="${APP_GIT_SHA:-$(git rev-parse --short HEAD)}"
 APP_BUILD_TIME="${APP_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 ENV_FILE="${ENV_FILE:-.env}"
-SERVICES=(postgres ds160-api ds160-web ds160-worker nginx)
+APP_SERVICES=(postgres ds160-api ds160-web ds160-worker)
+NGINX_SERVICE=nginx
 
 usage() {
   cat <<'USAGE'
@@ -88,5 +89,11 @@ path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
 
 printf 'release_sha=%s\nrelease_build_time=%s\n' "$APP_GIT_SHA" "$APP_BUILD_TIME"
-docker compose up -d --no-build "${SERVICES[@]}"
+docker compose up -d --no-build "${APP_SERVICES[@]}"
+
+# Nginx resolves Compose service names to container IPs at startup. The app
+# containers are recreated during every image promotion, so force a fresh Nginx
+# container after the app services are up; otherwise it can keep proxying to
+# stale upstream IPs and return short-lived 502s even while api/web are healthy.
+docker compose up -d --no-build --force-recreate "$NGINX_SERVICE"
 docker compose ps
