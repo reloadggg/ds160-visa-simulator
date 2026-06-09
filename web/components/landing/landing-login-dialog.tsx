@@ -57,7 +57,7 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
     ).trim()
 
     if (!password) {
-      setLocalError("请输入后台发放的授权 Key")
+      setLocalError("请输入管理员发放的授权 Key")
       return
     }
 
@@ -84,9 +84,9 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
           "rounded-[2rem] supports-[backdrop-filter]:bg-[#050608]/82",
         )}
       >
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(125,211,252,0.20),transparent_34%),radial-gradient(circle_at_86%_18%,rgba(168,85,247,0.14),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.07),transparent_42%)]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(125,211,252,0.20),transparent_34%),radial-gradient(circle_at_86%_18%,rgba(14,165,233,0.10),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.07),transparent_42%)]" />
         <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-cyan-200/12 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-24 left-1/2 h-48 w-72 -translate-x-1/2 rounded-full bg-violet-300/10 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 left-1/2 h-48 w-72 -translate-x-1/2 rounded-full bg-sky-300/8 blur-3xl" />
 
         <div className="relative z-10 border-b border-white/10 px-6 pb-5 pt-6 sm:px-7 sm:pt-7">
           <DialogClose className="absolute right-5 top-5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-white/58 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-200/40">
@@ -96,7 +96,7 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
           <DialogHeader className="max-w-[82%] gap-3 text-left">
             <div className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
               <span className="h-1.5 w-1.5 rounded-full bg-cyan-200 shadow-[0_0_16px_rgba(125,211,252,0.9)]" />
-              Secure access
+              授权访问
             </div>
             <DialogTitle
               className={cn(
@@ -107,7 +107,7 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
               进入模拟面签
             </DialogTitle>
             <DialogDescription className="text-sm leading-6 text-slate-300">
-              使用后台发放的授权 Key 解锁工作台。用户名进入后可在工作台设置里修改。
+              使用管理员发放的授权 Key 解锁工作台。用户名进入后可在工作台设置里修改。
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -176,7 +176,7 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
           </button>
 
           <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 text-xs leading-5 text-slate-400">
-            授权 Key 只用于验证当前访问权限；通过后会进入现有模拟面签工作台，原有直接登录入口仍可作为备用入口使用。
+            授权 Key 只用于验证当前访问权限；通过后会进入模拟面签工作台，原有直接登录入口仍可作为备用入口使用。
           </div>
         </form>
       </DialogContent>

@@ -18,7 +18,7 @@ interface AuthGuardProps {
   children: ReactNode
 }
 
-const previewPoints = ["真实面签节奏", "材料与风险联动", "Agent 2.0 测试环境"]
+const previewPoints = ["真实面签节奏", "材料与风险联动", "复盘方向清晰"]
 
 export function AuthGuard({ children }: AuthGuardProps) {
   const { isAuthenticated, isCheckingAuth, isLoggingIn, error, login } =
@@ -68,7 +68,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
   return (
     <main className="relative min-h-[100dvh] overflow-hidden bg-[#f6f7fb] text-slate-950">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(37,99,235,0.14),transparent_30%),radial-gradient(circle_at_82%_12%,rgba(14,165,233,0.16),transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.9),rgba(226,232,240,0.58))]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(14,165,233,0.14),transparent_30%),radial-gradient(circle_at_82%_12%,rgba(125,211,252,0.12),transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.9),rgba(226,232,240,0.58))]" />
       <div className="absolute left-1/2 top-8 h-64 w-64 -translate-x-1/2 rounded-full bg-white/60 blur-3xl" />
 
       <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-6xl items-center px-4 py-6 sm:px-6 md:px-8">
@@ -81,18 +81,18 @@ export function AuthGuard({ children }: AuthGuardProps) {
             <div className="relative z-10 space-y-8">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/8 px-3 py-1 text-xs font-medium text-sky-100 backdrop-blur">
                 <Sparkles className="h-3.5 w-3.5" />
-                Agent 2.0 内部预览
+                授权访问
               </div>
 
               <div className="space-y-5">
-                <p className="text-sm uppercase tracking-[0.42em] text-sky-200/80">
-                  模拟面签 Workbench
+                <p className="text-sm tracking-[0.32em] text-sky-200/80">
+                  面签训练工作台
                 </p>
                 <h1 className="max-w-xl text-5xl font-semibold tracking-[-0.04em] text-white">
-                  面签模拟，不只是聊天。
+                  进入受保护的模拟面签环境。
                 </h1>
                 <p className="max-w-md text-base leading-7 text-slate-300">
-                  当前版本用于内部联调：围绕签证类型、材料、风险点和追问策略构建完整的面签工作台。
+                  围绕签证类型、申请材料、风险点和追问策略推进练习；验证授权后即可进入完整工作台。
                 </p>
               </div>
             </div>
@@ -117,11 +117,11 @@ export function AuthGuard({ children }: AuthGuardProps) {
               <div className="space-y-4 lg:hidden">
                 <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
                   <Sparkles className="h-3.5 w-3.5 text-sky-500" />
-                  Agent 2.0 内部预览
+                  授权访问
                 </div>
                 <div>
-                  <p className="text-sm uppercase tracking-[0.32em] text-slate-500">
-                    模拟面签 Workbench
+                  <p className="text-sm tracking-[0.28em] text-slate-500">
+                    面签训练工作台
                   </p>
                   <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950 sm:text-4xl">
                     面签模拟工作台
@@ -135,10 +135,10 @@ export function AuthGuard({ children }: AuthGuardProps) {
                 </div>
                 <div>
                   <h2 className="text-2xl font-semibold tracking-[-0.03em] text-slate-950 sm:text-3xl">
-                    进入模拟面签
+                    授权进入工作台
                   </h2>
                   <p className="mt-2 text-sm leading-6 text-slate-500">
-                    请输入后台发放的授权 Key。验证通过后会进入模拟面签工作台。
+                    输入管理员发放的授权 Key。验证通过后，即可开始模拟面签和结果复盘。
                   </p>
                 </div>
               </div>
@@ -208,7 +208,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
               <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-xs leading-5 text-slate-500">
                 授权 Key
-                由后台统一发放并限定使用额度；如页面无响应，请刷新后重试或联系管理员。
+                由管理员统一发放并限定使用额度；如页面无响应，请刷新后重试或联系管理员。
               </div>
             </div>
           </div>

@@ -17,7 +17,7 @@
 | 浏览器经 Next / Nginx 反代 | `/api/v1` | `GET /api/v1/app-config` |
 | 健康检查 / 版本 | 后端根路径 | `GET /healthz`、`GET /version` |
 
-本文示例默认使用直接后端路径 `http://localhost:8000/v1`。如果你从生产前端或 Nginx 入口调用，把 `/v1/...` 替换成 `/api/v1/...` 即可。公开首页 `/` 只负责产品展示和入口组织；真正的授权会话、材料、复盘和调试能力仍在 `/login` 工作台中完成，首页授权弹窗成功后也会进入该工作台。`/wx` 是微信小程序 web-view MVP 的 H5 入口，使用同一个 access key 登录体系，不依赖 `wx.login` / OpenID。
+本文示例默认使用直接后端路径 `http://localhost:8000/v1`。如果你从生产前端或 Nginx 入口调用，把 `/v1/...` 替换成 `/api/v1/...` 即可。公开首页 `/` 只负责产品展示和入口组织；真正的授权会话、材料、复盘和调试能力仍在 `/login` 工作台中完成，首页授权弹窗成功后也会进入该工作台。`/wx` 是微信小程序 web-view 轻量 H5 入口，使用同一个 access key 登录体系，不依赖 `wx.login` / OpenID。
 
 FastAPI 自动文档在 `/docs`、`/redoc`、`/openapi.json`；生产默认受 `APP_AUTH_PROTECT_DOCS=true` 保护。
 
@@ -144,7 +144,7 @@ curl -b cookie.txt -c cookie.txt \
 
 上传返回 `202` 表示文件已保存并进入材料理解队列；聊天可以继续，不必等所有材料理解完成。
 
-### 4.3 后台发放 access key
+### 4.3 管理员发放 access key
 
 ```bash
 curl -i -c admin.txt \

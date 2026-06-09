@@ -1,8 +1,8 @@
-# WeChat Mini Program MVP shell
+# WeChat Mini Program lightweight shell
 
-This folder is a source-only WeChat Mini Program shell for the DS-160 web-view MVP. It does not depend on npm or a Mini Program SDK package; open `miniprogram/` directly with WeChat Developer Tools.
+This folder is a source-only WeChat Mini Program shell for the DS-160 lightweight web-view entry. It does not depend on npm or a Mini Program SDK package; open `miniprogram/` directly with WeChat Developer Tools.
 
-The current MVP intentionally uses the existing access-key auth boundary. It does **not** implement `wx.login`, OpenID binding, or a separate Mini Program account system. A user can enter `/wx` with a normal access key, open an admin-generated share link, or copy their current Key share link from workbench Settings after a Key login, then use `https://YOUR_DOMAIN/#ds160_access_key=<access-key-secret>` to click enable/use before entering the workbench. After a shared-key login succeeds, the H5 page clears the key from the address bar.
+The current lightweight entry intentionally uses the existing access-key auth boundary. It does **not** implement `wx.login`, OpenID binding, or a separate Mini Program account system. A user can enter `/wx` with a normal access key, open an admin-generated share link, or copy their current Key share link from workbench Settings after a Key login, then use `https://YOUR_DOMAIN/#ds160_access_key=<access-key-secret>` to click enable/use before entering the workbench. After a shared-key login succeeds, the H5 page clears the key from the address bar.
 
 ## Backend release switch
 
@@ -11,9 +11,9 @@ The `/wx` entry is controlled by the admin/backend setting `wx_entry_enabled`.
 - Default: `false`.
 - Public contract: `GET /v1/app-config` returns `wx_entry_enabled`.
 - Admin contract: `GET /v1/admin/settings` and `PATCH /v1/admin/settings` include `wx_entry_enabled`.
-- Admin UI: `/admin` → **功能开关** → **微信端入口 / 微信 web-view MVP**.
+- Admin UI: `/admin` → **功能开关** → **微信端入口（默认关闭）**.
 
-When the flag is `false`, `/wx` shows a closed-state notice (`微信端暂未开放/内测中`) and a **返回首页** button. It does not render or enable the WeChat workbench until the flag is enabled.
+When the flag is `false`, `/wx` shows a closed-state notice (`微信端内测中`) and a **返回首页** button. It does not render or enable the WeChat workbench until the flag is enabled.
 
 ## Files
 
@@ -166,7 +166,7 @@ Error matrix:
 - Access-key share links use hash (`/#ds160_access_key=...`) rather than query parameters.
 - Operators understand that display name is set in the workbench profile/settings surface, not during login.
 
-## Known MVP limits
+## Known lightweight-entry limits
 
 - This is not a full native Mini Program rewrite.
 - It does not implement `wx.login` or OpenID binding.

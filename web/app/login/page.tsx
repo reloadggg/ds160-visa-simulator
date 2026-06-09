@@ -186,7 +186,6 @@ function Workbench() {
       await navigator.clipboard.writeText(currentAccessKeyShareLink)
       return true
     } catch {
-      window.prompt("复制失败，请手动复制当前 Key 分享链接：", currentAccessKeyShareLink)
       return false
     }
   }
@@ -425,6 +424,7 @@ function Workbench() {
                 onLogout={() => void handleLogoutToHome()}
                 accessKeyQuota={accessKeyQuota}
                 currentAccessKeyPreview={maskedCurrentAccessKey}
+                currentAccessKeyShareLink={currentAccessKeyShareLink}
                 showGithub={appConfig.show_github_link}
                 showUserModelConfig={appConfig.user_model_config_enabled}
                 showRagStatus={appConfig.rag_status_user_visible}

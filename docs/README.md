@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | 项目定位与快速启动 | [`../README.md`](../README.md) | 面向读者的入口，不承担全部 API 细节。 |
 | HTTP API / SSE / auth / frontend routes | [`API.md`](./API.md) | 按真实请求顺序查接口，并说明 `/`、`/login`、`/wx`、`/health`、`/admin` 入口边界。 |
-| WeChat Mini Program MVP | [`wechat-miniprogram-mvp.md`](./wechat-miniprogram-mvp.md) | 小程序 web-view MVP、原生上传页、upload ticket、手动 smoke test 和上线检查清单。 |
+| WeChat Mini Program lightweight entry | [`wechat-miniprogram-mvp.md`](./wechat-miniprogram-mvp.md) | 小程序 web-view 轻量入口、原生上传页、upload ticket、手动 smoke test 和上线检查清单。 |
 | Runtime 合同 | [`runtime-contracts.md`](./runtime-contracts.md) | Gate、native interviewer、材料、报告之间的主线边界。 |
 | Native runtime / graph 角色 | [`architecture/agent-runtime-spec.md`](./architecture/agent-runtime-spec.md) | `graph` 保留为 replay/shadow/eval/兼容语境，不是当前公开 writer。 |
 | Case Memory / Evidence Graph | [`architecture/ai-native-case-understanding-spec.md`](./architecture/ai-native-case-understanding-spec.md) | 材料理解、长期事实、证据图谱和 runtime 上下文边界。 |

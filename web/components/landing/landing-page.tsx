@@ -8,7 +8,6 @@ import {
   Brain,
   FileText,
   Github,
-  LockKeyhole,
   Radar,
   ShieldCheck,
   Sparkles,
@@ -40,28 +39,28 @@ const capabilityCards = [
     description:
       "围绕 I-20、资金、学校、家庭与出行信息建立面签上下文，而不是只做表面问答。",
     icon: FileText,
-    code: "MATERIAL CONTEXT",
+    code: "材料上下文",
   },
   {
     title: "风险追问",
     description:
       "根据回答矛盾、资金解释不足、学习计划薄弱等信号触发更接近真实面签的追问。",
     icon: Radar,
-    code: "RISK SIGNALS",
+    code: "风险线索",
   },
   {
     title: "真实节奏",
     description:
       "会话按签证类型、材料状态和当前回答推进，保留暂停、结束、复盘等工作台能力。",
     icon: Brain,
-    code: "INTERVIEW RHYTHM",
+    code: "面签节奏",
   },
   {
     title: "结果复盘",
     description:
       "沉淀会话记录、风险摘要和训练方向，帮助申请人在正式面签前知道该补哪里。",
     icon: BadgeCheck,
-    code: "REVIEW OUTPUT",
+    code: "复盘输出",
   },
 ]
 
@@ -75,16 +74,16 @@ const workflowSteps = [
 
 const previewTurns = [
   {
-    role: "VO",
+    role: "签证官",
     text: "Why did you choose this university instead of a school in China?",
   },
   {
-    role: "Applicant",
+    role: "申请人",
     text: "The program matches my research plan in data-driven product systems...",
   },
   {
-    role: "System",
-    text: "Follow-up triggered: funding source and return plan need stronger evidence.",
+    role: "追问线索",
+    text: "Funding source and return plan need stronger evidence before the next round.",
   },
 ]
 
@@ -95,7 +94,7 @@ export function LandingPage({ showGithubLink }: LandingPageProps) {
 
   return (
     <main className="min-h-[100dvh] overflow-hidden bg-[#050608] text-white">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_10%,rgba(59,130,246,0.20),transparent_32%),radial-gradient(circle_at_82%_16%,rgba(168,85,247,0.16),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.045),transparent_32%)]" />
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_10%,rgba(14,165,233,0.18),transparent_32%),radial-gradient(circle_at_82%_16%,rgba(125,211,252,0.10),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.045),transparent_32%)]" />
       <div className="pointer-events-none fixed left-1/2 top-0 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-300/8 blur-3xl" />
 
       <div className="relative mx-auto flex w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
@@ -123,10 +122,10 @@ function LandingNav({
           <Sparkles className="h-4 w-4 text-cyan-200" />
         </span>
         <span className="hidden text-sm font-semibold tracking-[-0.02em] text-white sm:inline">
-          DS-160 AI Interview Simulator
+          DS-160 模拟面签
         </span>
         <span className="text-sm font-semibold tracking-[-0.02em] text-white sm:hidden">
-          DS-160 AI
+          DS-160
         </span>
       </Link>
 
@@ -154,14 +153,14 @@ function LandingNav({
           href="/admin"
           className="hidden h-9 items-center rounded-full px-3 text-sm text-white/62 transition hover:text-white sm:inline-flex"
         >
-          后台登录
+          后台
         </Link>
         <button
           type="button"
           onClick={onStartExperience}
           className="inline-flex h-9 items-center gap-2 rounded-full bg-white px-4 text-sm font-semibold text-black shadow-lg shadow-white/10 transition hover:-translate-y-0.5 hover:bg-cyan-50"
         >
-          进入体验
+          开始模拟面签
           <ArrowRight className="h-4 w-4" />
         </button>
       </div>
@@ -190,7 +189,7 @@ function Hero({
           <div className="relative z-10 flex flex-wrap items-center gap-2">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.22em] text-cyan-100/80">
               <span className="h-1.5 w-1.5 rounded-full bg-cyan-200 shadow-[0_0_16px_rgba(125,211,252,0.9)]" />
-              AI-powered interview rehearsal
+              DS-160 面签预演
             </div>
             <Link
               href="/health"
@@ -208,13 +207,13 @@ function Hero({
             )}
           >
             面签之前，
-            <span className="block bg-gradient-to-r from-white via-cyan-100 to-violet-200 bg-clip-text text-transparent">
+            <span className="block bg-gradient-to-r from-white via-cyan-100 to-sky-200 bg-clip-text text-transparent">
               先预演一遍
             </span>
           </h1>
 
           <p className="relative z-10 mt-7 max-w-2xl text-base leading-8 text-slate-300 sm:text-lg">
-            系统会根据签证类型、申请材料、风险线索和回答一致性，模拟更接近真实场景的签证官追问，并生成可复盘的面签结果。
+            根据签证类型、申请材料和回答一致性生成追问节奏，让申请人在正式窗口前先看见风险点、薄弱证据和下一步训练方向。
           </p>
 
           <div className="relative z-10 mt-8 grid gap-3 sm:grid-cols-[1fr_auto]">
@@ -224,8 +223,8 @@ function Hero({
               className="group flex min-h-24 items-center justify-between rounded-[1.5rem] border border-white/12 bg-white px-5 text-left text-black shadow-2xl shadow-cyan-200/10 transition hover:-translate-y-0.5 hover:bg-cyan-50"
             >
               <span>
-                <span className="block text-lg font-black tracking-[-0.03em]">进入模拟体验</span>
-                <span className="mt-1 block text-sm text-black/55">授权后开始一次完整面签预演</span>
+                <span className="block text-lg font-black tracking-[-0.03em]">开始模拟面签</span>
+                <span className="mt-1 block text-sm text-black/55">用授权 Key 进入受保护工作台</span>
               </span>
               <span className="flex h-11 w-11 items-center justify-center rounded-full bg-black text-white transition group-hover:translate-x-0.5">
                 <ArrowRight className="h-4 w-4" />
@@ -233,13 +232,6 @@ function Hero({
             </button>
 
             <div className="grid gap-3 sm:w-44">
-              <Link
-                href="/admin"
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-white/12 bg-white/[0.04] px-4 text-sm font-semibold text-white/82 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white"
-              >
-                <LockKeyhole className="h-4 w-4" />
-                管理后台
-              </Link>
               <Link
                 href="/health"
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-4 text-sm font-semibold text-emerald-100 transition hover:border-emerald-200/40 hover:bg-emerald-300/15"
@@ -264,8 +256,8 @@ function Hero({
 
         <div className="mt-4 grid max-w-3xl gap-3 sm:grid-cols-3">
           {[
-            ["训练对象", "F-1 / DS-160", "bg-cyan-300/10 text-cyan-100 border-cyan-300/20"],
-            ["输出结果", "风险复盘", "bg-violet-300/10 text-violet-100 border-violet-300/20"],
+            ["训练对象", "F-1 申请人", "bg-cyan-300/10 text-cyan-100 border-cyan-300/20"],
+            ["复盘重点", "风险与材料", "bg-sky-300/10 text-sky-100 border-sky-300/20"],
           ].map(([label, value, tone]) => (
             <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
               <div className="text-xs text-white/42">{label}</div>
@@ -288,7 +280,7 @@ function Hero({
       </div>
 
       <div id="preview" className="relative">
-        <div className="absolute -inset-6 rounded-[2.5rem] bg-gradient-to-br from-cyan-400/16 via-blue-500/8 to-violet-400/14 blur-2xl" />
+        <div className="absolute -inset-6 rounded-[2.5rem] bg-gradient-to-br from-cyan-400/16 via-blue-500/8 to-sky-300/10 blur-2xl" />
         <InterviewConsole />
       </div>
     </section>
@@ -301,25 +293,25 @@ function InterviewConsole() {
       <div className="mb-5 flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-100/70">
-            Live interview preview
+            面签预览
           </div>
-          <div className="mt-1 text-sm font-semibold text-white">F-1 Applicant Session</div>
+          <div className="mt-1 text-sm font-semibold text-white">F-1 申请人会话</div>
         </div>
         <div className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-emerald-100">
-          Running
+          进行中
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[0.86fr_1.14fr]">
         <div className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.035] p-4">
           <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-white/45">
-            Applicant profile
+            申请概况
           </div>
           {[
-            ["Visa", "F-1 Student"],
-            ["School", "Graduate Program"],
-            ["Funding", "Family Support"],
-            ["Signals", "Intent · Funding · Ties"],
+            ["签证", "F-1 Student"],
+            ["学校", "Graduate Program"],
+            ["资金", "Family Support"],
+            ["线索", "Intent · Funding · Ties"],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl border border-white/8 bg-black/20 px-3 py-3">
               <div className="text-[11px] text-white/38">{label}</div>
@@ -350,7 +342,7 @@ function ProductPreview() {
         {[
           ["不是普通聊天", "围绕 DS-160 材料、签证类型和风险点推进。"],
           ["不是静态模板", "每轮回答都会改变后续追问和复盘方向。"],
-          ["不是调试页面", "对外呈现聚焦产品价值，后台入口保持独立可控。"],
+          ["不是泛泛建议", "把材料、回答和复盘连成一条可继续训练的路径。"],
         ].map(([title, desc]) => (
           <div key={title} className="rounded-[1.75rem] border border-white/10 bg-white/[0.035] p-5">
             <ShieldCheck className="mb-4 h-5 w-5 text-cyan-100" />
@@ -368,15 +360,15 @@ function Capabilities() {
     <section id="capabilities" className="py-20">
       <div className="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-end">
         <div>
-          <p className="font-mono text-xs uppercase tracking-[0.22em] text-cyan-100/62">
-            Capabilities
+          <p className="text-xs font-semibold tracking-[0.18em] text-cyan-100/62">
+            核心能力
           </p>
           <h2 className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-white sm:text-4xl">
-            把面签训练拆成可验证的产品能力。
+            把面签训练拆成能看见、能复盘的能力。
           </h2>
         </div>
         <p className="max-w-xl text-sm leading-6 text-white/50">
-          先看清系统能帮你解决什么，再进入受保护的模拟环境完成授权、材料导入、面签会话和结果复盘。
+          从授权、材料导入到结果复盘，用户看到的是一条完整训练路径；后台能力保持独立，不打断主体验。
         </p>
       </div>
 
@@ -392,7 +384,7 @@ function Capabilities() {
                 <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-black/25">
                   <Icon className="h-5 w-5 text-cyan-100" />
                 </div>
-                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/35">
+                <span className="text-[10px] font-semibold tracking-[0.12em] text-cyan-100/45">
                   {card.code}
                 </span>
               </div>
@@ -411,8 +403,8 @@ function Workflow({ onStartExperience }: LoginDialogTriggerProps) {
     <section id="workflow" className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 sm:p-8">
       <div className="mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="font-mono text-xs uppercase tracking-[0.22em] text-violet-100/64">
-            Workflow
+          <p className="text-xs font-semibold tracking-[0.18em] text-cyan-100/62">
+            使用路径
           </p>
           <h2 className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-white">
             从授权到复盘，路径保持清楚。
@@ -423,7 +415,7 @@ function Workflow({ onStartExperience }: LoginDialogTriggerProps) {
           onClick={onStartExperience}
           className="inline-flex items-center gap-2 text-sm font-semibold text-cyan-100 hover:text-white"
         >
-          进入模拟环境
+          开始模拟面签
           <ArrowRight className="h-4 w-4" />
         </button>
       </div>
@@ -447,11 +439,11 @@ function FinalCta({
   return (
     <footer className="py-16">
       <div className="rounded-[2rem] border border-white/10 bg-gradient-to-br from-white/[0.08] to-white/[0.025] p-6 text-center shadow-2xl shadow-black/30 sm:p-10">
-        <p className="font-mono text-xs uppercase tracking-[0.22em] text-cyan-100/62">
-          Ready for the first run
+        <p className="text-xs font-semibold tracking-[0.18em] text-cyan-100/62">
+          准备开始
         </p>
         <h2 className="mx-auto mt-4 max-w-2xl text-3xl font-semibold tracking-[-0.05em] text-white sm:text-5xl">
-          让申请人在正式窗口前，先看见自己的薄弱点。
+          让申请人在真正面签前，先知道哪里还不够稳。
         </h2>
         <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
           <button
@@ -459,12 +451,9 @@ function FinalCta({
             onClick={onStartExperience}
             className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-white px-6 text-sm font-semibold text-black transition hover:bg-cyan-50"
           >
-            开始一次预演
+            开始模拟面签
             <ArrowRight className="h-4 w-4" />
           </button>
-          <Link href="/admin" className="inline-flex h-12 items-center justify-center rounded-full border border-white/12 px-6 text-sm font-semibold text-white/78 transition hover:border-white/25 hover:text-white">
-  后台管理入口
-          </Link>
           {showGithubLink ? (
             <a href={PROJECT_INFO.githubUrl} target="_blank" rel="noreferrer" className="inline-flex h-12 items-center justify-center gap-2 rounded-full border border-white/12 px-6 text-sm font-semibold text-white/64 transition hover:border-white/25 hover:text-white">
               <Github className="h-4 w-4" />

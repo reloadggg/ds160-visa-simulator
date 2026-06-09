@@ -17,14 +17,14 @@ import { getAppConfig } from "@/lib/api/client"
 function WxEntryClosedNotice({ detail }: { detail?: string | null }) {
   return (
     <main className="flex min-h-dvh items-center justify-center bg-slate-950 px-5 py-8 text-white">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(124,58,237,0.16),_transparent_42%)]" />
-      <section className="relative w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[0.08] p-6 text-center shadow-2xl backdrop-blur-2xl">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-cyan-300/15 text-2xl">
-          微信
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.16),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(125,211,252,0.08),_transparent_42%)]" />
+      <section className="relative w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[0.065] p-6 text-center shadow-2xl shadow-black/40 backdrop-blur-2xl">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-cyan-200/15 bg-cyan-200/[0.08] font-mono text-sm font-semibold tracking-[0.18em] text-cyan-100">
+          WX
         </div>
-        <h1 className="mt-5 text-2xl font-semibold">微信端暂未开放/内测中</h1>
+        <h1 className="mt-5 text-2xl font-semibold">微信端内测中</h1>
         <p className="mt-3 text-sm leading-6 text-slate-300">
-          微信 web-view MVP 入口目前由后台开关控制。开放前请先使用首页或桌面工作台体验模拟面签。
+          当前入口暂未开放，请先使用桌面工作台完成模拟面签。正式启用后，可从微信内直接进入轻量移动流程。
         </p>
         {detail ? (
           <p className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100">
@@ -120,13 +120,13 @@ function WxWorkbenchShell() {
 
   return (
     <main className="min-h-dvh bg-slate-950 text-white">
-      <div className="fixed inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.20),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(124,58,237,0.18),_transparent_40%)]" />
+      <div className="fixed inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.20),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(125,211,252,0.08),_transparent_40%)]" />
       <div className="relative mx-auto min-h-dvh w-full max-w-md pb-8">
         <header className="sticky top-0 z-20 border-b border-white/10 bg-slate-950/75 px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur-2xl">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-sm text-cyan-100">
-                {workbench.visaType ? `${workbench.visaType} 微信面签` : "微信面签模拟"}
+                {workbench.visaType ? `${workbench.visaType} 微信端面签` : "微信端模拟面签"}
               </div>
               <div className="mt-1 truncate text-xs text-slate-400">
                 {workbench.sessionId ?? workbench.quotaLabel ?? "请选择签证类型"}

@@ -52,16 +52,16 @@ export function WxAuthScreen({
 
   return (
     <main className="flex min-h-dvh items-center justify-center bg-slate-950 px-5 py-8 text-slate-50">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.22),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(124,58,237,0.18),_transparent_42%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.20),_transparent_36%),radial-gradient(circle_at_bottom,_rgba(125,211,252,0.08),_transparent_42%)]" />
       <Card className="relative w-full max-w-md border-white/10 bg-white/10 text-slate-50 shadow-2xl backdrop-blur-2xl">
         <CardHeader className="space-y-4 text-center">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-cyan-400/15 text-cyan-200">
             <KeyRound className="h-7 w-7" />
           </div>
           <div>
-            <CardTitle className="text-2xl">微信面签模拟 MVP</CardTitle>
+            <CardTitle className="text-2xl">微信端模拟面签</CardTitle>
             <p className="mt-2 text-sm leading-6 text-slate-300">
-              输入 access key，或启用分享链接中的 Key 后，在手机里完成一轮轻量面签练习。
+              输入授权 Key，或启用分享链接中的 Key 后，在手机里完成一轮轻量面签练习。
             </p>
           </div>
         </CardHeader>
@@ -81,7 +81,7 @@ export function WxAuthScreen({
               <Input
                 value={accessKey}
                 onChange={(event) => setAccessKey(event.target.value)}
-                placeholder="请输入 access key"
+                placeholder="请输入授权 Key"
                 className="border-white/10 bg-white/10 text-slate-50 placeholder:text-slate-400"
                 type="password"
                 disabled={isChecking || isLoggingIn}

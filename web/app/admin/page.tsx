@@ -829,7 +829,7 @@ export default function AdminPage() {
                       复制 Key
                     </button>
                     <button
-                      className="rounded-xl border border-violet-200/20 bg-violet-200/10 px-3 py-1.5 font-medium text-violet-100 disabled:opacity-50"
+                      className="rounded-xl border border-sky-200/20 bg-sky-200/10 px-3 py-1.5 font-medium text-sky-100 disabled:opacity-50"
                       disabled={item.secret_available === false}
                       onClick={() => void copyShareLinkForKey(item)}
                     >
@@ -882,8 +882,8 @@ export default function AdminPage() {
                       {revealedSecret}
                     </code>
                     {revealedShareLink ? (
-                      <div className="mt-3 rounded-xl border border-violet-200/15 bg-violet-200/[0.06] p-3">
-                        <div className="flex items-center gap-2 text-xs font-semibold text-violet-100">
+                      <div className="mt-3 rounded-xl border border-sky-200/15 bg-sky-200/[0.06] p-3">
+                        <div className="flex items-center gap-2 text-xs font-semibold text-sky-100">
                           <LinkIcon className="h-3.5 w-3.5" />
                           一键分享链接
                         </div>
@@ -907,7 +907,7 @@ export default function AdminPage() {
                     复制当前 Key
                   </button>
                   <button
-                    className="rounded-xl bg-violet-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg shadow-violet-950/20 transition hover:bg-violet-100 disabled:bg-white/[0.08] disabled:text-slate-500 disabled:shadow-none"
+                    className="rounded-xl bg-sky-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg shadow-sky-950/20 transition hover:bg-sky-100 disabled:bg-white/[0.08] disabled:text-slate-500 disabled:shadow-none"
                     disabled={!revealedShareLink}
                     onClick={() => void copyShareLink()}
                   >
@@ -923,7 +923,7 @@ export default function AdminPage() {
                 {(
                   [
                     ["show_github_link", "显示 GitHub 信息"],
-                    ["wx_entry_enabled", "微信端入口 / 微信 web-view MVP"],
+                    ["wx_entry_enabled", "微信端入口（默认关闭）"],
                     ["debug_console_enabled", "开放调试台"],
                     ["debug_material_enabled", "开放调试材料"],
                     ["rag_status_user_visible", "用户侧显示知识库状态"],

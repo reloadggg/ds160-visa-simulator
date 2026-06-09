@@ -94,7 +94,7 @@ NativeInterviewerRuntimeService
 | RAG | 服务端政策知识库能力；使用 Chroma + SiliconFlow embedding/rerank，不由用户 BYOK 配置覆盖。 |
 | Admin console | 后台可以登录、发放 access keys、查看 key 关联会话、调整 demo 设置和测试运行时模型。 |
 | Access keys | 管理员发放给用户的访问密钥，并把用户历史隔离到 `history_namespace=key_<id>`。登录本身不消耗 quota；创建新 session 时才扣次数，禁用/过期/耗尽后仍可回到已绑定历史，但不能创建新会话。后台支持直接 `复制 Key` 和生成 `/#ds160_access_key=...` 一键分享链接；分享链接等同于持有该 Key，应配合用量、过期时间和转发范围管理。 |
-| 微信 web-view / upload ticket | `/wx` 是小程序 web-view MVP 的 H5 入口；原生上传页通过短期 upload ticket 上传微信聊天文件，ticket 默认 300 秒有效、最多 5 个文件，后端只保存 ticket hash。 |
+| 微信 web-view / upload ticket | `/wx` 是小程序 web-view 轻量 H5 入口；原生上传页通过短期 upload ticket 上传微信聊天文件，ticket 默认 300 秒有效、最多 5 个文件，后端只保存 ticket hash。 |
 | Runtime model config | 后台可保存 OpenAI-compatible `Base URL`、`API Key`、`Model` 和 streaming 设置；测试接口会返回配置来源 `draft` / `admin` / `env`，不会回显 secret。 |
 | 失败消息重试 | 前端保留失败用户消息的 `client_message_id` 和 `retry_content`；重试同一条消息时复用 idempotency key，已完成请求返回 `idempotent_replay`，处理中请求返回 `409`。 |
 | Runtime debug snapshot | 调试台读取 `GET /v1/sessions/{session_id}/debug/runtime`，返回一次只读快照；敏感字段会被后端 redaction，不应当作写入接口或实时订阅。 |
@@ -221,7 +221,7 @@ docker compose up -d --build postgres ds160-api ds160-web ds160-worker
 
 - 前端 `/` 是公开产品首页；用户 CTA 会在首页打开授权弹窗，授权成功后进入 `/login` 工作台。
 - `/login` 保留原有普通用户 `AuthGuard` / 工作台流程，也可以作为直接访问工作台的备用入口。
-- `/wx` 是微信小程序 web-view MVP 入口，支持普通 access key 和后台生成的分享 key；它不依赖 `wx.login` 或 OpenID 绑定。
+- `/wx` 是微信小程序 web-view 轻量入口，支持普通 access key 和后台生成的分享 key；它不依赖 `wx.login` 或 OpenID 绑定。
 - `/health` 是前端状态页，会读取后端 `/healthz` 并用同一套科技风视觉展示 app、database、LLM、worker 等检查项。
 - `/admin` 是后台入口。
 - `APP_AUTH_PASSWORD` 为空时关闭普通用户鉴权，方便本地开发。
@@ -288,5 +288,5 @@ rg -n "/v1/(auth|sessions|admin|rag|model-config|chat|responses)" docs/API.md ap
 - [Agent Runtime Spec](docs/architecture/agent-runtime-spec.md)
 - [AI-native Case Understanding Spec](docs/architecture/ai-native-case-understanding-spec.md)
 - [RAG Knowledge Spec](docs/architecture/rag-knowledge-spec.md)
-- [WeChat Mini Program MVP](docs/wechat-miniprogram-mvp.md)
+- [WeChat Mini Program lightweight entry](docs/wechat-miniprogram-mvp.md)
 - [Deployment Guide](deploy/README.md)

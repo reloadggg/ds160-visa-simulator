@@ -4,9 +4,8 @@ import { ThemeProvider } from '@/components/theme-provider'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: '面签模拟器',
-  description: '签证面试模拟工作台',
-  generator: 'v0.app',
+  title: 'DS-160 模拟面签',
+  description: '围绕签证材料、风险线索和回答一致性推进的模拟面签工作台',
   icons: {
     icon: [
       {

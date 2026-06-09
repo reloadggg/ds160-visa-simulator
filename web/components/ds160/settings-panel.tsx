@@ -136,6 +136,7 @@ interface SettingsPanelProps {
   onUpdateUserDisplayName?: (displayName: string) => void
   accessKeyQuota?: AccessKeyQuota | null
   currentAccessKeyPreview?: string | null
+  currentAccessKeyShareLink?: string | null
   showGithub?: boolean
   showUserModelConfig?: boolean
   showRagStatus?: boolean
@@ -174,6 +175,7 @@ export function SettingsPanel({
   onUpdateUserDisplayName,
   accessKeyQuota = null,
   currentAccessKeyPreview = null,
+  currentAccessKeyShareLink = null,
   showGithub = true,
   showUserModelConfig = true,
   showRagStatus = true,
@@ -189,6 +191,7 @@ export function SettingsPanel({
   const [materialSeedOverride, setMaterialSeedOverride] = useState("")
   const [displayNameDraft, setDisplayNameDraft] = useState(userDisplayName)
   const [keyShareFeedback, setKeyShareFeedback] = useState<string | null>(null)
+  const [manualKeyShareLink, setManualKeyShareLink] = useState<string | null>(null)
   const materialSeedText = materialSeedOverride
   const debugBundleOptions = useMemo(
     () => getDebugMaterialBundleOptionsForVisaFamily(visaType),
@@ -271,16 +274,19 @@ export function SettingsPanel({
   }
 
   const handleCopyCurrentKeyShareLink = async () => {
-    if (!currentAccessKeyPreview || !onCopyCurrentKeyShareLink) {
+    if (!currentAccessKeyPreview || !currentAccessKeyShareLink || !onCopyCurrentKeyShareLink) {
       setKeyShareFeedback("当前浏览器没有可分享的明文 Key，请重新用 Key 登录后再试。")
+      setManualKeyShareLink(null)
       return
     }
     const copied = await onCopyCurrentKeyShareLink()
-    setKeyShareFeedback(
-      copied
-        ? "本 Key 的分享链接已复制到剪贴板。"
-        : "复制失败，请按弹窗提示手动复制分享链接。",
-    )
+    if (copied) {
+      setManualKeyShareLink(null)
+      setKeyShareFeedback("本 Key 的分享链接已复制到剪贴板。")
+      return
+    }
+    setManualKeyShareLink(currentAccessKeyShareLink)
+    setKeyShareFeedback("复制失败，请手动复制下方链接。")
   }
 
   const ragStatusLabel = (() => {
@@ -409,18 +415,22 @@ export function SettingsPanel({
               {accessKeyQuota ? (
                 <div className="mt-4 rounded-xl border border-border bg-background/60 px-3 py-3">
                   <div className="text-sm font-medium text-foreground">
-                    分享当前 Key
+                    分享当前授权
                   </div>
                   <div className="mt-1 text-xs leading-5 text-muted-foreground">
                     {currentAccessKeyPreview
-                      ? `将复制当前授权 Key 的一键分享链接（${currentAccessKeyPreview}）。收到链接的人点击启用后可直接进入工作台。`
+                      ? `复制一个带授权 Key 的入口链接（${currentAccessKeyPreview}）。收到链接的人点击启用后可直接进入工作台。`
                       : "当前浏览器没有保留本次登录的明文 Key。为避免从后端反查或长期保存密钥，请退出后重新用 Key 登录，再复制分享链接。"}
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     className="mt-3 w-full justify-center gap-2"
-                    disabled={!currentAccessKeyPreview || !onCopyCurrentKeyShareLink}
+                    disabled={
+                      !currentAccessKeyPreview ||
+                      !currentAccessKeyShareLink ||
+                      !onCopyCurrentKeyShareLink
+                    }
                     onClick={() => void handleCopyCurrentKeyShareLink()}
                   >
                     <Copy className="h-4 w-4" />
@@ -431,6 +441,18 @@ export function SettingsPanel({
                       {keyShareFeedback}
                     </div>
                   ) : null}
+                  {manualKeyShareLink ? (
+                    <Input
+                      value={manualKeyShareLink}
+                      readOnly
+                      aria-label="手动复制当前 Key 分享链接"
+                      className="mt-2 h-10 rounded-xl bg-background font-mono text-xs"
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                  ) : null}
+                  <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                    分享链接等同于持有该 Key，请只发送给目标用户。
+                  </div>
                 </div>
               ) : null}
             </div>
