@@ -224,6 +224,7 @@ def test_refresh_session_matches_all_uploaded_document_candidates(tmp_path) -> N
                         "status": "parsed",
                         "filename": "all-documents.jpg",
                         "document_type": "passport_bio",
+                        "understanding_status": "completed",
                         "document_assessment": {
                             "document_type": "passport_bio",
                             "document_type_candidates": [
@@ -446,6 +447,8 @@ def test_refresh_session_keeps_pending_when_only_funding_proof_is_ready(
                         "status": "parsed",
                         "filename": "funding_proof.txt",
                         "source_type": "text",
+                        "understanding_status": "completed",
+                        "document_type": "funding_proof",
                     },
                 )
             )
@@ -596,6 +599,7 @@ def test_refresh_session_marks_all_required_documents_ready_after_parse(
                             "filename": filename,
                             "source_type": "text",
                             "document_type": filename.removesuffix(".txt"),
+                            "understanding_status": "completed",
                         },
                     )
                 )
@@ -624,6 +628,112 @@ def test_refresh_session_marks_all_required_documents_ready_after_parse(
                 item["meets_minimum_fields"]
                 for item in record.gate_status_json["required_documents"]
             )
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_refresh_session_parsed_without_understanding_is_not_ready_when_required(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from app.core import settings as settings_module
+
+    monkeypatch.setattr(settings_module.settings, "material_understanding_required", True)
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-understanding-failed.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="understanding-failed",
+                        required_documents=["passport_bio"],
+                    ),
+                )
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="passport_bio.pdf",
+                    status="parsed",
+                    artifact_json={
+                        "status": "parsed",
+                        "filename": "passport_bio.pdf",
+                        "document_type": "passport_bio",
+                        "understanding_status": "failed",
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            record = GateRuntimeService(db).refresh_session("sess-1")
+            passport_doc = next(
+                item
+                for item in record.gate_status_json["required_documents"]
+                if item["document_type"] == "passport_bio"
+            )
+            assert passport_doc["status"] == "uploaded"
+            assert passport_doc["is_parsed"] is True
+            assert passport_doc["meets_minimum_fields"] is False
+            assert record.gate_status_json["status"] == "pending_documents"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_refresh_session_does_not_reopen_terminal_phase(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'gate-runtime-terminal.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                SessionRecord(
+                    session_id="sess-1",
+                    declared_family="f1",
+                    phase_state="session_closed",
+                    current_governor_decision="simulated_refusal",
+                    gate_status_json=build_initial_gate_status(
+                        declared_family="f1",
+                        scenario_key="refused",
+                        required_documents=["passport_bio"],
+                    ),
+                )
+            )
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="passport_bio.pdf",
+                    status="parsed",
+                    artifact_json={
+                        "status": "parsed",
+                        "document_type": "passport_bio",
+                        "understanding_status": "completed",
+                    },
+                )
+            )
+            db.commit()
+
+        with testing_session_local() as db:
+            record = GateRuntimeService(db).refresh_session("sess-1")
+            assert record.phase_state == "session_closed"
+            assert record.current_governor_decision == "simulated_refusal"
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()

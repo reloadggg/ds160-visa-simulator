@@ -97,7 +97,8 @@ export function isTerminalMaterialUnderstandingStatus(
     status === "failed" ||
     status === "error" ||
     status === "completed" ||
-    status === "parsed"
+    status === "parsed" ||
+    status === "skipped_legacy"
   )
 }
 
@@ -125,16 +126,15 @@ export function materialUnderstandingErrorMessage(
   )
 }
 
+/**
+ * True only for terminal failure statuses.
+ * Presence of understanding_error while still queued/processing is NOT failed.
+ */
 export function isMaterialUnderstandingFailed(
   item: MaterialUnderstandingLike,
 ): boolean {
-  return (
-    materialUnderstandingStatus(item) === "failed" ||
-    materialUnderstandingStatus(item) === "error" ||
-    Boolean(item.caseBoardRefresh?.failureMessage) ||
-    Boolean(item.understanding_error) ||
-    Boolean(item.case_board_delta?.latest_material?.understanding_error)
-  )
+  const status = materialUnderstandingStatus(item)
+  return status === "failed" || status === "error"
 }
 
 export function buildMaterialUnderstandingActivity(

@@ -651,7 +651,7 @@ def test_debug_fill_current_gap_graph_runtime_refreshes_state_without_assistant_
     assert turns == []
     assert record is not None
     material_refresh = record.interviewer_state_json["last_material_refresh"]
-    assert material_refresh["agent_runtime"] == "graph"
+    assert material_refresh["agent_runtime"] == "native_interviewer"
     assert material_refresh["selected_public_runtime"] == "native_interviewer"
     assert material_refresh["runtime_execution"] == {
         "schema_version": "runtime.execution.v1",
@@ -754,7 +754,7 @@ def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
     assert payload["turn_decision"]["decision"] == "continue_interview"
     assert payload["turn_decision"]["assistant_message_author"] == "native_interviewer"
     assert payload["material_refresh"]["assistant_turn_created"] is False
-    assert payload["material_refresh"]["agent_runtime"] == "graph_shadow"
+    assert payload["material_refresh"]["agent_runtime"] == "native_interviewer"
     assert payload["material_refresh"]["selected_public_runtime"] == "native_interviewer"
     assert payload["material_refresh"]["runtime_execution"] == {
         "schema_version": "runtime.execution.v1",
@@ -789,7 +789,7 @@ def test_debug_fill_current_gap_graph_shadow_uses_native_public_refresh(
     assert turns == []
     assert record is not None
     material_refresh = record.interviewer_state_json["last_material_refresh"]
-    assert material_refresh["agent_runtime"] == "graph_shadow"
+    assert material_refresh["agent_runtime"] == "native_interviewer"
     assert material_refresh["selected_public_runtime"] == "native_interviewer"
     assert material_refresh["runtime_execution"] == payload["material_refresh"][
         "runtime_execution"
@@ -885,7 +885,7 @@ def test_runtime_trace_endpoint_returns_graph_events(
     payload = trace_response.json()
     assert payload["session_id"] == session_id
     assert payload["run_id"] == run_id
-    assert payload["agent_runtime"] == "graph"
+    assert payload["agent_runtime"] == "native_interviewer"
     assert payload["selected_public_runtime"] == "native_interviewer"
     assert payload["runtime_execution"]["execution_runtime"] == "native_interviewer_runtime"
     assert payload["native_run_id"] == run_id

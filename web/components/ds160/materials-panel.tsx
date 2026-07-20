@@ -21,6 +21,8 @@ import {
   ImageIcon,
   Info,
   ExternalLink,
+  Loader2,
+  Sparkles,
 } from "lucide-react"
 import type { SessionHistoryEntry, UploadedMaterial } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
@@ -34,6 +36,20 @@ interface MaterialsPanelProps {
   currentMaterials: UploadedMaterial[]
   historyEntries: SessionHistoryEntry[]
   currentSessionId: string | null
+  practiceMaterialsEnabled?: boolean
+  onOpenPracticeMaterials?: () => void
+  isPracticeGenerating?: boolean
+}
+
+/** Practice / synthetic materials (text-generated or debug bundle). */
+function isPracticeMaterial(material: UploadedMaterial): boolean {
+  return Boolean(
+    material.synthetic_bundle_id ||
+      material.debug_bundle_scenario ||
+      // Defensive: allow future practice marker without a type change yet.
+      (material as UploadedMaterial & { is_practice_material?: boolean })
+        .is_practice_material,
+  )
 }
 
 function formatDateTime(value: string): string {
@@ -322,18 +338,38 @@ function CaseUnderstandingSummary({ material }: { material: UploadedMaterial }) 
   )
 }
 
+function MaterialsEmptyState({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/15 px-6 py-10 text-center">
+      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+        <FolderOpen className="h-6 w-6" />
+      </div>
+      <div className="text-sm font-semibold text-foreground">{title}</div>
+      <p className="mt-1.5 max-w-sm text-xs leading-5 text-muted-foreground">
+        {description}
+      </p>
+    </div>
+  )
+}
+
 function MaterialGrid({
   materials,
-  emptyText,
+  emptyTitle,
+  emptyDescription,
 }: {
   materials: UploadedMaterial[]
-  emptyText: string
+  emptyTitle: string
+  emptyDescription: string
 }) {
   if (!materials.length) {
     return (
-      <div className="break-words text-sm leading-6 text-muted-foreground">
-        {emptyText}
-      </div>
+      <MaterialsEmptyState title={emptyTitle} description={emptyDescription} />
     )
   }
 
@@ -395,10 +431,16 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                             ? "图片"
                             : "文件"}
                       </Badge>
+                      {isPracticeMaterial(material) ? (
+                        <Badge
+                          variant="outline"
+                          className="border-violet-200 bg-violet-50 text-violet-800"
+                        >
+                          练习
+                        </Badge>
+                      ) : null}
                       {material.material_package_id ? (
-                        <Badge variant="outline">case package</Badge>
-                      ) : material.synthetic_bundle_id ? (
-                        <Badge variant="outline">材料包</Badge>
+                        <Badge variant="outline">案例包</Badge>
                       ) : null}
                       <span className="break-words text-xs leading-5 text-muted-foreground">
                         {formatDateTime(material.uploaded_at)}
@@ -409,7 +451,7 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                   <div className="flex-1 space-y-4">
                     <div className="rounded-2xl border border-border bg-muted/20 p-4">
                       <div className="mb-1 text-xs font-medium text-muted-foreground">
-                        识别结果 (Document Type)
+                        识别结果
                       </div>
                       <div className="break-words text-sm font-semibold text-foreground">
                         {material.document_type_label ?? statusLabel}
@@ -479,14 +521,22 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
                 : "文件"}
           </Badge>
         </div>
-        {material.material_package_id ? (
-          <Badge variant="outline" className="w-fit">
-            case package
-          </Badge>
-        ) : material.synthetic_bundle_id ? (
-          <Badge variant="outline" className="w-fit">
-            材料包
-          </Badge>
+        {isPracticeMaterial(material) || material.material_package_id ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {isPracticeMaterial(material) ? (
+              <Badge
+                variant="outline"
+                className="w-fit border-violet-200 bg-violet-50 text-violet-800"
+              >
+                练习
+              </Badge>
+            ) : null}
+            {material.material_package_id ? (
+              <Badge variant="outline" className="w-fit">
+                案例包
+              </Badge>
+            ) : null}
+          </div>
         ) : null}
         <div className="rounded-xl bg-muted/30 px-3 py-2">
           <div className="break-words text-xs leading-5 text-muted-foreground">
@@ -534,10 +584,48 @@ function MaterialCard({ material }: { material: UploadedMaterial }) {
   )
 }
 
+function PracticeEmptyState({
+  onOpenPracticeMaterials,
+  isPracticeGenerating,
+}: {
+  onOpenPracticeMaterials: () => void
+  isPracticeGenerating?: boolean
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/20 px-6 py-10 text-center">
+      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
+        <Sparkles className="h-6 w-6" />
+      </div>
+      <div className="text-base font-semibold text-foreground">还没有材料</div>
+      <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
+        用一段文字描述你的背景，即可生成虚构练习材料，开始模拟面签。
+      </p>
+      <Button
+        className="mt-5 rounded-xl"
+        onClick={onOpenPracticeMaterials}
+        disabled={isPracticeGenerating}
+      >
+        {isPracticeGenerating ? (
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        ) : (
+          <Sparkles className="mr-2 h-4 w-4" />
+        )}
+        {isPracticeGenerating ? "正在生成..." : "用文字生成练习材料"}
+      </Button>
+      <p className="mt-3 text-xs leading-5 text-muted-foreground">
+        也可稍后在此上传真实文件
+      </p>
+    </div>
+  )
+}
+
 export function MaterialsPanel({
   currentMaterials,
   historyEntries,
   currentSessionId,
+  practiceMaterialsEnabled = false,
+  onOpenPracticeMaterials,
+  isPracticeGenerating = false,
 }: MaterialsPanelProps) {
   const archivedMaterials = historyEntries
     .filter((entry) => entry.session_id !== currentSessionId)
@@ -553,16 +641,44 @@ export function MaterialsPanel({
       <div className="min-w-0 space-y-4 p-3 md:p-4">
         <Card className="py-4">
           <CardHeader className="px-5 pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FolderOpen className="h-4 w-4 text-primary" />
-              当前会话材料
-            </CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <FolderOpen className="h-4 w-4 text-primary" />
+                当前会话材料
+              </CardTitle>
+              {practiceMaterialsEnabled && onOpenPracticeMaterials ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 rounded-xl"
+                  onClick={onOpenPracticeMaterials}
+                  disabled={isPracticeGenerating}
+                >
+                  {isPracticeGenerating ? (
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="mr-2 h-3.5 w-3.5" />
+                  )}
+                  {isPracticeGenerating ? "生成中..." : "生成练习材料"}
+                </Button>
+              ) : null}
+            </div>
           </CardHeader>
           <CardContent className="px-5">
-            <MaterialGrid
-              materials={currentMaterials}
-              emptyText="当前会话还没有上传材料。图片上传后会展示缩略图，PDF 会显示文件图标。"
-            />
+            {currentMaterials.length === 0 &&
+            practiceMaterialsEnabled &&
+            onOpenPracticeMaterials ? (
+              <PracticeEmptyState
+                onOpenPracticeMaterials={onOpenPracticeMaterials}
+                isPracticeGenerating={isPracticeGenerating}
+              />
+            ) : (
+              <MaterialGrid
+                materials={currentMaterials}
+                emptyTitle="当前会话暂无材料"
+                emptyDescription="上传图片或 PDF 后会在此展示缩略图与理解结果。"
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -579,7 +695,8 @@ export function MaterialsPanel({
             >
               <MaterialGrid
                 materials={archivedMaterials}
-                emptyText="历史会话中的材料会在这里归档展示。"
+                emptyTitle="暂无历史材料"
+                emptyDescription="历史会话中的材料会在这里归档展示。"
               />
             </div>
           </CardContent>

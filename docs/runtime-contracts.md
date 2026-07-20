@@ -70,6 +70,13 @@ Gate 不是面谈主脑，也不负责决定下一句面试官回复。
 - 不用 Gate primary document 覆盖 `current_key_proof`。
 - 不因 `funding.primary_source == parents` 且没有 evidence refs 自动追加 `funding_proof`。
 - `missing_evidence` 来自面试官状态中的 `requested_documents`、`remaining_required_documents`、`current_key_proof` 或当前 focus。
+- 用户报告顶层包含 `requested_documents`（与 turn 响应对齐；优先 runtime/interviewer 显式列表，否则从 current focus / remaining / missing 投影）。
+
+## Case Board 字段
+
+- 证明点 **canonical**：`proof_points`。
+- 过渡别名：`open_proof_points` 与 `proof_points` 同内容输出，供旧客户端兼容一个版本周期。
+- 写材料路径（package import、debug fill/bundle、understanding upsert、tombstone）在变更后必须 `CaseMemoryService.rebuild_and_persist`（或等价 rebuild），避免 sticky snapshot。
 
 ## OpenAI-Compatible 合同
 

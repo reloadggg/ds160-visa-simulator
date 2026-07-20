@@ -33,3 +33,6 @@ AGENTS.md
 artifacts/
 *.sqlite3.*.bak
 *.sqlite3.bak-*
+
+# Open Design aesthetic workspace (imported folder sidecar)
+web/od-design/

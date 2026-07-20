@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 import fitz
 
+from app.core import settings as settings_module
 from app.db.base import Base
 from app.db.models import SessionRecord
 from app.db.session import get_db
@@ -69,6 +70,9 @@ def test_f1_gate_review_runtime_progresses_from_pending_to_ready(
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Offline suite has no multimodal model; allow parsed documents to satisfy
+    # gate readiness without completed understanding (production default is True).
+    monkeypatch.setattr(settings_module.settings, "material_understanding_required", False)
     monkeypatch.setattr(
         "app.services.message_service.MessageService.refresh_after_material_change",
         lambda self, session_id, *, reason: {},

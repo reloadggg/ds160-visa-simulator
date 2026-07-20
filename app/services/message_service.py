@@ -134,6 +134,11 @@ class MessageService:
             raise SessionClosedError(session_id, self._closed_session_detail(record))
         record = self.gate_runtime.refresh_session(session_id, save=False)
 
+        # Short session-row locks only: (1) unanswered check + append user turn,
+        # (2) apply state + append assistant. Avoid holding FOR UPDATE across the
+        # multi-second LLM call while still serializing concurrent writers.
+        record = self._lock_session_row(session_id)
+
         if client_message_id:
             duplicate_response = self._duplicate_turn_response(
                 record,
@@ -163,6 +168,8 @@ class MessageService:
                     ),
                     commit=True,
                 )
+                # append_user_turn(commit=True) ends the transaction and releases
+                # the row lock acquired above.
                 committed_user_turn = user_turn
             except DuplicateClientMessageIdError as exc:
                 duplicate_response = self._duplicate_turn_response(
@@ -178,10 +185,11 @@ class MessageService:
             self._capture_interview_memory(record.session_id, user_turn)
             self._capture_user_turn_claims(record.session_id, user_turn, message_text)
             self.db.commit()
-            self.db.refresh(record)
+            record = self.session_repo.get(session_id) or record
             self.db.refresh(user_turn)
 
             if record.gate_status_json.get("status") == GateOverallStatus.FAMILY_NOT_SELECTED:
+                record = self._lock_session_row(session_id)
                 response = self.gate_runtime.build_gate_response(record)
                 self._apply_gate_response_state(
                     record,
@@ -203,6 +211,11 @@ class MessageService:
                 client_message_id=client_message_id,
                 provider_retry_event_callback=provider_retry_event_callback,
             )
+            # Re-lock before mutating session state / writing the assistant turn.
+            # Re-apply graph state on the locked row so in-memory mutations from
+            # the unlocked LLM path are not lost after get_for_update refresh.
+            record = self._lock_session_row(session_id)
+            self._apply_graph_response_state(record, response)
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
             self._strip_internal_runtime_fields(response)
@@ -215,6 +228,12 @@ class MessageService:
             ):
                 self._cleanup_incomplete_committed_user_turn(committed_user_turn)
             raise
+
+    def _lock_session_row(self, session_id: str) -> SessionRecord:
+        record = self.session_repo.get_for_update(session_id)
+        if record is None:
+            raise SessionNotFoundError(session_id)
+        return record
 
     def _user_turn_metadata(
         self,
@@ -257,15 +276,18 @@ class MessageService:
             persisted_turn = self.db.get(SessionTurnRecord, user_turn.turn_id)
             if persisted_turn is None:
                 return
-            session_turns = self.session_turn_repo.list_session_turns(
-                persisted_turn.session_id
-            )
+            session_id = persisted_turn.session_id
+            session_turns = self.session_turn_repo.list_session_turns(session_id)
             has_later_turn = any(
                 turn.turn_index > persisted_turn.turn_index for turn in session_turns
             )
             if has_later_turn:
                 return
             self.db.delete(persisted_turn)
+            self.db.commit()
+            # Drop claims/evidence that were attached to the deleted turn so the
+            # case memory snapshot cannot retain orphan user-turn assertions.
+            self.case_memory.rebuild_and_persist(session_id)
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -278,10 +300,10 @@ class MessageService:
             )
 
     def _should_keep_user_turn_on_error(self, exc: Exception) -> bool:
-        return (
-            isinstance(exc, ModelRuntimeError)
-            and (exc.upstream_code or "").lower() == "native_quality_guard_failed"
-        )
+        # No public re-run API: keeping an unanswered user turn (including
+        # native_quality_guard_failed) permanently deadlocks the session with 409.
+        del exc
+        return False
 
     def _latest_unanswered_user_turn(
         self,
@@ -457,24 +479,8 @@ class MessageService:
             raise
 
     def _is_refusal_closed(self, record) -> bool:
-        if record.phase_state in {"completed", "session_closed"}:
-            return True
-        if record.current_governor_decision == "simulated_refusal":
-            return True
-        if record.current_governor_decision in {"passed", "not_passed", "refused"}:
-            return True
-        interviewer_state = record.interviewer_state_json or {}
-        if interviewer_state.get("status") in {
-            "simulated_refusal",
-            "passed",
-            "not_passed",
-            "refused",
-            "completed",
-        }:
-            return True
-        if interviewer_state.get("interview_result") in {"passed", "not_passed", "refused"}:
-            return True
-        return False
+        # Shared terminal invariant with gate refresh / material worker (B5).
+        return GateRuntimeService.is_terminal_session(record)
 
     def _select_public_runtime(self, session_id: str) -> PublicRuntimeMode:
         # graph / graph_shadow / graph_canary are compatibility labels until a
@@ -485,13 +491,10 @@ class MessageService:
         return "native_interviewer"
 
     def _selected_agent_runtime_label(self, runtime_mode: PublicRuntimeMode) -> str:
+        # Public agent_runtime always names the actual writer. Configured
+        # AGENT_RUNTIME=graph* values are compatibility-only and appear under
+        # runtime_execution.configured_runtime / compatibility_runtime_label.
         del runtime_mode
-        if settings.agent_runtime == "native_interviewer":
-            return "native_interviewer"
-        if settings.agent_runtime == "graph_shadow":
-            return "graph_shadow"
-        if settings.agent_runtime in {"graph", "graph_canary"}:
-            return "graph"
         return "native_interviewer"
 
     def _runtime_execution_payload(
@@ -867,7 +870,17 @@ class MessageService:
         )
         record.current_governor_decision = decision
         record.current_focus_json = current_focus
+        existing_state = dict(record.interviewer_state_json or {})
+        preserved_state = {
+            key: existing_state[key]
+            for key in (
+                "last_material_refresh",
+                "case_memory_resolved_conflicts",
+            )
+            if key in existing_state
+        }
         record.interviewer_state_json = {
+            **preserved_state,
             "owner": (
                 "native_interviewer_runtime"
                 if response.get("selected_public_runtime") == "native_interviewer"

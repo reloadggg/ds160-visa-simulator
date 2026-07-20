@@ -626,22 +626,26 @@ class FileService:
                 ],
             },
             "evidence_cards": list(evidence_cards),
-            "open_proof_points": [
-                {
-                    "proof_point_id": claim,
-                    "visa_family": "unknown",
-                    "question": f"这份材料能否支持 {claim}？",
-                    "status": "partial",
-                    "why_it_matters": "模型认为这份材料可能支持该证明点，等待案例理解进一步确认。",
-                    "claim_refs": [claim],
-                    "evidence_refs": [
-                        card["evidence_id"]
-                        for card in evidence_cards
-                        if claim in card.get("claim_refs", [])
-                    ],
-                }
-                for claim in assessment.supported_claims
-            ],
+            **self._dual_proof_point_fields(
+                [
+                    {
+                        "proof_point_id": claim,
+                        "visa_family": "unknown",
+                        "question": f"这份材料能否支持 {claim}？",
+                        "status": "partial",
+                        "why_it_matters": (
+                            "模型认为这份材料可能支持该证明点，等待案例理解进一步确认。"
+                        ),
+                        "claim_refs": [claim],
+                        "evidence_refs": [
+                            card["evidence_id"]
+                            for card in evidence_cards
+                            if claim in card.get("claim_refs", [])
+                        ],
+                    }
+                    for claim in assessment.supported_claims
+                ]
+            ),
             "conflicts": [],
             "next_move": {
                 "move_type": "ask",
@@ -652,6 +656,17 @@ class FileService:
                     card["evidence_id"] for card in evidence_cards
                 ],
             },
+        }
+
+    @staticmethod
+    def _dual_proof_point_fields(
+        proof_points: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Emit canonical proof_points plus open_proof_points alias."""
+        payload = list(proof_points)
+        return {
+            "proof_points": payload,
+            "open_proof_points": list(payload),
         }
 
     def _interviewer_focus_document_type(self, session_record) -> str | None:

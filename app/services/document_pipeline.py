@@ -84,10 +84,18 @@ class DocumentPipelineService:
         self.evidence = EvidenceRepository(db)
         self.multimodal_service = multimodal_service or MultimodalExtractionService()
 
-    def process_document(self, document_id: str) -> dict[str, int]:
+    def process_document(self, document_id: str) -> dict[str, int | bool]:
         document = self.documents.get_document(document_id)
         if document is None:
             raise LookupError(f"Document not found: {document_id}")
+
+        if DocumentRepository.is_document_tombstoned(document):
+            # Tombstone must stick: never rewrite status/artifact for removed materials.
+            return {
+                "chunk_count": 0,
+                "evidence_count": 0,
+                "skipped_tombstoned": 1,
+            }
 
         previous_artifact = dict(document.artifact_json or {})
         upload_assessment = DocumentAssessment.from_artifact(previous_artifact)
@@ -153,6 +161,16 @@ class DocumentPipelineService:
             chunks=chunks,
             multimodal_fields=multimodal_result.fields if multimodal_result else [],
         )
+
+        # Re-check after potentially long parse/multimodal work: a concurrent
+        # delete must not be overwritten with parsed status.
+        self.db.refresh(document)
+        if DocumentRepository.is_document_tombstoned(document):
+            return {
+                "chunk_count": 0,
+                "evidence_count": 0,
+                "skipped_tombstoned": 1,
+            }
 
         document.status = artifact_status
         document.raw_text = parsed.full_text

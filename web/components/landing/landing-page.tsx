@@ -10,7 +10,6 @@ import {
   Github,
   Radar,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react"
 
 import { PROJECT_INFO } from "@/lib/project-info"
@@ -118,8 +117,8 @@ function LandingNav({
   return (
     <header className="sticky top-4 z-20 flex items-center justify-between rounded-full border border-white/10 bg-black/35 px-4 py-3 shadow-2xl shadow-black/20 backdrop-blur-2xl md:px-5">
       <Link href="/" className="flex items-center gap-3">
-        <span className="flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/[0.06] shadow-inner shadow-white/10">
-          <Sparkles className="h-4 w-4 text-cyan-200" />
+        <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-sky-300 to-blue-600 text-[10px] font-extrabold tracking-tight text-[#001a33] shadow-lg shadow-cyan-950/40">
+          DS
         </span>
         <span className="hidden text-sm font-semibold tracking-[-0.02em] text-white sm:inline">
           DS-160 模拟面签

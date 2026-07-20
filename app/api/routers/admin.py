@@ -17,10 +17,13 @@ from app.core.simple_auth import (
     LoginResponse,
     _hash_secret,
     _utcnow,
+    check_login_rate_limit,
     clear_admin_auth_cookie,
+    clear_login_failures,
     create_auth_session,
     get_current_admin_session,
     record_login_audit_event,
+    record_login_failure,
     revoke_current_admin_session,
     set_admin_auth_cookie,
 )
@@ -72,6 +75,7 @@ class AdminSettingsPatch(BaseModel):
     wx_entry_enabled: bool | None = None
     debug_console_enabled: bool | None = None
     debug_material_enabled: bool | None = None
+    practice_materials_enabled: bool | None = None
     rag_status_user_visible: bool | None = None
 
     @field_validator("model_base_url")
@@ -133,7 +137,25 @@ def admin_login(
 ) -> LoginResponse:
     configured_password = settings.effective_admin_auth_password
     current_time = _utcnow()
-    if not configured_password or not hmac.compare_digest(payload.password, configured_password):
+    try:
+        check_login_rate_limit(request, current_time, scope="admin")
+    except HTTPException:
+        record_login_audit_event(
+            db,
+            request,
+            session_kind="admin",
+            outcome="failure",
+            occurred_at=current_time,
+            failure_reason="rate_limited",
+        )
+        db.commit()
+        raise
+
+    if not configured_password or not hmac.compare_digest(
+        payload.password,
+        configured_password,
+    ):
+        record_login_failure(request, current_time, scope="admin")
         record_login_audit_event(
             db,
             request,
@@ -143,7 +165,12 @@ def admin_login(
             failure_reason="invalid_credentials",
         )
         db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid credentials",
+        )
+
+    clear_login_failures(request, scope="admin")
     auth_session = create_auth_session(
         db,
         request,

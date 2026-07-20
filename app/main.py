@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine
 from app.api.routers.admin import router as admin_router
 from app.api.routers.app_config import router as app_config_router
 from app.api.routers.auth import router as auth_router
-from app.api.routers.files import router as files_router
+from app.api.routers.files import documents_router, router as files_router
 from app.api.routers.material_packages import router as material_packages_router
 from app.api.routers.materials import router as materials_router
 from app.api.routers.messages import router as messages_router
@@ -392,6 +392,7 @@ app.include_router(app_config_router)
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(files_router)
+app.include_router(documents_router)
 app.include_router(material_packages_router)
 app.include_router(materials_router)
 app.include_router(messages_router)

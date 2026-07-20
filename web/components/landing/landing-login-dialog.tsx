@@ -3,7 +3,7 @@
 import type { FormEvent } from "react"
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowRight, KeyRound, ShieldAlert, Sparkles } from "lucide-react"
+import { ArrowRight, KeyRound, ShieldAlert } from "lucide-react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
@@ -93,21 +93,21 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
             关闭
           </DialogClose>
 
-          <DialogHeader className="max-w-[82%] gap-3 text-left">
-            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
-              <span className="h-1.5 w-1.5 rounded-full bg-cyan-200 shadow-[0_0_16px_rgba(125,211,252,0.9)]" />
-              授权访问
+          <DialogHeader className="max-w-[90%] gap-3 text-left">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-[10px] bg-gradient-to-br from-sky-300 to-blue-600 text-[11px] font-extrabold text-[#001a33]">
+                DS
+              </div>
+              <div className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-100/80">
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-200 shadow-[0_0_16px_rgba(125,211,252,0.9)]" />
+                授权访问
+              </div>
             </div>
-            <DialogTitle
-              className={cn(
-                "text-3xl font-black leading-tight tracking-[0.015em] text-white sm:text-4xl",
-                "[font-family:'Arial_Rounded_MT_Bold','Trebuchet_MS','Avenir_Next','Inter','PingFang_SC','Microsoft_YaHei_UI',system-ui,sans-serif]",
-              )}
-            >
-              进入模拟面签
+            <DialogTitle className="text-2xl font-semibold leading-tight tracking-tight text-white sm:text-3xl">
+              DS-160 模拟面签
             </DialogTitle>
             <DialogDescription className="text-sm leading-6 text-slate-300">
-              使用管理员发放的授权 Key 解锁工作台。用户名进入后可在工作台设置里修改。
+              使用 Access Key 进入工作台。进入后可在设置中修改显示名。
             </DialogDescription>
           </DialogHeader>
         </div>
@@ -160,19 +160,14 @@ export function LandingLoginDialog({ open, onOpenChange }: LandingLoginDialogPro
           <button
             type="submit"
             disabled={isLoggingIn}
-            className="group flex h-12 w-full items-center justify-between rounded-2xl bg-white px-4 text-base font-black text-black shadow-2xl shadow-cyan-200/10 transition hover:-translate-y-0.5 hover:bg-cyan-50 disabled:pointer-events-none disabled:translate-y-0 disabled:opacity-60 sm:h-13"
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#f5f5f7] px-4 text-base font-semibold text-slate-950 transition hover:bg-white disabled:opacity-60 sm:h-13"
           >
-            <span className="inline-flex items-center gap-2">
-              <Sparkles className="h-4 w-4" />
-              {isLoggingIn
-                ? "正在验证授权..."
-                : hasSharedAccessKey
-                  ? "启用并进入工作台"
-                  : "验证并进入工作台"}
-            </span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-black text-white transition group-hover:translate-x-0.5">
-              <ArrowRight className="h-4 w-4" />
-            </span>
+            {isLoggingIn
+              ? "正在验证..."
+              : hasSharedAccessKey
+                ? "启用并进入工作台"
+                : "进入工作台"}
+            <ArrowRight className="h-4 w-4" />
           </button>
 
           <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 text-xs leading-5 text-slate-400">

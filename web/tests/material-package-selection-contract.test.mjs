@@ -7,7 +7,7 @@ import ts from "typescript"
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-function loadTypeScriptModule(relativePath) {
+function loadTypeScriptModule(relativePath, runtimeRequires = {}) {
   const filename = resolve(rootDir, relativePath)
   const source = readFileSync(filename, "utf8")
   const compiled = ts.transpileModule(source, {
@@ -19,12 +19,21 @@ function loadTypeScriptModule(relativePath) {
     fileName: filename,
   })
   const cjsModule = { exports: {} }
-  const evaluate = new Function("exports", "module", compiled.outputText)
-  evaluate(cjsModule.exports, cjsModule)
+  const requireShim = (specifier) => {
+    if (Object.hasOwn(runtimeRequires, specifier)) {
+      return runtimeRequires[specifier]
+    }
+    throw new Error(`Unexpected runtime require from ${relativePath}: ${specifier}`)
+  }
+  const evaluate = new Function("exports", "module", "require", compiled.outputText)
+  evaluate(cjsModule.exports, cjsModule, requireShim)
   return cjsModule.exports
 }
 
-const mappers = loadTypeScriptModule("lib/api/mappers.ts")
+const apiConfig = loadTypeScriptModule("lib/api/config.ts")
+const mappers = loadTypeScriptModule("lib/api/mappers.ts", {
+  "./config": apiConfig,
+})
 
 test("material package list mapper marks validated F-1 templates as importable product packages", () => {
   const mapped = mappers.mapMaterialPackageListResponse({
@@ -79,16 +88,30 @@ test("settings exposes material package selection as product UI outside debug to
 
   const productStart = source.indexOf("Validated template / case package")
   assert.notEqual(productStart, -1)
-  const debugToolsStart = source.indexOf("{showDebugTools ?", productStart)
-  assert.notEqual(debugToolsStart, -1)
 
-  const productBlock = source.slice(productStart, debugToolsStart)
+  // Product section ends when practice-materials and/or debug tools open.
+  // Prefer the joint gate; fall back to pure debug-only for older layouts.
+  let productEnd = source.indexOf(
+    "{showPracticeMaterials || showDebugTools ?",
+    productStart,
+  )
+  if (productEnd === -1) {
+    productEnd = source.indexOf("{showDebugTools ?", productStart)
+  }
+  assert.notEqual(productEnd, -1)
+
+  const productBlock = source.slice(productStart, productEnd)
   assert.match(productBlock, /material package archive/)
   assert.match(productBlock, /onRefreshMaterialPackages/)
   assert.match(productBlock, /onImportMaterialPackage|handleImportPackage/)
   assert.match(productBlock, /isImportableMaterialPackage\(item\)/)
   assert.match(productBlock, /isValidatedMaterialTemplatePackage\(item\)/)
   assert.doesNotMatch(productBlock, /debug bundle|debug_bundle|调试合成材料|调试材料包/i)
+
+  // Joint practice/debug section is product-capable (not pure debug-only).
+  const jointSection = source.slice(productEnd, productEnd + 800)
+  assert.match(jointSection, /showPracticeMaterials/)
+  assert.match(jointSection, /产品功能|练习材料生成/)
 })
 
 test("imported archive materials are tagged as case packages, not debug bundle material", () => {

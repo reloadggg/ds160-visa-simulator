@@ -12,6 +12,7 @@ from app.db.models import DocumentRecord
 from app.domain.document_types import normalize_document_type
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
+from app.services.case_memory_service import CaseMemoryService
 from app.services.debug_material_bundle_service import DOCUMENT_TYPE_LABELS
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.message_service import MessageService
@@ -97,6 +98,10 @@ class MaterialPackageArchiveService:
 
         ProfileRecomputeService(self.db).recompute_session(session_id, save=False)
         GateRuntimeService(self.db).refresh_record(record, save=False)
+        # Import copies artifacts with material understanding but does not go
+        # through upsert_material_understanding — force case memory rebuild so
+        # sticky empty snapshots from prior chat turns do not hide new claims.
+        CaseMemoryService(self.db).rebuild_and_persist(session_id)
         self.db.commit()
 
         main_flow_response: dict[str, Any] = {}

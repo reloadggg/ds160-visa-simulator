@@ -32,7 +32,6 @@ import {
 import {
   Pause,
   StopCircle,
-  Bell,
   ChevronDown,
   Pencil,
   RotateCcw,
@@ -97,7 +96,7 @@ export function TopBar({
   const selectedDebugBundleOption = getDebugMaterialBundleOption(
     activeDebugBundleScenario,
   )
-  const displayName = userName.trim() || "User"
+  const displayName = userName.trim() || "用户"
   const fallbackInitials =
     displayName
       .split(/[\s_-]+/)
@@ -230,19 +229,10 @@ export function TopBar({
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onLogout}>
               <LogOut className="h-4 w-4" />
-              退出当前 Key
+              退出当前密钥
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="relative hidden sm:inline-flex"
-        >
-          <Bell className="h-4 w-4 text-muted-foreground" />
-          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive" />
-        </Button>
 
         <button
           type="button"

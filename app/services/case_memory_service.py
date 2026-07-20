@@ -62,6 +62,12 @@ class CaseMemoryService:
         document = self.documents.get_document(document_id)
         if document is None:
             raise LookupError(f"Document not found: {document_id}")
+        if self._document_tombstoned(document):
+            # Never rewrite a tombstoned document's artifact via understanding.
+            rebuilt = self.rebuild_and_persist(document.session_id)
+            if rebuilt is None:
+                return self.build_snapshot(document.session_id)
+            return rebuilt
 
         artifact = dict(document.artifact_json or {})
         artifact[CASE_MEMORY_JOB_KEY] = job.model_dump(mode="json", exclude_none=True)
@@ -357,6 +363,9 @@ class CaseMemoryService:
 
     def build_board(self, session_id: str) -> dict[str, Any]:
         snapshot = self.get_or_build_snapshot(session_id)
+        proof_points = [
+            item.model_dump(mode="json") for item in snapshot.proof_points
+        ]
         return {
             "schema_version": "case_board.v1",
             "latest_material": snapshot.latest_material,
@@ -364,9 +373,9 @@ class CaseMemoryService:
             "evidence_cards": [
                 item.model_dump(mode="json") for item in snapshot.evidence_cards
             ],
-            "proof_points": [
-                item.model_dump(mode="json") for item in snapshot.proof_points
-            ],
+            # Canonical field; open_proof_points is a transition alias for older clients.
+            "proof_points": proof_points,
+            "open_proof_points": list(proof_points),
             "conflicts": [
                 item.model_dump(mode="json") for item in snapshot.conflicts
             ],
@@ -389,12 +398,40 @@ class CaseMemoryService:
         return CaseMemorySnapshot.model_validate(payload)
 
     def get_or_build_snapshot(self, session_id: str) -> CaseMemorySnapshot:
+        """Return cached snapshot when present; build+persist only on cache miss.
+
+        Write paths that mutate documents, turns, or claims must call
+        ``rebuild_and_persist`` (or ``invalidate_snapshot``) so readers do not
+        keep a sticky empty/stale snapshot.
+        """
         snapshot = self.get_snapshot(session_id)
         if snapshot is not None:
             return snapshot
         snapshot = self.build_snapshot(session_id)
         if self.sessions.get(session_id) is not None:
             self._persist_snapshot(session_id, snapshot)
+        return snapshot
+
+    def invalidate_snapshot(self, session_id: str) -> None:
+        """Drop the persisted case-memory snapshot for ``session_id`` if present."""
+        record = self.db.get(CaseMemorySnapshotRecord, session_id)
+        if record is None:
+            return
+        self.db.delete(record)
+        self.db.flush()
+
+    def rebuild_and_persist(self, session_id: str) -> CaseMemorySnapshot | None:
+        """Rebuild case memory from documents/turns and persist when session exists.
+
+        Preferred write-path API after import, debug inject, tombstone, or other
+        material mutations that do not already rebuild via
+        ``upsert_material_understanding`` / ``add_user_turn_claims``.
+        """
+        if self.sessions.get(session_id) is None:
+            self.invalidate_snapshot(session_id)
+            return None
+        snapshot = self.build_snapshot(session_id)
+        self._persist_snapshot(session_id, snapshot)
         return snapshot
 
     def query_evidence_graph(
@@ -429,6 +466,9 @@ class CaseMemoryService:
             conflicts=conflicts,
             filtered=bool(selected_field_paths),
         )
+        proof_point_payloads = [
+            item.model_dump(mode="json") for item in proof_points
+        ]
         return {
             "schema_version": "evidence_graph.v1",
             "session_id": session_id,
@@ -437,9 +477,8 @@ class CaseMemoryService:
             "evidence_cards": [
                 item.model_dump(mode="json") for item in evidence_cards
             ],
-            "proof_points": [
-                item.model_dump(mode="json") for item in proof_points
-            ],
+            "proof_points": proof_point_payloads,
+            "open_proof_points": list(proof_point_payloads),
             "conflicts": [item.model_dump(mode="json") for item in conflicts],
             "conflict_resolutions": [
                 item.model_dump(mode="json")
@@ -1024,6 +1063,9 @@ class CaseMemoryService:
             "claims": [
                 item.model_dump(mode="json") for item in result.extracted_claims
             ],
+            "proof_points": [
+                item.model_dump(mode="json") for item in result.proof_points
+            ],
             "open_proof_points": [
                 item.model_dump(mode="json") for item in result.proof_points
             ],
@@ -1061,6 +1103,7 @@ class CaseMemoryService:
             },
             "evidence_cards": [],
             "claims": [],
+            "proof_points": [],
             "open_proof_points": [],
             "conflicts": [],
             "next_move": None,

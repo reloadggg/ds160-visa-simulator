@@ -103,23 +103,67 @@ def _first_header_value(value: str | None) -> str | None:
     return first_value or None
 
 
+def _rightmost_forwarded_ip(header_value: str | None) -> str | None:
+    """Return the rightmost hop from X-Forwarded-For.
+
+    When the app is behind a trusted reverse proxy that appends the connecting
+    client address, the rightmost value is the one added by that proxy. The
+    leftmost value is client-controlled and must not be trusted blindly.
+    """
+    if not header_value:
+        return None
+    hops = [part.strip() for part in header_value.split(",") if part.strip()]
+    if not hops:
+        return None
+    return hops[-1]
+
+
 def request_metadata(request: Request) -> ClientRequestMetadata:
-    """Extract client metadata for auth, audit, and rate limiting."""
+    """Extract client metadata for auth, audit, and rate limiting.
+
+    IP resolution order:
+    1. ``CF-Connecting-IP`` when present (Cloudflare edge sets this; spoofable
+       only if the origin is reachable without Cloudflare).
+    2. When ``trust_x_forwarded_for`` is enabled: rightmost ``X-Forwarded-For``
+       hop, else ``X-Real-IP``.
+    3. Otherwise: the direct TCP peer (``request.client.host``).
+
+    With ``trust_x_forwarded_for=false`` (default), client-supplied proxy
+    headers other than CF-Connecting-IP are ignored so forged XFF cannot
+    bypass login rate limits.
+    """
 
     cf_connecting_ip = _first_header_value(request.headers.get("cf-connecting-ip"))
-    forwarded_for = _first_header_value(request.headers.get("x-forwarded-for"))
-    real_ip = _first_header_value(request.headers.get("x-real-ip"))
-
     if cf_connecting_ip:
-        client_ip = cf_connecting_ip
-        client_ip_source = "cf-connecting-ip"
-    elif forwarded_for:
-        client_ip = forwarded_for
-        client_ip_source = "x-forwarded-for"
-    elif real_ip:
-        client_ip = real_ip
-        client_ip_source = "x-real-ip"
-    elif request.client and request.client.host:
+        return ClientRequestMetadata(
+            client_ip=cf_connecting_ip,
+            client_ip_source="cf-connecting-ip",
+            user_agent=request.headers.get("user-agent"),
+            cf_ray=request.headers.get("cf-ray"),
+            cf_country=request.headers.get("cf-ipcountry"),
+        )
+
+    if settings.trust_x_forwarded_for:
+        forwarded_for = _rightmost_forwarded_ip(request.headers.get("x-forwarded-for"))
+        if forwarded_for:
+            return ClientRequestMetadata(
+                client_ip=forwarded_for,
+                client_ip_source="x-forwarded-for",
+                user_agent=request.headers.get("user-agent"),
+                cf_ray=request.headers.get("cf-ray"),
+                cf_country=request.headers.get("cf-ipcountry"),
+            )
+        real_ip = _first_header_value(request.headers.get("x-real-ip"))
+        if real_ip:
+            return ClientRequestMetadata(
+                client_ip=real_ip,
+                client_ip_source="x-real-ip",
+                user_agent=request.headers.get("user-agent"),
+                cf_ray=request.headers.get("cf-ray"),
+                cf_country=request.headers.get("cf-ipcountry"),
+            )
+
+    if request.client and request.client.host:
         client_ip = request.client.host
         client_ip_source = "direct"
     else:
@@ -139,8 +183,8 @@ def _client_ip(request: Request) -> str:
     return request_metadata(request).client_ip
 
 
-def _rate_limit_key(request: Request) -> str:
-    return _hash_secret(_client_ip(request))
+def _rate_limit_key(request: Request, *, scope: str = "user") -> str:
+    return _hash_secret(f"{scope}:{_client_ip(request)}")
 
 
 def _prune_login_failures(key: str, now: datetime) -> list[float]:
@@ -153,8 +197,13 @@ def _prune_login_failures(key: str, now: datetime) -> list[float]:
     return failures
 
 
-def _check_login_rate_limit(request: Request, now: datetime) -> None:
-    key = _rate_limit_key(request)
+def check_login_rate_limit(
+    request: Request,
+    now: datetime,
+    *,
+    scope: str = "user",
+) -> None:
+    key = _rate_limit_key(request, scope=scope)
     failures = _prune_login_failures(key, now)
     if len(failures) >= settings.app_auth_login_rate_limit_attempts:
         raise HTTPException(
@@ -163,15 +212,33 @@ def _check_login_rate_limit(request: Request, now: datetime) -> None:
         )
 
 
-def _record_login_failure(request: Request, now: datetime) -> None:
-    key = _rate_limit_key(request)
+def record_login_failure(
+    request: Request,
+    now: datetime,
+    *,
+    scope: str = "user",
+) -> None:
+    key = _rate_limit_key(request, scope=scope)
     failures = _prune_login_failures(key, now)
     failures.append(now.timestamp())
     LOGIN_FAILURES[key] = failures
 
 
+def clear_login_failures(request: Request, *, scope: str = "user") -> None:
+    LOGIN_FAILURES.pop(_rate_limit_key(request, scope=scope), None)
+
+
+# Backward-compatible private aliases used by this module.
+def _check_login_rate_limit(request: Request, now: datetime) -> None:
+    check_login_rate_limit(request, now, scope="user")
+
+
+def _record_login_failure(request: Request, now: datetime) -> None:
+    record_login_failure(request, now, scope="user")
+
+
 def _clear_login_failures(request: Request) -> None:
-    LOGIN_FAILURES.pop(_rate_limit_key(request), None)
+    clear_login_failures(request, scope="user")
 
 
 def _request_fingerprint(request: Request) -> tuple[str | None, str | None]:
@@ -533,7 +600,13 @@ def _origin_allowed(request: Request) -> bool:
     return False
 
 
-def _machine_api_authorized(request: Request) -> bool:
+def machine_api_authorized(request: Request) -> bool:
+    """True when the request presents the machine compat API bearer token.
+
+    Middleware treats this principal as authenticated for OpenAI-compat writer
+    routes only. Session ownership for those routes still applies via
+    ``ensure_session_access(..., allow_machine_api=True)`` (admin-equivalent).
+    """
     if request.url.path.rstrip("/") not in {
         "/v1/chat/completions",
         "/v1/responses",
@@ -543,10 +616,13 @@ def _machine_api_authorized(request: Request) -> bool:
         return False
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
-    return scheme.lower() == "bearer" and hmac.compare_digest(
-        token,
-        settings.app_compat_api_key,
-    )
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return hmac.compare_digest(token, settings.app_compat_api_key)
+
+
+def _machine_api_authorized(request: Request) -> bool:
+    return machine_api_authorized(request)
 
 
 def _unauthorized_response() -> JSONResponse:

@@ -48,6 +48,7 @@ export interface AdminSettings {
   wx_entry_enabled?: boolean
   debug_console_enabled?: boolean
   debug_material_enabled?: boolean
+  practice_materials_enabled?: boolean
   user_model_config_enabled?: boolean
   rag_status_user_visible?: boolean
   model_base_url?: string | null
@@ -326,6 +327,14 @@ export interface DebugBundleSyntheticTurn {
   field_claims?: Record<string, string>
 }
 
+export interface PracticeDocumentBriefZh {
+  document_id?: string | null
+  document_type?: string | null
+  document_type_label?: string | null
+  filename?: string | null
+  highlights?: Array<{ label: string; value: string }>
+}
+
 export interface DebugMaterialBundleResponse {
   session_id: string
   bundle_id: string
@@ -334,6 +343,10 @@ export interface DebugMaterialBundleResponse {
   documents: DebugBundleDocument[]
   synthetic_turns: DebugBundleSyntheticTurn[]
   expected_findings: DebugBundleExpectedFinding[]
+  /** Chinese user-facing summary of the practice pack. */
+  user_summary_zh?: string | null
+  document_briefs_zh?: PracticeDocumentBriefZh[]
+  is_practice_material?: boolean
   assistant_message?: string | null
   governor_decision?: string | null
   requested_documents?: string[]
@@ -350,6 +363,7 @@ export interface DebugMaterialBundleResponse {
     seed_text_present?: boolean
     seed_source?: "request" | string | null
     request_seed_text_present?: boolean
+    user_summary_zh?: string | null
     trace?: Record<string, unknown>
   }
 }
@@ -719,9 +733,51 @@ export interface CaseBoardDelta {
   latest_material?: CaseBoardLatestMaterial | null
   evidence_cards: CaseEvidenceCard[]
   claims: CaseClaim[]
+  /** Preferred FE field; always mirrored with proof_points at the API boundary. */
   open_proof_points: CaseProofPoint[]
+  /** Dual of open_proof_points for backend/FE interoperability. */
+  proof_points?: CaseProofPoint[]
   conflicts: CaseConflict[]
   next_move?: InterviewNextMove | null
+}
+
+/** Compact case-board summary on public documents list (restore / poll). */
+export interface SessionDocumentCaseBoardSummary {
+  latest_material?: CaseBoardLatestMaterial | Partial<CaseBoardLatestMaterial> | null
+  claim_count?: number
+  evidence_card_count?: number
+  evidence_cards?: CaseEvidenceCard[]
+  claims?: CaseClaim[]
+  open_proof_points?: CaseProofPoint[]
+  proof_points?: CaseProofPoint[]
+  conflicts?: CaseConflict[]
+  next_move?: InterviewNextMove | null
+}
+
+export interface SessionDocumentListItem {
+  document_id: string
+  filename: string
+  status: string
+  understanding_status?: string | null
+  document_type?: string | null
+  document_type_label?: string | null
+  uploaded_at?: string | null
+  content_url?: string | null
+  case_board_delta?: SessionDocumentCaseBoardSummary | CaseBoardDelta | null
+  tombstoned?: boolean
+}
+
+export interface SessionDocumentListResponse {
+  session_id: string
+  count: number
+  documents: SessionDocumentListItem[]
+}
+
+export interface DeleteSessionDocumentResponse {
+  document_id: string
+  document_status: string
+  case_board?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 export interface CaseBoardRefresh {
@@ -916,6 +972,8 @@ export interface UploadedMaterial {
   material_package_id?: string | null
   material_package_source?: string | null
   expected_findings?: DebugBundleExpectedFinding[]
+  /** Product marker for AI/practice-generated materials (「练习」badge). */
+  is_practice_material?: boolean
 }
 
 export interface SessionHistoryEntry {
@@ -975,6 +1033,8 @@ export interface AppConfig {
   wx_entry_enabled: boolean
   debug_console_enabled: boolean
   debug_material_enabled: boolean
+  /** User-facing practice material generation (seed → AI bundle). */
+  practice_materials_enabled?: boolean
   user_model_config_enabled: boolean
   rag_status_user_visible: boolean
 }
@@ -1254,6 +1314,31 @@ export interface BackendFileUploadResponse {
   /** Global unresolved documents/evidence; not a CTA source by itself. */
   remaining_required_documents?: string[]
   gate_progress?: BackendGateProgress | null
+}
+
+export interface BackendSessionDocumentListItem {
+  document_id: string
+  filename?: string
+  status?: string
+  understanding_status?: string | null
+  document_type?: string | null
+  uploaded_at?: string | null
+  content_url?: string | null
+  case_board_delta?: BackendCaseBoardDelta | SessionDocumentCaseBoardSummary | null
+  tombstoned?: boolean
+}
+
+export interface BackendSessionDocumentListResponse {
+  session_id: string
+  count?: number
+  documents?: BackendSessionDocumentListItem[]
+}
+
+export interface BackendDeleteSessionDocumentResponse {
+  document_id: string
+  document_status?: string
+  case_board?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 export interface BackendWxUploadTicketUploadResult {

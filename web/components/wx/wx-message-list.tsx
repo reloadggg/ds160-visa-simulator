@@ -2,14 +2,22 @@
 
 import { Bot, UserRound } from "lucide-react"
 import type { ChatMessage } from "@/lib/api/types"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 interface WxMessageListProps {
   messages: ChatMessage[]
   isSending: boolean
+  isSessionTerminal?: boolean
+  onRetryMessage?: (message: ChatMessage) => void
 }
 
-export function WxMessageList({ messages, isSending }: WxMessageListProps) {
+export function WxMessageList({
+  messages,
+  isSending,
+  isSessionTerminal,
+  onRetryMessage,
+}: WxMessageListProps) {
   if (!messages.length && !isSending) {
     return (
       <div className="rounded-3xl border border-dashed border-white/10 bg-white/[0.04] p-5 text-center text-sm leading-6 text-slate-300">
@@ -44,6 +52,23 @@ export function WxMessageList({ messages, isSending }: WxMessageListProps) {
               <div className="whitespace-pre-wrap break-words">{message.content}</div>
               {message.error_detail ? (
                 <div className="mt-2 text-xs opacity-80">{message.error_detail}</div>
+              ) : null}
+              {isUser &&
+              message.status === "error" &&
+              message.content.trim() &&
+              onRetryMessage ? (
+                <div className="mt-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-full px-2.5 text-xs text-red-50 hover:bg-red-400/20 hover:text-white"
+                    disabled={isSending || isSessionTerminal}
+                    onClick={() => onRetryMessage(message)}
+                  >
+                    重试本条
+                  </Button>
+                </div>
               ) : null}
             </div>
             {isUser ? (

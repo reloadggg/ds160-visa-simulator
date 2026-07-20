@@ -6,6 +6,7 @@ import hashlib
 import secrets
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import SessionRecord, WxUploadTicketRecord
@@ -14,6 +15,16 @@ from app.db.models import SessionRecord, WxUploadTicketRecord
 DEFAULT_WX_UPLOAD_TICKET_TTL_SECONDS = 300
 DEFAULT_WX_UPLOAD_TICKET_MAX_FILES = 5
 WX_UPLOAD_TICKET_PREFIX = "wxup"
+
+# Fields safe to return on the public ticket status endpoint (no content paths).
+_STATUS_RESULT_KEYS = (
+    "document_id",
+    "file_name",
+    "filename",
+    "mime_type",
+    "size",
+    "uploaded_at",
+)
 
 
 class WxUploadTicketError(ValueError):
@@ -56,6 +67,15 @@ def hash_ticket(ticket: str) -> str:
 
 def new_ticket() -> str:
     return f"{WX_UPLOAD_TICKET_PREFIX}_{secrets.token_urlsafe(32)}"
+
+
+def _public_upload_result(entry: dict[str, Any]) -> dict[str, Any]:
+    """Strip content URLs / nested upload payloads from ticket status results."""
+    public: dict[str, Any] = {}
+    for key in _STATUS_RESULT_KEYS:
+        if key in entry:
+            public[key] = entry[key]
+    return public
 
 
 class WxUploadTicketService:
@@ -142,8 +162,28 @@ class WxUploadTicketService:
         size: int | None,
         now: datetime | None = None,
     ) -> WxUploadTicketRecord:
+        """Record an upload under a row lock so concurrent uploads cannot exceed max_files."""
         current_time = now or utcnow()
-        upload_results = list(record.upload_results_json or [])
+        locked = self.db.execute(
+            select(WxUploadTicketRecord)
+            .where(WxUploadTicketRecord.ticket_hash == record.ticket_hash)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if locked is None:
+            raise WxUploadTicketNotFoundError("upload ticket not found")
+
+        status = self.status_for(locked, now=current_time)
+        if status == "expired":
+            locked.status = "expired"
+            self.db.add(locked)
+            self.db.commit()
+            raise WxUploadTicketExpiredError("upload ticket expired")
+        if status == "completed" or locked.uploaded_count >= locked.max_files:
+            raise WxUploadTicketLimitExceededError("upload ticket file limit exceeded")
+        if status != "active":
+            raise WxUploadTicketInactiveError("upload ticket is not active")
+
+        upload_results = list(locked.upload_results_json or [])
         upload_results.append(
             {
                 "document_id": result_payload.get("document_id"),
@@ -152,17 +192,19 @@ class WxUploadTicketService:
                 "mime_type": content_type,
                 "size": size,
                 "uploaded_at": current_time.isoformat(timespec="seconds") + "Z",
+                # Full upload payload kept server-side for debugging; status
+                # endpoint returns a sanitized view only.
                 "upload": result_payload,
             }
         )
-        record.upload_results_json = upload_results
-        record.uploaded_count = len(upload_results)
-        if record.uploaded_count >= record.max_files:
-            record.status = "completed"
-        self.db.add(record)
+        locked.upload_results_json = upload_results
+        locked.uploaded_count = len(upload_results)
+        if locked.uploaded_count >= locked.max_files:
+            locked.status = "completed"
+        self.db.add(locked)
         self.db.commit()
-        self.db.refresh(record)
-        return record
+        self.db.refresh(locked)
+        return locked
 
     def status_payload(
         self,
@@ -173,6 +215,7 @@ class WxUploadTicketService:
     ) -> dict[str, Any]:
         status = self.status_for(record, now=now)
         remaining_files = max(0, record.max_files - record.uploaded_count)
+        raw_results = list(record.upload_results_json or [])
         return {
             "ticket": ticket,
             "session_id": record.session_id,
@@ -181,5 +224,10 @@ class WxUploadTicketService:
             "uploaded_count": record.uploaded_count,
             "remaining_files": remaining_files,
             "status": status,
-            "upload_results": list(record.upload_results_json or []),
+            # Public status must not leak content URLs or nested upload paths.
+            "upload_results": [
+                _public_upload_result(entry)
+                for entry in raw_results
+                if isinstance(entry, dict)
+            ],
         }

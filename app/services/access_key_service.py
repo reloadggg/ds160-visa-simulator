@@ -3,13 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import logging
 import secrets
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import AccessKeyRecord, AccessKeySessionRecord
+
+logger = logging.getLogger(__name__)
 
 ACCESS_KEY_PREFIX = "ds160"
 
@@ -116,25 +120,64 @@ class AccessKeyService:
         return record.usage_count < record.usage_limit
 
     def consume_session_quota(self, *, key_id: str, session_id: str) -> AccessKeyRecord:
-        record = self.db.get(AccessKeyRecord, key_id)
+        """Atomically bind a session to an access key and consume one quota unit.
+
+        Uses a row lock (``SELECT ... FOR UPDATE``) plus conditional update so
+        concurrent creates cannot over-consume under TOCTOU races. Re-binding
+        the same ``session_id`` to the same key is idempotent.
+        """
+        current_time = utcnow()
+
+        # Lock the access-key row for the duration of the transaction so
+        # concurrent consumers serialize on usage_count.
+        record = self.db.execute(
+            select(AccessKeyRecord)
+            .where(AccessKeyRecord.key_id == key_id)
+            .with_for_update()
+        ).scalar_one_or_none()
         if record is None:
             raise PermissionError("access key not found")
-        current_time = utcnow()
         if record.revoked_at is not None:
             raise PermissionError("access key is revoked")
         if record.expires_at is not None and record.expires_at <= current_time:
             raise PermissionError("access key is expired")
-        if record.usage_count >= record.usage_limit:
-            raise PermissionError("access key quota exhausted")
+
         existing = self.db.execute(
             select(AccessKeySessionRecord).where(
                 AccessKeySessionRecord.session_id == session_id
             )
         ).scalar_one_or_none()
         if existing is not None:
+            if existing.key_id != key_id:
+                raise PermissionError("session is already bound to another access key")
             return record
-        record.usage_count += 1
-        record.last_used_at = current_time
+
+        # Single conditional UPDATE as a second line of defense (also helps
+        # backends where FOR UPDATE is weak, e.g. default SQLite).
+        update_result = self.db.execute(
+            update(AccessKeyRecord)
+            .where(
+                AccessKeyRecord.key_id == key_id,
+                AccessKeyRecord.revoked_at.is_(None),
+                or_(
+                    AccessKeyRecord.expires_at.is_(None),
+                    AccessKeyRecord.expires_at > current_time,
+                ),
+                AccessKeyRecord.usage_count < AccessKeyRecord.usage_limit,
+            )
+            .values(
+                usage_count=AccessKeyRecord.usage_count + 1,
+                last_used_at=current_time,
+            )
+        )
+        if update_result.rowcount != 1:
+            self.db.refresh(record)
+            if record.revoked_at is not None:
+                raise PermissionError("access key is revoked")
+            if record.expires_at is not None and record.expires_at <= current_time:
+                raise PermissionError("access key is expired")
+            raise PermissionError("access key quota exhausted")
+
         self.db.add(
             AccessKeySessionRecord(
                 key_id=key_id,
@@ -142,8 +185,26 @@ class AccessKeyService:
                 created_at=current_time,
             )
         )
-        self.db.add(record)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            # Another writer bound this session_id first; treat as idempotent
+            # only when the winner is the same key.
+            winner = self.db.execute(
+                select(AccessKeySessionRecord).where(
+                    AccessKeySessionRecord.session_id == session_id
+                )
+            ).scalar_one_or_none()
+            if winner is not None and winner.key_id == key_id:
+                refreshed = self.db.get(AccessKeyRecord, key_id)
+                if refreshed is None:
+                    raise PermissionError("access key not found") from exc
+                return refreshed
+            raise PermissionError(
+                "session is already bound to another access key"
+            ) from exc
+
         self.db.refresh(record)
         return record
 
@@ -269,6 +330,12 @@ class AccessKeyService:
         record = self.db.get(AccessKeyRecord, key_id)
         if record is None:
             raise LookupError("access key not found")
+        # Audit only — plaintext is not written to logs.
+        logger.info(
+            "access_key_secret_reveal requested key_id=%s available=%s",
+            record.key_id,
+            bool(record.key_display_value),
+        )
         if not record.key_display_value:
             return RevealedAccessKeySecret(
                 key_id=record.key_id,

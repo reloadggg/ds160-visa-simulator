@@ -72,6 +72,12 @@ class ReportService:
         remaining_required_documents = list(
             effective_interviewer_state.get("remaining_required_documents", []) or []
         )
+        requested_documents = self._resolve_requested_documents(
+            effective_interviewer_state=effective_interviewer_state,
+            current_focus_json=current_focus_json,
+            remaining_required_documents=remaining_required_documents,
+            missing_evidence=missing_evidence,
+        )
         allowed_next_actions = list(
             effective_interviewer_state.get("allowed_next_actions", [])
         )
@@ -166,6 +172,7 @@ class ReportService:
             "strengths": case_strengths or ["已完成基本签证家族识别"],
             "risk_points": case_risk_points,
             "missing_evidence": missing_evidence,
+            "requested_documents": requested_documents,
             "remaining_required_documents": remaining_required_documents,
             "risk_level": risk_level,
             "current_key_question": current_key_question,
@@ -644,3 +651,50 @@ class ReportService:
 
     def _list_payload(self, value: Any) -> list[Any]:
         return value if isinstance(value, list) else []
+
+    def _resolve_requested_documents(
+        self,
+        *,
+        effective_interviewer_state: dict[str, Any],
+        current_focus_json: dict[str, Any],
+        remaining_required_documents: list[str],
+        missing_evidence: list[str],
+    ) -> list[str]:
+        """Project top-level requested_documents aligned with turn responses.
+
+        Prefer explicit interviewer/runtime requested_documents. When the key is
+        absent, fall back to current focus + remaining required docs + missing
+        evidence so the report contract stays useful for frontend consumers.
+        """
+        if "requested_documents" in effective_interviewer_state:
+            return self._dedupe_document_types(
+                effective_interviewer_state.get("requested_documents")
+            )
+
+        projected: list[str] = []
+        focus_kind = current_focus_json.get("kind")
+        focus_document_type = current_focus_json.get("document_type")
+        if (
+            focus_kind == "required_document"
+            and isinstance(focus_document_type, str)
+            and focus_document_type.strip()
+        ):
+            projected.append(focus_document_type.strip())
+
+        for source in (remaining_required_documents, missing_evidence):
+            for document_type in self._dedupe_document_types(source):
+                if document_type not in projected:
+                    projected.append(document_type)
+        return projected
+
+    def _dedupe_document_types(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        seen: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            document_type = item.strip()
+            if document_type and document_type not in seen:
+                seen.append(document_type)
+        return seen

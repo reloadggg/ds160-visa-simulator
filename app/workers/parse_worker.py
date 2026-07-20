@@ -48,8 +48,21 @@ class ParseWorker:
         self.db.commit()
 
         try:
-            self.pipeline.process_document(document_id)
+            if self._document_is_tombstoned(document_id):
+                self._complete_job_as_cancelled(job_id)
+                self.db.commit()
+                return True
+
+            process_result = self.pipeline.process_document(document_id)
             self.db.commit()
+
+            if process_result.get("skipped_tombstoned") or self._document_is_tombstoned(
+                document_id
+            ):
+                self._complete_job_as_cancelled(job_id)
+                self.db.commit()
+                return True
+
             document = self.documents.get_document(document_id)
             if document is None:
                 raise LookupError(f"Document not found after processing: {document_id}")
@@ -68,6 +81,11 @@ class ParseWorker:
                 ],
                 case_memory=self.case_memory.build_board(session_id),
             )
+            if self._document_is_tombstoned(document_id):
+                self._complete_job_as_cancelled(job_id)
+                self.db.commit()
+                return True
+
             self.case_memory.upsert_material_understanding(
                 document_id=document_id,
                 job=understanding_job,
@@ -97,6 +115,10 @@ class ParseWorker:
             return True
         except Exception as exc:
             self.db.rollback()
+            if self._document_is_tombstoned(document_id):
+                self._complete_job_as_cancelled(job_id)
+                self.db.commit()
+                return True
             failed_job = self.db.get(JobRecord, job_id)
             if failed_job is not None:
                 failed_job.status = "failed"
@@ -108,6 +130,15 @@ class ParseWorker:
             self.db.commit()
             raise
 
+    def _document_is_tombstoned(self, document_id: str) -> bool:
+        document = self.documents.get_document(document_id)
+        return DocumentRepository.is_document_tombstoned(document)
+
+    def _complete_job_as_cancelled(self, job_id: str) -> None:
+        job = self.db.get(JobRecord, job_id)
+        if job is not None and job.status not in {"completed", "failed", "cancelled"}:
+            job.status = "cancelled"
+
     def _mark_material_understanding_failed(
         self,
         *,
@@ -116,7 +147,7 @@ class ParseWorker:
         error: BaseException | None,
     ) -> None:
         document = self.documents.get_document(document_id)
-        if document is None:
+        if document is None or DocumentRepository.is_document_tombstoned(document):
             return
         self.case_memory.upsert_material_understanding(
             document_id=document_id,

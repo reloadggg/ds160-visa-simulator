@@ -22,6 +22,7 @@ from app.domain.evidence import DocumentChunk, DocumentSourceType, EvidenceItem
 from app.repositories.document_repo import DocumentRepository
 from app.repositories.evidence_repo import EvidenceRepository
 from app.repositories.session_repo import SessionRepository
+from app.services.case_memory_service import CaseMemoryService
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
@@ -96,6 +97,9 @@ class DebugFillService:
 
         ProfileRecomputeService(self.db).recompute_session(record.session_id, save=False)
         GateRuntimeService(self.db).refresh_record(record, save=False)
+        # Debug fill injects material_understanding into artifacts outside the
+        # normal understanding write path — rebuild so public board is fresh.
+        CaseMemoryService(self.db).rebuild_and_persist(record.session_id)
         self.db.commit()
         main_flow_response: dict = {}
         refresh_error: str | None = None
@@ -660,6 +664,9 @@ class DebugFillService:
                 item.model_dump(mode="json") for item in result.evidence_cards
             ],
             "claims": [item.model_dump(mode="json") for item in result.extracted_claims],
+            "proof_points": [
+                item.model_dump(mode="json") for item in result.proof_points
+            ],
             "open_proof_points": [
                 item.model_dump(mode="json") for item in result.proof_points
             ],

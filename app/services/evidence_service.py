@@ -66,12 +66,26 @@ class EvidenceService:
         self,
         session_id: str,
     ) -> dict[str, SessionFieldEvidenceSummary]:
+        from app.repositories.document_repo import DocumentRepository
+
         evidence_items = self.db.scalars(
             select(EvidenceItemRecord).where(EvidenceItemRecord.session_id == session_id)
         ).all()
+        document_ids = {item.document_id for item in evidence_items if item.document_id}
+        tombstoned_document_ids: set[str] = set()
+        if document_ids:
+            documents = self.db.scalars(
+                select(DocumentRecord).where(DocumentRecord.document_id.in_(document_ids))
+            )
+            for document in documents:
+                if DocumentRepository.is_document_tombstoned(document):
+                    tombstoned_document_ids.add(document.document_id)
+
         grouped: dict[str, list[EvidenceItemRecord]] = defaultdict(list)
         for item in evidence_items:
             if not item.value:
+                continue
+            if item.document_id in tombstoned_document_ids:
                 continue
             grouped[item.field_path].append(item)
 

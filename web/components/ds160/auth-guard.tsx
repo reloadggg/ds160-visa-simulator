@@ -12,13 +12,24 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
-import { ArrowRight, KeyRound, LockKeyhole, ShieldAlert, Sparkles } from "lucide-react"
+import { ArrowRight, KeyRound, LockKeyhole, ShieldAlert } from "lucide-react"
 
 interface AuthGuardProps {
   children: ReactNode
 }
 
-const previewPoints = ["真实面签节奏", "材料与风险联动", "复盘方向清晰"]
+function BrandMark({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn(
+        "flex h-10 w-10 items-center justify-center rounded-[10px] bg-gradient-to-br from-sky-300 to-blue-600 text-[11px] font-extrabold tracking-tight text-[#001a33] shadow-lg shadow-cyan-950/40",
+        className,
+      )}
+    >
+      DS
+    </div>
+  )
+}
 
 export function AuthGuard({ children }: AuthGuardProps) {
   const { isAuthenticated, isCheckingAuth, isLoggingIn, error, login } =
@@ -57,9 +68,10 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
   if (isCheckingAuth) {
     return (
-      <main className="flex min-h-[100dvh] items-center justify-center bg-[#f6f7fb] text-slate-950">
-        <div className="flex items-center gap-3 text-sm font-medium text-slate-600">
-          <LockKeyhole className="h-4 w-4" />
+      <main className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-[#050608] text-white">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_-10%,rgba(56,189,248,0.18),transparent_50%),radial-gradient(circle_at_90%_0%,rgba(14,165,233,0.1),transparent_45%)]" />
+        <div className="relative flex items-center gap-3 text-sm font-medium text-slate-300">
+          <LockKeyhole className="h-4 w-4 text-cyan-200" />
           正在验证访问状态...
         </div>
       </main>
@@ -67,151 +79,100 @@ export function AuthGuard({ children }: AuthGuardProps) {
   }
 
   return (
-    <main className="relative min-h-[100dvh] overflow-hidden bg-[#f6f7fb] text-slate-950">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(14,165,233,0.14),transparent_30%),radial-gradient(circle_at_82%_12%,rgba(125,211,252,0.12),transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.9),rgba(226,232,240,0.58))]" />
-      <div className="absolute left-1/2 top-8 h-64 w-64 -translate-x-1/2 rounded-full bg-white/60 blur-3xl" />
+    <main className="relative min-h-[100dvh] overflow-hidden bg-[#050608] text-white">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_480px_at_20%_-15%,rgba(56,189,248,0.2),transparent_55%),radial-gradient(700px_400px_at_90%_10%,rgba(14,165,233,0.1),transparent_50%)]" />
+      <div className="pointer-events-none absolute -right-20 top-0 h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl" />
 
-      <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-6xl items-center px-4 py-6 sm:px-6 md:px-8">
-        <section className="grid w-full overflow-hidden rounded-[1.5rem] border border-white/70 bg-white/72 shadow-2xl shadow-slate-950/10 backdrop-blur-xl sm:rounded-[2rem] lg:grid-cols-[1.05fr_0.95fr]">
-          <div className="relative hidden min-h-[620px] flex-col justify-between overflow-hidden bg-slate-950 p-10 text-white lg:flex">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(56,189,248,0.34),transparent_28%),radial-gradient(circle_at_80%_0%,rgba(96,165,250,0.24),transparent_24%),linear-gradient(145deg,#020617,#0f172a_62%,#111827)]" />
-            <div className="absolute inset-x-8 top-28 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
-            <div className="absolute bottom-10 right-10 h-40 w-40 rounded-full border border-white/10" />
-
-            <div className="relative z-10 space-y-8">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/8 px-3 py-1 text-xs font-medium text-sky-100 backdrop-blur">
-                <Sparkles className="h-3.5 w-3.5" />
-                授权访问
-              </div>
-
-              <div className="space-y-5">
-                <p className="text-sm tracking-[0.32em] text-sky-200/80">
-                  面签训练工作台
-                </p>
-                <h1 className="max-w-xl text-5xl font-semibold tracking-[-0.04em] text-white">
-                  进入受保护的模拟面签环境。
-                </h1>
-                <p className="max-w-md text-base leading-7 text-slate-300">
-                  围绕签证类型、申请材料、风险点和追问策略推进练习；验证授权后即可进入完整工作台。
-                </p>
-              </div>
-            </div>
-
-            <div className="relative z-10 grid gap-3">
-              {previewPoints.map((point, index) => (
-                <div
-                  key={point}
-                  className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-3 backdrop-blur"
-                >
-                  <span className="text-sm text-slate-200">{point}</span>
-                  <span className="text-xs font-medium text-sky-200">
-                    0{index + 1}
-                  </span>
-                </div>
-              ))}
+      <div className="relative mx-auto flex min-h-[100dvh] w-full max-w-lg items-center px-4 py-10 sm:px-6">
+        <section
+          className={cn(
+            "w-full overflow-hidden rounded-[1.5rem] border border-white/12",
+            "bg-[#050608]/90 p-6 shadow-2xl shadow-cyan-950/40 backdrop-blur-2xl sm:rounded-[1.75rem] sm:p-8",
+            "supports-[backdrop-filter]:bg-[#050608]/78",
+          )}
+        >
+          <div className="mb-6 flex items-start gap-3">
+            <BrandMark />
+            <div className="min-w-0 pt-0.5">
+              <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">
+                DS-160 模拟面签
+              </h1>
+              <p className="mt-1 text-sm leading-6 text-slate-400">
+                使用 Access Key 进入工作台
+              </p>
             </div>
           </div>
 
-          <div className="flex min-h-[500px] items-center justify-center p-6 sm:min-h-[620px] sm:p-10">
-            <div className="w-full max-w-md space-y-6 sm:space-y-8">
-              <div className="space-y-4 lg:hidden">
-                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
-                  <Sparkles className="h-3.5 w-3.5 text-sky-500" />
-                  授权访问
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {error ? (
+              <Alert className="rounded-2xl border-red-400/25 bg-red-500/10 text-red-100">
+                <ShieldAlert className="h-4 w-4" />
+                <AlertDescription className="text-red-100/90">
+                  {error}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            {hasSharedAccessKey ? (
+              <div className="rounded-2xl border border-cyan-200/15 bg-cyan-200/[0.08] p-4 text-sm leading-6 text-cyan-50">
+                <div className="flex items-center gap-2 font-semibold">
+                  <KeyRound className="h-4 w-4 text-cyan-200" />
+                  已识别分享链接中的授权 Key
                 </div>
-                <div>
-                  <p className="text-sm tracking-[0.28em] text-slate-500">
-                    面签训练工作台
-                  </p>
-                  <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-slate-950 sm:text-4xl">
-                    面签模拟工作台
-                  </h1>
+                <div className="mt-1 font-mono text-xs text-cyan-100/80">
+                  {maskedSharedAccessKey}
                 </div>
+                <p className="mt-2 text-xs text-slate-300">
+                  点击下方按钮即可启用并进入工作台；验证成功后会自动清理地址栏中的
+                  Key。
+                </p>
               </div>
-
-              <div className="space-y-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-950/20">
-                  <LockKeyhole className="h-5 w-5" />
-                </div>
-                <div>
-                  <h2 className="text-2xl font-semibold tracking-[-0.03em] text-slate-950 sm:text-3xl">
-                    授权进入工作台
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-slate-500">
-                    输入管理员发放的授权 Key。验证通过后，即可开始模拟面签和结果复盘。
-                  </p>
-                </div>
-              </div>
-
-              <form onSubmit={handleSubmit} className="space-y-5">
-                {error ? (
-                  <Alert
-                    variant="destructive"
-                    className="rounded-2xl border-red-200 bg-red-50 text-red-900"
-                  >
-                    <ShieldAlert className="h-4 w-4" />
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
-                ) : null}
-
-                {hasSharedAccessKey ? (
-                  <div className="rounded-2xl border border-sky-200 bg-sky-50/80 p-4 text-sm leading-6 text-sky-900">
-                    <div className="flex items-center gap-2 font-semibold">
-                      <KeyRound className="h-4 w-4" />
-                      已识别分享链接中的授权 Key
-                    </div>
-                    <div className="mt-1 font-mono text-xs text-sky-700">
-                      {maskedSharedAccessKey}
-                    </div>
-                    <p className="mt-2 text-xs text-sky-700">
-                      点击下方按钮即可启用并进入工作台；验证成功后会自动清理地址栏中的 Key。
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <Label
-                      htmlFor="auth-password"
-                      className="text-sm font-medium text-slate-700"
-                    >
-                      授权 Key
-                    </Label>
-                    <Input
-                      id="auth-password"
-                      name="password"
-                      type="password"
-                      placeholder="ds160_..."
-                      autoComplete="current-password"
-                      autoFocus
-                      required
-                      disabled={isLoggingIn}
-                      className={cn(
-                        "h-12 rounded-2xl border-slate-200 bg-white/80 px-4 text-base shadow-sm transition-all sm:h-13",
-                        "placeholder:text-slate-400 focus-visible:border-sky-400 focus-visible:ring-sky-400/20",
-                      )}
-                    />
-                  </div>
-                )}
-
-                <button
-                  type="submit"
+            ) : (
+              <div className="space-y-2">
+                <Label
+                  htmlFor="auth-password"
+                  className="text-sm font-medium text-slate-300"
+                >
+                  Access Key
+                </Label>
+                <Input
+                  id="auth-password"
+                  name="password"
+                  type="password"
+                  placeholder="粘贴或输入密钥"
+                  autoComplete="current-password"
+                  autoFocus
+                  required
                   disabled={isLoggingIn}
-                  className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 text-base font-semibold text-white shadow-lg shadow-slate-950/18 transition-all hover:-translate-y-0.5 hover:bg-slate-800 disabled:opacity-50 sm:h-13"
-                >
-                  {isLoggingIn
-                    ? "正在验证..."
-                    : hasSharedAccessKey
-                      ? "启用分享 Key 并进入"
-                      : "使用授权 Key 进入"}
-                  <ArrowRight className="h-4 w-4" />
-                </button>
-              </form>
-
-              <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 text-xs leading-5 text-slate-500">
-                授权 Key
-                由管理员统一发放并限定使用额度；如页面无响应，请刷新后重试或联系管理员。
+                  className={cn(
+                    "h-12 rounded-xl border-white/12 bg-black/35 px-4 text-base text-white shadow-none",
+                    "placeholder:text-slate-500 focus-visible:border-cyan-300/50 focus-visible:ring-cyan-300/20",
+                  )}
+                />
               </div>
-            </div>
-          </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isLoggingIn}
+              className={cn(
+                "flex h-12 w-full items-center justify-center gap-2 rounded-full",
+                "bg-[#f5f5f7] px-4 text-base font-semibold text-slate-950",
+                "transition hover:bg-white disabled:opacity-50",
+              )}
+            >
+              {isLoggingIn
+                ? "正在验证..."
+                : hasSharedAccessKey
+                  ? "启用分享 Key 并进入"
+                  : "进入工作台"}
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          </form>
+
+          <p className="mt-5 text-xs leading-5 text-slate-500">
+            授权 Key 由管理员发放并限定额度。工作台内可切换浅色 / 深色主题。
+          </p>
         </section>
       </div>
     </main>

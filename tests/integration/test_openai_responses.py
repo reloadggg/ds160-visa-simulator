@@ -149,7 +149,7 @@ def test_responses_metadata_includes_canonical_runtime_identity(
 
     assert response.status_code == 200
     metadata = response.json()["metadata"]
-    assert metadata["agent_runtime"] == "graph_shadow"
+    assert metadata["agent_runtime"] == "native_interviewer"
     assert metadata["selected_public_runtime"] == "native_interviewer"
     assert metadata["native_run_id"].startswith("native-run-")
     assert metadata["runtime_execution"] == {

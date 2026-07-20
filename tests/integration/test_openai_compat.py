@@ -269,7 +269,7 @@ def test_chat_completions_graph_shadow_keeps_metadata_contract(
     assert payload["choices"][0]["message"]["content"] == (
         "你提到父母会资助。请具体说明他们的资金来源和这笔钱如何覆盖第一年费用？"
     )
-    assert metadata["agent_runtime"] == "graph_shadow"
+    assert metadata["agent_runtime"] == "native_interviewer"
     assert metadata["selected_public_runtime"] == "native_interviewer"
     assert metadata["runtime_execution"] == {
         "schema_version": "runtime.execution.v1",

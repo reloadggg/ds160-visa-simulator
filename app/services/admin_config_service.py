@@ -23,6 +23,9 @@ DEFAULT_DEMO_SETTINGS: dict[str, Any] = {
     "wx_entry_enabled": False,
     "debug_console_enabled": False,
     "debug_material_enabled": False,
+    # Product feature (default ON): AI practice materials from user seed text.
+    # Not a debug tool — independent of debug_console / debug_material.
+    "practice_materials_enabled": True,
     "rag_status_user_visible": False,
 }
 
@@ -62,8 +65,13 @@ class AdminConfigService:
     def get_settings(self) -> dict[str, Any]:
         record = self.db.get(AdminSettingRecord, DEMO_SETTINGS_KEY)
         payload = _default_demo_settings()
+        stored: dict[str, Any] = {}
         if record is not None and isinstance(record.value_json, dict):
-            payload.update(record.value_json)
+            stored = dict(record.value_json)
+            payload.update(stored)
+        # Migration: product feature defaults ON when never stored in admin JSON.
+        if "practice_materials_enabled" not in stored:
+            payload["practice_materials_enabled"] = True
         return payload
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +116,9 @@ class AdminConfigService:
             "debug_material_enabled": bool(
                 current.get("debug_console_enabled")
                 and current.get("debug_material_enabled")
+            ),
+            "practice_materials_enabled": bool(
+                current.get("practice_materials_enabled", True)
             ),
             # Product rule: user-side BYOK is not part of normal operation.
             # The admin DB flag can still guard legacy/internal endpoints, but
@@ -161,6 +172,21 @@ class AdminConfigService:
         current = self.get_settings()
         return bool(current.get("debug_console_enabled") and current.get("debug_material_enabled"))
 
+    def practice_materials_enabled(self) -> bool:
+        """User-facing practice material generation (product default: ON).
+
+        Independent of debug console. Admin may set false to disable.
+        Missing key in legacy DB rows is treated as enabled.
+        """
+        current = self.get_settings()
+        if "practice_materials_enabled" not in current:
+            return True
+        return bool(current.get("practice_materials_enabled"))
+
+    def material_generation_enabled(self) -> bool:
+        """Product practice path (default) or legacy debug material path."""
+        return self.practice_materials_enabled() or self.debug_material_enabled()
+
 
 def _clean_string(value: Any) -> str | None:
     if not isinstance(value, str):
@@ -178,4 +204,6 @@ def _default_demo_settings() -> dict[str, Any]:
         settings.allow_runtime_debug or settings.allow_debug_fill
     )
     payload["debug_material_enabled"] = bool(settings.allow_debug_fill)
+    # Practice materials are a normal product feature (default on).
+    payload["practice_materials_enabled"] = True
     return payload

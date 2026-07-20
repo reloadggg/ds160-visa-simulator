@@ -2,7 +2,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
+from app.db.models import DocumentRecord
 from app.domain.evidence import DocumentChunk, EvidenceItem
+from app.repositories.document_repo import DocumentRepository
 
 
 class EvidenceRepository:
@@ -54,11 +56,34 @@ class EvidenceRepository:
             ]
         )
 
-    def list_session_evidence(self, session_id: str) -> list[EvidenceItemRecord]:
+    def list_session_evidence(
+        self,
+        session_id: str,
+        *,
+        include_tombstoned: bool = False,
+    ) -> list[EvidenceItemRecord]:
         statement = select(EvidenceItemRecord).where(
             EvidenceItemRecord.session_id == session_id
         )
-        return list(self.db.scalars(statement).all())
+        items = list(self.db.scalars(statement).all())
+        if include_tombstoned or not items:
+            return items
+        document_ids = {item.document_id for item in items if item.document_id}
+        if not document_ids:
+            return items
+        documents = {
+            document.document_id: document
+            for document in self.db.scalars(
+                select(DocumentRecord).where(DocumentRecord.document_id.in_(document_ids))
+            )
+        }
+        return [
+            item
+            for item in items
+            if not DocumentRepository.is_document_tombstoned(
+                documents.get(item.document_id)
+            )
+        ]
 
     def list_document_evidence(self, document_id: str) -> list[EvidenceItemRecord]:
         statement = select(EvidenceItemRecord).where(

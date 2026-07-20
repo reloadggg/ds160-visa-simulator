@@ -178,7 +178,7 @@ export function ChatPanel({
   const isDisabled = isSending || isUploading || isSessionEnded
   const isSendDisabled =
     (!inputValue.trim() && attachments.length === 0) || isDisabled
-  const displayName = userName.trim() || "User"
+  const displayName = userName.trim() || "用户"
   const fallbackInitials =
     displayName
       .split(/[\s_-]+/)
@@ -337,15 +337,9 @@ export function ChatPanel({
               {message.role !== "system" && (
                 <Avatar className="h-8 w-8 shrink-0 md:h-9 md:w-9">
                   {message.role === "assistant" ? (
-                    <>
-                      <AvatarImage
-                        src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=36&h=36&fit=crop&crop=face"
-                        alt="签证官"
-                      />
-                      <AvatarFallback className="bg-muted text-xs text-muted-foreground">
-                        VO
-                      </AvatarFallback>
-                    </>
+                    <AvatarFallback className="bg-sky-100 text-xs font-semibold text-sky-800 dark:bg-cyan-200/15 dark:text-cyan-100">
+                      VO
+                    </AvatarFallback>
                   ) : (
                     <>
                       <AvatarImage
@@ -437,11 +431,7 @@ export function ChatPanel({
           {(isSending || isUploading) && (
             <div className="flex gap-2 md:gap-3">
               <Avatar className="h-8 w-8 shrink-0 md:h-9 md:w-9">
-                <AvatarImage
-                  src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=36&h=36&fit=crop&crop=face"
-                  alt="签证官"
-                />
-                <AvatarFallback className="bg-muted text-xs text-muted-foreground">
+                <AvatarFallback className="bg-sky-100 text-xs font-semibold text-sky-800 dark:bg-cyan-200/15 dark:text-cyan-100">
                   VO
                 </AvatarFallback>
               </Avatar>

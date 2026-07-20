@@ -34,6 +34,7 @@ from app.services.ai_material_bundle_generator_service import (
     GeneratedMaterialBundleOutput,
     find_oracle_text_marker,
 )
+from app.services.case_memory_service import CaseMemoryService
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.message_service import MessageService
 from app.services.profile_recompute_service import ProfileRecomputeService
@@ -264,6 +265,8 @@ class DebugMaterialBundleService:
             },
         )
 
+        # Bundle injects material_understanding without upsert_material_understanding.
+        CaseMemoryService(self.db).rebuild_and_persist(record.session_id)
         self.db.commit()
         yield DebugMaterialBundleEvent(
             "document_review_started",
@@ -297,6 +300,25 @@ class DebugMaterialBundleService:
             },
         )
 
+        user_summary_zh = str(
+            generation_metadata.get("user_summary_zh") or ""
+        ).strip() or self._build_user_summary_zh_fallback(
+            bundle_spec,
+            seed_text=str(generation_metadata.get("seed_text_preview") or ""),
+        )
+        # Prefer structured Chinese brief for practice UI; hide oracle findings
+        # from the top-level user-facing summary path.
+        document_briefs = [
+            {
+                "document_id": item.get("document_id"),
+                "document_type": item.get("document_type"),
+                "document_type_label": item.get("document_type_label")
+                or DOCUMENT_TYPE_LABELS.get(str(item.get("document_type") or ""), "材料"),
+                "filename": item.get("filename"),
+                "highlights": self._field_highlights_zh(item.get("fields") or {}),
+            }
+            for item in created_documents
+        ]
         final_payload = {
             "session_id": record.session_id,
             "bundle_id": bundle_id,
@@ -307,6 +329,9 @@ class DebugMaterialBundleService:
             "expected_findings": [
                 finding.__dict__ for finding in bundle_spec.expected_findings
             ],
+            "user_summary_zh": user_summary_zh,
+            "document_briefs_zh": document_briefs,
+            "is_practice_material": True,
             "assistant_message": main_flow_response.get("assistant_message"),
             "governor_decision": main_flow_response.get("governor_decision"),
             "requested_documents": list(
@@ -376,15 +401,21 @@ class DebugMaterialBundleService:
                 seed_text=resolved_seed,
                 include_synthetic_user_turns=include_synthetic_user_turns,
             )
-            return self._bundle_spec_from_generated_output(
+            bundle_spec = self._bundle_spec_from_generated_output(
                 scenario,
                 generated,
-            ), {
+            )
+            user_summary_zh = (generated.user_summary_zh or "").strip() or (
+                self._build_user_summary_zh_fallback(bundle_spec, resolved_seed)
+            )
+            return bundle_spec, {
                 "source": "ai",
                 "mode": normalized_mode,
                 "seed_text_present": True,
                 "seed_source": seed_source,
                 "request_seed_text_present": bool(requested_seed),
+                "user_summary_zh": user_summary_zh,
+                "seed_text_preview": resolved_seed[:200],
                 "trace": trace,
             }
         except ModelRuntimeError as exc:
@@ -410,6 +441,57 @@ class DebugMaterialBundleService:
         if requested_seed:
             return requested_seed, "request"
         return "", None
+
+    def _build_user_summary_zh_fallback(
+        self,
+        bundle_spec: DebugMaterialBundleSpec,
+        seed_text: str = "",
+    ) -> str:
+        lines: list[str] = [
+            f"已根据你的描述生成「{bundle_spec.scenario_label}」练习材料（虚构，仅供模拟面签）。"
+        ]
+        if seed_text.strip():
+            preview = seed_text.strip().replace("\n", " ")
+            if len(preview) > 120:
+                preview = preview[:120] + "…"
+            lines.append(f"生成依据摘要：{preview}")
+        type_labels: list[str] = []
+        for doc in bundle_spec.documents:
+            label = DOCUMENT_TYPE_LABELS.get(doc.document_type, doc.document_type)
+            if label not in type_labels:
+                type_labels.append(label)
+        if type_labels:
+            lines.append("包含材料：" + "、".join(type_labels) + "。")
+        lines.append("请结合右侧「练习材料说明」与材料库查看要点；正式签证请使用真实证件。")
+        return "\n".join(lines)
+
+    def _field_highlights_zh(self, fields: dict[str, Any]) -> list[dict[str, str]]:
+        label_map = {
+            "/identity/full_name": "姓名",
+            "/identity/passport_number": "护照号",
+            "/identity/nationality": "国籍",
+            "/education/school_name": "学校",
+            "/education/program_name": "项目/专业",
+            "/education/degree_level": "学位",
+            "/funding/primary_source": "资金来源",
+            "/funding/amount": "金额",
+            "/funding/sponsor_name": "资助人",
+            "/visa_intent/purpose": "赴美目的",
+            "/employment/employer_name": "雇主",
+            "/employment/job_title": "职位",
+        }
+        highlights: list[dict[str, str]] = []
+        for path, label in label_map.items():
+            value = fields.get(path)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            highlights.append({"label": label, "value": text})
+            if len(highlights) >= 4:
+                break
+        return highlights
 
     def _bundle_spec_from_generated_output(
         self,
@@ -807,6 +889,9 @@ class DebugMaterialBundleService:
                 item.model_dump(mode="json") for item in result.evidence_cards
             ],
             "claims": [item.model_dump(mode="json") for item in result.extracted_claims],
+            "proof_points": [
+                item.model_dump(mode="json") for item in result.proof_points
+            ],
             "open_proof_points": [
                 item.model_dump(mode="json") for item in result.proof_points
             ],

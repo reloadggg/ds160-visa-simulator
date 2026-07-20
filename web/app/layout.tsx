@@ -1,7 +1,15 @@
 import type { Metadata } from 'next'
+import { Noto_Sans_SC } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { ThemeProvider } from '@/components/theme-provider'
 import './globals.css'
+
+const notoSansSC = Noto_Sans_SC({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
+  variable: '--font-noto-sans-sc',
+})
 
 export const metadata: Metadata = {
   title: 'DS-160 模拟面签',
@@ -31,11 +39,15 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="zh-CN" className="bg-background" suppressHydrationWarning>
-      <body className="font-sans antialiased">
+    <html
+      lang="zh-CN"
+      className={`${notoSansSC.variable} bg-background`}
+      suppressHydrationWarning
+    >
+      <body className={`${notoSansSC.className} font-sans antialiased`}>
         <ThemeProvider
           attribute="class"
-          defaultTheme="dark"
+          defaultTheme="light"
           enableSystem={false}
           themes={["light", "dark"]}
           storageKey="ds160-ui-theme"

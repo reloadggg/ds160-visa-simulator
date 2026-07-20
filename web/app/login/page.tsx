@@ -9,6 +9,7 @@ import { AnalysisPanel } from "@/components/ds160/analysis-panel"
 import { ChatPanel } from "@/components/ds160/chat-panel"
 import { HistoryPanel } from "@/components/ds160/history-panel"
 import { MaterialsPanel } from "@/components/ds160/materials-panel"
+import { PracticeMaterialsDialog } from "@/components/ds160/practice-materials-dialog"
 import { ReportModal } from "@/components/ds160/report-modal"
 import { RuntimeDebugPanel } from "@/components/ds160/runtime-debug-panel"
 import { SettingsPanel } from "@/components/ds160/settings-panel"
@@ -33,6 +34,7 @@ const DEFAULT_APP_CONFIG: AppConfig = {
   wx_entry_enabled: false,
   debug_console_enabled: false,
   debug_material_enabled: false,
+  practice_materials_enabled: true,
   user_model_config_enabled: false,
   rag_status_user_visible: false,
 }
@@ -103,6 +105,12 @@ function Workbench() {
     runtimeDebugSnapshot,
     runtimeDebugEvents,
     latestDebugMaterialBundle,
+    practiceMaterialsDialogOpen,
+    setPracticeMaterialsDialogOpen,
+    practiceMaterialsBrief,
+    practiceMaterialsError,
+    openPracticeMaterialsDialog,
+    handlePracticeGenerate,
     isLoadingRuntimeDebug,
     runtimeDebugError,
     modelConfigError,
@@ -135,6 +143,9 @@ function Workbench() {
     handleClearHistory,
     handleRestoreSession,
   } = useSessionWorkbench()
+
+  const practiceMaterialsEnabled =
+    appConfig.practice_materials_enabled !== false
 
   const handleLogoutToHome = async () => {
     await logout()
@@ -207,13 +218,14 @@ function Workbench() {
         <TopBar
           visaType={visaType || "F-1"}
           isPaused={isPaused}
-          userName={userProfile?.displayName ?? "User"}
+          userName={userProfile?.displayName ?? "用户"}
           userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
           mockMode={mockMode}
           onPause={handlePause}
           onEndSession={handleEndSession}
           onReset={handleReset}
           onDebugMaterialBundleScenario={
+            appConfig.practice_materials_enabled ||
             appConfig.debug_material_enabled
               ? handleDebugMaterialBundleScenario
               : undefined
@@ -255,7 +267,7 @@ function Workbench() {
             className="gap-2 rounded-full bg-white/70 dark:border-white/12 dark:bg-white/[0.06] dark:text-slate-100 dark:hover:bg-white/[0.1]"
           >
             <LogOut className="h-4 w-4" />
-            <span className="hidden sm:inline">退出当前 Key</span>
+            <span className="hidden sm:inline">退出当前密钥</span>
             <span className="sm:hidden">退出</span>
           </Button>
         </div>
@@ -287,7 +299,7 @@ function Workbench() {
             activityEvents={activityEvents}
             onSendMessage={handleSendMessage}
             onRetryMessage={handleRetryMessage}
-            userName={userProfile?.displayName ?? "User"}
+            userName={userProfile?.displayName ?? "用户"}
             userAvatarUrl={userProfile?.avatarUrl ?? "/default-user-avatar.svg"}
             isSending={isSending}
             isUploading={isUploading}
@@ -308,6 +320,11 @@ function Workbench() {
           onViewDetails={handleViewDetails}
           onViewAllMaterials={() => setActiveNavItem("materials")}
           onActionClick={handleActionClick}
+          practiceMaterialsEnabled={practiceMaterialsEnabled}
+          practiceBrief={practiceMaterialsBrief}
+          hasSession={Boolean(sessionId)}
+          onOpenPracticeMaterials={openPracticeMaterialsDialog}
+          isPracticeGenerating={isDebugBundleGenerating}
         />
       </div>
     )
@@ -317,11 +334,6 @@ function Workbench() {
     <>
       <div className="relative flex h-[100dvh] overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(37,99,235,.14),transparent_32%),radial-gradient(circle_at_85%_0%,rgba(14,165,233,.12),transparent_28%),linear-gradient(135deg,#f8fbff,#edf4ff)] dark:bg-[#050608] dark:bg-[radial-gradient(circle_at_18%_10%,rgba(59,130,246,0.20),transparent_32%),radial-gradient(circle_at_82%_16%,rgba(168,85,247,0.16),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.045),transparent_32%)]">
         <div className="pointer-events-none fixed left-1/2 top-0 hidden h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-300/8 blur-3xl dark:block" />
-        <div className="absolute left-4 top-4 z-50 hidden items-center gap-2 lg:flex">
-          <div className="h-3 w-3 rounded-full border border-[#E0443E] bg-[#FF5F57]" />
-          <div className="h-3 w-3 rounded-full border border-[#DEA123] bg-[#FEBC2E]" />
-          <div className="h-3 w-3 rounded-full border border-[#1AAB29] bg-[#28C840]" />
-        </div>
 
         <Sidebar
           activeItem={effectiveActiveNavItem}
@@ -362,6 +374,9 @@ function Workbench() {
                 currentMaterials={uploadedMaterials}
                 historyEntries={sessionHistory}
                 currentSessionId={sessionId}
+                practiceMaterialsEnabled={practiceMaterialsEnabled}
+                onOpenPracticeMaterials={openPracticeMaterialsDialog}
+                isPracticeGenerating={isDebugBundleGenerating}
               />
             </div>
             <div
@@ -429,6 +444,9 @@ function Workbench() {
                 showUserModelConfig={appConfig.user_model_config_enabled}
                 showRagStatus={appConfig.rag_status_user_visible}
                 showDebugTools={appConfig.debug_material_enabled}
+                showPracticeMaterials={
+                  appConfig.practice_materials_enabled !== false
+                }
                 userDisplayName={userProfile?.displayName ?? ""}
                 onUpdateUserDisplayName={handleUpdateUserDisplayName}
               />
@@ -481,6 +499,16 @@ function Workbench() {
         error={modalError}
         onGenerateReview={handleGenerateInterviewReview}
         onExportReviewImage={handleExportReviewImage}
+      />
+
+      <PracticeMaterialsDialog
+        open={practiceMaterialsDialogOpen}
+        onOpenChange={setPracticeMaterialsDialogOpen}
+        visaType={visaType}
+        isGenerating={isDebugBundleGenerating}
+        progressLines={debugBundleProgress}
+        error={practiceMaterialsError}
+        onGenerate={handlePracticeGenerate}
       />
     </>
   )

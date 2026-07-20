@@ -30,8 +30,11 @@ function loadTypeScriptModule(relativePath, runtimeRequires = {}) {
   return cjsModule.exports
 }
 
+const apiConfig = loadTypeScriptModule("lib/api/config.ts")
 const policy = loadTypeScriptModule("lib/case-board-presentation-policy.ts")
-const mappers = loadTypeScriptModule("lib/api/mappers.ts")
+const mappers = loadTypeScriptModule("lib/api/mappers.ts", {
+  "./config": apiConfig,
+})
 const mockData = loadTypeScriptModule("lib/api/mock-data.ts", {
   "./config": {
     isMockModeEnabled: () => true,

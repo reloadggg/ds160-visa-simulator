@@ -557,3 +557,68 @@ def test_internal_report_prefers_runtime_view_state_for_turn_summary() -> None:
     }
     assert payload["advisory_context"]["risk_level"] == "none"
     assert payload["runtime_view_state"]["decision"] == "continue_interview"
+
+
+def test_user_report_includes_top_level_requested_documents() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-requested-docs",
+        visa_family="f1",
+        governor_decision="need_more_evidence",
+        profile_json={},
+        phase_state="interview",
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-req",
+            "decision": "need_more_evidence",
+            "governor_decision": "need_more_evidence",
+            "public_status": "waiting_key_proof",
+            "current_focus": {
+                "kind": "required_document",
+                "document_type": "funding_proof",
+            },
+            "current_key_proof": "funding_proof",
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof", "i20"],
+            "allowed_next_actions": ["upload_key_proof"],
+        },
+        interviewer_state_json={
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof", "i20"],
+        },
+    )
+
+    assert payload["requested_documents"] == ["funding_proof"]
+    assert payload["remaining_required_documents"] == ["funding_proof", "i20"]
+
+
+def test_user_report_respects_explicit_empty_requested_documents() -> None:
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-empty-requested",
+        visa_family="f1",
+        governor_decision="continue_interview",
+        profile_json={},
+        phase_state="interview",
+        runtime_view_state={
+            "source_turn_id": "turn-assistant-empty-req",
+            "decision": "continue_interview",
+            "governor_decision": "continue_interview",
+            "public_status": "continue_interview",
+            "current_focus": {
+                "kind": "interview_question",
+                "question": "What is your major?",
+            },
+            "current_key_question": "What is your major?",
+            "requested_documents": [],
+            "remaining_required_documents": [],
+        },
+        interviewer_state_json={
+            "requested_documents": ["funding_proof"],
+            "remaining_required_documents": ["funding_proof"],
+        },
+    )
+
+    assert payload["requested_documents"] == []
+    assert payload["remaining_required_documents"] == []

@@ -141,6 +141,8 @@ interface SettingsPanelProps {
   showUserModelConfig?: boolean
   showRagStatus?: boolean
   showDebugTools?: boolean
+  /** Product practice materials (default on). Independent of debug tools. */
+  showPracticeMaterials?: boolean
 }
 
 export function SettingsPanel({
@@ -180,6 +182,7 @@ export function SettingsPanel({
   showUserModelConfig = true,
   showRagStatus = true,
   showDebugTools = true,
+  showPracticeMaterials = true,
 }: SettingsPanelProps) {
   const ragFileInputRef = useRef<HTMLInputElement | null>(null)
   const [ragUploadFile, setRagUploadFile] = useState<File | null>(null)
@@ -496,7 +499,7 @@ export function SettingsPanel({
               onClick={onLogout}
             >
               <LogOut className="h-4 w-4" />
-              退出当前 Key / 切换账号
+              退出当前密钥 / 切换账号
             </Button>
           </CardContent>
         </Card>
@@ -882,18 +885,24 @@ export function SettingsPanel({
                 </div>
               ))}
             </div>
-            {showDebugTools ? (
+            {showPracticeMaterials || showDebugTools ? (
               <div className="space-y-3 rounded-xl border border-border bg-muted/20 px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-medium text-foreground">
-                      调试合成材料
+                      {showPracticeMaterials
+                        ? "练习材料生成"
+                        : "调试合成材料"}
                     </div>
                     <div className="mt-1 text-xs leading-5 text-muted-foreground">
-                      内部诊断用：生成合成材料来测试核验、追问和报告，不代表已验证案例模板。
+                      {showPracticeMaterials
+                        ? "产品功能：根据你的文字描述生成虚构练习材料，无需上传真实证件。生成结果仅供模拟面签。"
+                        : "内部诊断用：生成合成材料来测试核验、追问和报告，不代表已验证案例模板。"}
                     </div>
                   </div>
-                  <Badge variant="outline">internal diagnostic</Badge>
+                  <Badge variant="outline">
+                    {showPracticeMaterials ? "产品功能" : "internal diagnostic"}
+                  </Badge>
                 </div>
 
                 <div className="grid gap-2">
@@ -962,8 +971,8 @@ export function SettingsPanel({
                     }
                   />
                   {isDebugBundleGenerating
-                    ? "正在生成调试合成材料"
-                    : `生成调试${selectedDebugBundleOption.shortLabel}`}
+                    ? "正在生成练习材料..."
+                    : `生成${selectedDebugBundleOption.shortLabel}`}
                 </Button>
 
                 {debugBundleProgress.length ? (

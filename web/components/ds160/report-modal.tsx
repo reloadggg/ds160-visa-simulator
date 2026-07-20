@@ -158,11 +158,12 @@ export function ReportModal({
           </TabsList>
 
           <TabsContent value="user" className="mt-4 min-h-0 flex-1">
-            {isLoading ? (
+            {/* User report stays independent of internal/debug failures (F6/F14). */}
+            {isLoading && !userReport ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="w-8 h-8" />
               </div>
-            ) : error ? (
+            ) : error && !userReport ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <AlertCircle className="w-12 h-12 text-destructive mb-4" />
                 <p className="text-destructive">{error}</p>
@@ -170,6 +171,17 @@ export function ReportModal({
             ) : userReport ? (
               <ScrollArea className="h-[400px] pr-4">
                 <div className="space-y-4">
+                  {error ? (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                      {error}
+                    </div>
+                  ) : null}
+                  {isLoading ? (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Spinner className="h-3.5 w-3.5" />
+                      <span>正在更新报告…</span>
+                    </div>
+                  ) : null}
                   {/* Status Card */}
                   <Card>
                     <CardHeader className="pb-3">
@@ -367,22 +379,31 @@ export function ReportModal({
           </TabsContent>
 
           <TabsContent value="internal" className="mt-4 min-h-0 flex-1">
-            {isLoading ? (
+            {isLoading && !internalReport ? (
               <div className="flex items-center justify-center py-12">
                 <Spinner className="w-8 h-8" />
               </div>
-            ) : error ? (
+            ) : error && !internalReport ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <AlertCircle className="w-12 h-12 text-destructive mb-4" />
                 <p className="text-destructive">{error}</p>
               </div>
             ) : internalReport ? (
               <ScrollArea className="h-[400px] rounded-lg border border-border bg-muted/40">
+                {error ? (
+                  <div className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+                    {error}
+                  </div>
+                ) : null}
                 <pre className="max-w-full whitespace-pre-wrap break-words p-4 font-mono text-xs leading-5 text-muted-foreground">
                   {JSON.stringify(internalReport, null, 2)}
                 </pre>
               </ScrollArea>
-            ) : null}
+            ) : (
+              <div className="flex flex-col items-center justify-center py-12 text-center text-sm text-muted-foreground">
+                暂无调试数据
+              </div>
+            )}
           </TabsContent>
         </Tabs>
       </DialogContent>

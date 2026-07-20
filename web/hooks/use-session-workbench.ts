@@ -16,6 +16,7 @@ import {
   clearCurrentKeyMaterials,
   createSession,
   createDebugMaterialBundleStream,
+  createPracticeMaterialBundleStream,
   exportSession,
   fetchSessionMessages,
   generateInterviewReview,
@@ -27,6 +28,7 @@ import {
   getUserReport,
   importMaterialPackage,
   listMaterialPackages,
+  listSessionDocuments,
   listSessions,
   listUserModels,
   sendMessage,
@@ -36,7 +38,10 @@ import {
 } from "@/lib/api/client"
 import { getApiBaseUrl } from "@/lib/api/config"
 import { APP_VERSION } from "@/lib/app-version"
-import { getDebugMaterialBundleOption } from "@/lib/debug-material-bundles"
+import {
+  getDebugMaterialBundleOption,
+  getDefaultDebugMaterialBundleScenarioForVisaFamily,
+} from "@/lib/debug-material-bundles"
 import { buildAssistantMessageFromBackendResponse } from "@/lib/message-source-policy"
 import {
   buildMaterialUnderstandingPatchFromRuntimeEntry,
@@ -56,6 +61,7 @@ import {
 } from "@/lib/api/mock-data"
 import {
   humanizeBackendText,
+  mapSessionDocumentsToUploadedMaterials,
   mapSessionGateStatus,
   toDocumentLabel,
 } from "@/lib/api/mappers"
@@ -79,6 +85,7 @@ import type {
   MaterialPackageImportResponse,
   MessageStreamErrorPayload,
   ModelListItem,
+  PracticeDocumentBriefZh,
   PublicReasoning,
   RagUploadMetadata,
   RagStatus,
@@ -87,6 +94,7 @@ import type {
   RuntimeDebugSnapshot,
   Session,
   SessionActivityEvent,
+  SessionDocumentListItem,
   SessionHistoryEntry,
   UploadedMaterial,
   UserModelConfig,
@@ -95,13 +103,22 @@ import type {
   VisaFamily,
 } from "@/lib/api/types"
 
+export type PracticeMaterialsBrief = {
+  user_summary_zh: string | null
+  document_briefs_zh: PracticeDocumentBriefZh[]
+  scenario_label: string
+}
+
 const HISTORY_NAMESPACE_KEY = "auth_history_namespace"
 const HISTORY_STORAGE_PREFIX = "ds160-web-history-v2:"
 const LEGACY_HISTORY_STORAGE_KEYS = ["ds160-web-history-v1"]
 const MODEL_CONFIG_STORAGE_KEY = "ds160-user-model-config-v1"
 const MAX_PERSISTED_PREVIEW_BYTES = 2 * 1024 * 1024
 const MAX_RUNTIME_DEBUG_EVENTS = 160
-const MATERIAL_UNDERSTANDING_REFRESH_DELAYS_MS = [750, 1500, 3000, 6000]
+/** Backoff for public documents poll: 1s,2s,4s… capped at 15s, up to ~3 min. */
+const MATERIAL_UNDERSTANDING_POLL_INITIAL_MS = 1_000
+const MATERIAL_UNDERSTANDING_POLL_MAX_INTERVAL_MS = 15_000
+const MATERIAL_UNDERSTANDING_POLL_MAX_TOTAL_MS = 180_000
 
 const DEFAULT_USER_MODEL_CONFIG: UserModelConfig = {
   enabled: false,
@@ -130,7 +147,7 @@ function isTerminalInterviewState(
     session?.phase_state === "completed" ||
     session?.phase_state === "session_closed" ||
     userReport?.interview_result === "passed" ||
-    userReport?.interview_result === "not_passed" ||
+    userReport?.interview_result === "refused" ||
     userReport?.interview_status === "simulated_refusal"
   )
 }
@@ -391,6 +408,11 @@ function debugBundleDocumentToMaterial(
     synthetic_bundle_id: bundle.bundle_id,
     debug_bundle_scenario: bundle.scenario,
     expected_findings: bundle.expected_findings,
+    // Practice / synthetic bundle materials surface the product「练习」badge.
+    is_practice_material:
+      Boolean(bundle.is_practice_material) ||
+      bundle.scenario != null ||
+      Boolean(bundle.bundle_id),
   }
 }
 
@@ -890,9 +912,13 @@ function humanizeUnderstandingStatus(status?: string | null): string {
     case "processing":
       return "案例理解中"
     case "failed":
+    case "error":
       return "理解失败"
     case "completed":
+    case "parsed":
       return "已理解"
+    case "skipped_legacy":
+      return "已跳过"
     default:
       return humanizeUploadStatus(status, "已上传")
   }
@@ -984,6 +1010,45 @@ function applyMaterialUnderstandingPatches(
   })
 
   return changed ? nextMaterials : materials
+}
+
+function materialUnderstandingPatchFromDocument(
+  document: SessionDocumentListItem,
+): RuntimeMaterialUnderstandingPatch | null {
+  if (!document.document_id && !document.filename) {
+    return null
+  }
+  const latestMaterial = document.case_board_delta?.latest_material
+  const understandingError =
+    latestMaterial?.understanding_error ??
+    (latestMaterial?.unknowns?.[0]
+      ? { code: null, message: latestMaterial.unknowns[0] }
+      : null)
+  return {
+    document_id: document.document_id,
+    filename: document.filename,
+    understanding_status:
+      document.understanding_status ??
+      latestMaterial?.understanding_status ??
+      null,
+    understanding_error: understandingError,
+  }
+}
+
+function isEmptyHistoryStub(entry: SessionHistoryEntry): boolean {
+  return (
+    entry.messages.length === 0 &&
+    entry.materials.length === 0 &&
+    !entry.report
+  )
+}
+
+function isRichHistoryEntry(entry: SessionHistoryEntry): boolean {
+  return (
+    entry.messages.length > 0 ||
+    entry.materials.length > 0 ||
+    Boolean(entry.report)
+  )
 }
 
 function responseNeedsMaterialUnderstandingRefresh(
@@ -1121,7 +1186,7 @@ function buildConversationExportHtml(options: {
       </header>
       <main class="timeline">${messagesHtml}</main>
       <footer class="footer">
-        <span>由 面签模拟器生成</span>
+        <span>由 DS-160 模拟面签生成</span>
         <span>图片材料仅用于本地练习复盘</span>
       </footer>
     </div>
@@ -1453,7 +1518,7 @@ function buildReviewExportHtml(options: {
       </main>
 
       <footer class="review-footer">
-        <span>由面签模拟器生成</span>
+        <span>由 DS-160 模拟面签生成</span>
         <span>仅供练习复盘参考，不代表真实使馆结论</span>
       </footer>
     </div>
@@ -1640,10 +1705,13 @@ export function useSessionWorkbench() {
   const sendingRef = useRef(false)
   const streamProgressEventIdRef = useRef<string | null>(null)
   const loadedSessionIdFromQueryRef = useRef<string | null>(null)
+  const sessionIdRef = useRef<string | null>(null)
+  const userReportRef = useRef<UserReport | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
 
   const [userReport, setUserReport] = useState<UserReport | null>(null)
   const [isLoadingReport, setIsLoadingReport] = useState(false)
+  const [isRefreshingReport, setIsRefreshingReport] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
 
   const [internalReport, setInternalReport] = useState<InternalReport | null>(
@@ -1716,6 +1784,13 @@ export function useSessionWorkbench() {
   >([])
   const [latestDebugMaterialBundle, setLatestDebugMaterialBundle] =
     useState<DebugMaterialBundleResponse | null>(null)
+  const [practiceMaterialsDialogOpen, setPracticeMaterialsDialogOpen] =
+    useState(false)
+  const [practiceMaterialsBrief, setPracticeMaterialsBrief] =
+    useState<PracticeMaterialsBrief | null>(null)
+  const [practiceMaterialsError, setPracticeMaterialsError] = useState<
+    string | null
+  >(null)
   const [materialPackages, setMaterialPackages] = useState<
     MaterialPackageArchiveItem[]
   >([])
@@ -1740,6 +1815,8 @@ export function useSessionWorkbench() {
   const [sessionTime, setSessionTime] = useState(0)
 
   const sessionId = session?.session_id ?? null
+  sessionIdRef.current = sessionId
+  userReportRef.current = userReport
 
   useEffect(() => {
     if (!settingsFeedback) {
@@ -1874,28 +1951,39 @@ export function useSessionWorkbench() {
     [],
   )
 
-  const getErrorMessage = useCallback((error: unknown, fallback: string) => {
-    if (error instanceof ApiError) {
-      if (error.status === 403) {
-        return "当前部署未启用这个调试或流式功能，请检查后端开关。"
+  const getErrorMessage = useCallback(
+    (
+      error: unknown,
+      fallback: string,
+      options?: { debugOrStream?: boolean },
+    ) => {
+      if (error instanceof ApiError) {
+        if (error.status === 403) {
+          // Only special-case 403 for debug/stream endpoints; others show real message.
+          if (options?.debugOrStream) {
+            return "当前部署未启用这个调试或流式功能，请检查后端开关。"
+          }
+          return error.message || "没有权限执行此操作。"
+        }
+        if (error.status === 401) {
+          return "当前对话模型认证失败，API Key 可能已失效或被禁用。"
+        }
+        if (error.status === 429) {
+          return "当前对话模型额度已耗尽或请求过于频繁，请稍后重试。"
+        }
+        if (
+          error.status === 503 ||
+          error.status === 502 ||
+          error.status === 504
+        ) {
+          return error.message || "当前对话模型不可用或运行失败。"
+        }
+        return `请求失败：${error.message}`
       }
-      if (error.status === 401) {
-        return "当前对话模型认证失败，API Key 可能已失效或被禁用。"
-      }
-      if (error.status === 429) {
-        return "当前对话模型额度已耗尽或请求过于频繁，请稍后重试。"
-      }
-      if (
-        error.status === 503 ||
-        error.status === 502 ||
-        error.status === 504
-      ) {
-        return error.message || "当前对话模型不可用或运行失败。"
-      }
-      return `请求失败：${error.message}`
-    }
-    return fallback
-  }, [])
+      return fallback
+    },
+    [],
+  )
 
   const refreshMaterialPackages = useCallback(async () => {
     if (mockMode) {
@@ -1962,17 +2050,31 @@ export function useSessionWorkbench() {
         return MOCK_USER_REPORT
       }
 
+      // Soft-load: keep last-good report on screen; only clear error on cold load (F6/F15).
+      const hasExistingReport = Boolean(userReportRef.current)
       setIsLoadingReport(true)
-      setReportError(null)
+      setIsRefreshingReport(hasExistingReport)
+      if (!hasExistingReport) {
+        setReportError(null)
+      }
       try {
         const report = await getUserReport(targetSessionId)
+        if (sessionIdRef.current && sessionIdRef.current !== targetSessionId) {
+          return report
+        }
         setUserReport(report)
+        setReportError(null)
         return report
       } catch (error) {
+        if (sessionIdRef.current && sessionIdRef.current !== targetSessionId) {
+          return null
+        }
         setReportError(getErrorMessage(error, "获取报告失败，请稍后重试。"))
+        // Keep last-good report in state; only return null for callers.
         return null
       } finally {
         setIsLoadingReport(false)
+        setIsRefreshingReport(false)
       }
     },
     [getErrorMessage, mockMode],
@@ -2049,7 +2151,9 @@ export function useSessionWorkbench() {
         return snapshot
       } catch (error) {
         setRuntimeDebugError(
-          getErrorMessage(error, "获取运行时调试快照失败。"),
+          getErrorMessage(error, "获取运行时调试快照失败。", {
+            debugOrStream: true,
+          }),
         )
         return null
       } finally {
@@ -2081,28 +2185,73 @@ export function useSessionWorkbench() {
       }
 
       void (async () => {
-        for (const delayMs of MATERIAL_UNDERSTANDING_REFRESH_DELAYS_MS) {
-          await waitForMilliseconds(delayMs)
-          const snapshot = await refreshRuntimeDebugSnapshot(targetSessionId)
-          const patches = materialUnderstandingPatchesFromSnapshot(
-            snapshot,
-          ).filter(
-            (patch) =>
-              patch.document_id && trackedDocumentIds.has(patch.document_id),
-          )
-          if (
-            patches.some((patch) =>
-              isTerminalMaterialUnderstandingStatus(
-                patch.understanding_status,
-              ),
-            )
-          ) {
+        let intervalMs = MATERIAL_UNDERSTANDING_POLL_INITIAL_MS
+        let elapsedMs = 0
+        let reachedTerminal = false
+
+        while (elapsedMs < MATERIAL_UNDERSTANDING_POLL_MAX_TOTAL_MS) {
+          await waitForMilliseconds(intervalMs)
+          elapsedMs += intervalMs
+
+          // Guard: abandon poll if the user switched sessions mid-flight.
+          if (sessionIdRef.current !== targetSessionId) {
             return
           }
+
+          try {
+            const listed = await listSessionDocuments(targetSessionId)
+            if (sessionIdRef.current !== targetSessionId) {
+              return
+            }
+
+            const trackedDocuments = listed.documents.filter(
+              (document) =>
+                document.document_id &&
+                trackedDocumentIds.has(document.document_id) &&
+                !document.tombstoned,
+            )
+            const patches = trackedDocuments
+              .map(materialUnderstandingPatchFromDocument)
+              .filter(
+                (patch): patch is RuntimeMaterialUnderstandingPatch =>
+                  patch !== null,
+              )
+
+            if (patches.length) {
+              setUploadedMaterials((prev) =>
+                applyMaterialUnderstandingPatches(prev, patches),
+              )
+            }
+
+            if (
+              patches.some((patch) =>
+                isTerminalMaterialUnderstandingStatus(
+                  patch.understanding_status,
+                ),
+              )
+            ) {
+              reachedTerminal = true
+              // Rematerialize case board / analysis from user report.
+              await refreshReports(targetSessionId).catch(() => undefined)
+              return
+            }
+          } catch {
+            // Keep polling through transient list failures.
+          }
+
+          intervalMs = Math.min(
+            intervalMs * 2,
+            MATERIAL_UNDERSTANDING_POLL_MAX_INTERVAL_MS,
+          )
+        }
+
+        if (!reachedTerminal && sessionIdRef.current === targetSessionId) {
+          // Final attempt to rematerialize if understanding finished after last check.
+          await refreshReports(targetSessionId).catch(() => undefined)
         }
       })()
     },
-    [refreshRuntimeDebugSnapshot],
+    [refreshReports],
   )
 
   const handleCopyRuntimeDebugPackage = useCallback(async () => {
@@ -2358,7 +2507,27 @@ export function useSessionWorkbench() {
   )
 
   const sessionHistory = useMemo(() => {
-    const mergedHistory = [...serverHistoryEntries, ...localHistoryEntries]
+    // Prefer local rich history over empty server stubs for the same session_id (F4).
+    const localBySessionId = new Map(
+      historyStore.map((entry) => [entry.session_id, entry] as const),
+    )
+    const mergedFromServer = serverHistoryEntries.map((serverEntry) => {
+      const local = localBySessionId.get(serverEntry.session_id)
+      if (local && isRichHistoryEntry(local) && isEmptyHistoryStub(serverEntry)) {
+        return local
+      }
+      if (local && isRichHistoryEntry(local) && !isRichHistoryEntry(serverEntry)) {
+        return local
+      }
+      return serverEntry
+    })
+    const serverSessionIds = new Set(
+      serverHistoryEntries.map((entry) => entry.session_id),
+    )
+    const localOnly = historyStore.filter(
+      (entry) => !serverSessionIds.has(entry.session_id),
+    )
+    const mergedHistory = [...mergedFromServer, ...localOnly]
     if (!activeHistoryEntry) {
       return mergedHistory
     }
@@ -2366,7 +2535,7 @@ export function useSessionWorkbench() {
       activeHistoryEntry,
       ...mergedHistory.filter((entry) => entry.id !== activeHistoryEntry.id),
     ]
-  }, [activeHistoryEntry, localHistoryEntries, serverHistoryEntries])
+  }, [activeHistoryEntry, historyStore, serverHistoryEntries])
 
   const browserHistorySnapshot = useMemo(() => {
     if (!activeHistoryEntry) {
@@ -2405,6 +2574,9 @@ export function useSessionWorkbench() {
     setRuntimeDebugSnapshot(null)
     setRuntimeDebugEvents([])
     setLatestDebugMaterialBundle(null)
+    setPracticeMaterialsBrief(null)
+    setPracticeMaterialsDialogOpen(false)
+    setPracticeMaterialsError(null)
     setRuntimeDebugError(null)
     setPendingResetAfterSummary(false)
   }, [])
@@ -2433,11 +2605,13 @@ export function useSessionWorkbench() {
       ])
 
       try {
-        const [transcript, report, nextRequiredPackage] = await Promise.all([
-          fetchSessionMessages(normalizedSessionId),
-          fetchUserReport(normalizedSessionId),
-          getRequiredPackage(normalizedSessionId).catch(() => null),
-        ])
+        const [transcript, report, nextRequiredPackage, documentsResult] =
+          await Promise.all([
+            fetchSessionMessages(normalizedSessionId),
+            fetchUserReport(normalizedSessionId),
+            getRequiredPackage(normalizedSessionId).catch(() => null),
+            listSessionDocuments(normalizedSessionId).catch(() => null),
+          ])
         const restoredVisaType = visaFamilyFromReport(report)
         setSession({
           session_id: transcript.session_id,
@@ -2453,12 +2627,54 @@ export function useSessionWorkbench() {
           nextRequiredPackage ?? getMockRequiredPackage(restoredVisaType),
         )
         setMessages(chatMessagesFromBackendTurns(transcript.messages))
-        setUploadedMaterials([])
+        // F3: restore materials from public documents list (filter tombstoned).
+        const restoredMaterials = documentsResult
+          ? mapSessionDocumentsToUploadedMaterials(documentsResult, {
+              sessionId: transcript.session_id,
+            })
+          : []
+        setUploadedMaterials(restoredMaterials)
+        // Continue polling for any in-flight understanding after restore.
+        if (restoredMaterials.some((material) =>
+          responseNeedsMaterialUnderstandingRefresh({
+            document_id: material.document_id,
+            understanding_status: material.understanding_status,
+            job_status: material.document_status,
+            document_type_candidates: [],
+            document_type_candidate_labels: [],
+            supported_claims: [],
+            evidence_cards: [],
+            requested_documents: [],
+            requested_document_labels: [],
+            remaining_required_documents: [],
+            remaining_required_document_labels: [],
+          }),
+        )) {
+          queueMaterialUnderstandingRefresh(
+            transcript.session_id,
+            restoredMaterials.map((material) => ({
+              document_id: material.document_id,
+              understanding_status: material.understanding_status,
+              job_status: material.document_status,
+              document_type_candidates: [],
+              document_type_candidate_labels: [],
+              supported_claims: [],
+              evidence_cards: [],
+              requested_documents: [],
+              requested_document_labels: [],
+              remaining_required_documents: [],
+              remaining_required_document_labels: [],
+            })),
+          )
+        }
         setInternalReport(null)
         setInterviewReview(null)
         setDebugBundleProgress([])
         setRuntimeDebugEvents([])
         setLatestDebugMaterialBundle(null)
+        setPracticeMaterialsBrief(null)
+        setPracticeMaterialsDialogOpen(false)
+        setPracticeMaterialsError(null)
         setRuntimeDebugError(null)
         setIsReportModalOpen(false)
         setPendingResetAfterSummary(false)
@@ -2466,7 +2682,11 @@ export function useSessionWorkbench() {
         setIsPaused(false)
         appendActivityEvent({
           kind: "session",
-          content: `已从后端恢复 ${transcript.messages.length} 条会话消息。`,
+          content: `已从后端恢复 ${transcript.messages.length} 条会话消息${
+            restoredMaterials.length
+              ? `、${restoredMaterials.length} 份材料`
+              : ""
+          }。`,
           status: "sent",
         })
         void refreshRuntimeDebugSnapshot(transcript.session_id)
@@ -2488,6 +2708,7 @@ export function useSessionWorkbench() {
       fetchUserReport,
       getErrorMessage,
       mockMode,
+      queueMaterialUnderstandingRefresh,
       refreshRuntimeDebugSnapshot,
     ],
   )
@@ -2522,6 +2743,9 @@ export function useSessionWorkbench() {
       setRuntimeDebugSnapshot(null)
       setRuntimeDebugEvents([])
       setLatestDebugMaterialBundle(null)
+      setPracticeMaterialsBrief(null)
+      setPracticeMaterialsDialogOpen(false)
+      setPracticeMaterialsError(null)
       setRuntimeDebugError(null)
 
       try {
@@ -2891,20 +3115,53 @@ export function useSessionWorkbench() {
           error instanceof ApiError
             ? messageStreamErrorFromUnknown(error.data)
             : null
+        const isStreamEndpointFailure =
+          streamAccepted ||
+          (error instanceof ApiError &&
+            (error.status === 403 || error.message.includes("流式")))
         const failureDetail = streamError
           ? describeMessageStreamError(streamError)
-          : getErrorMessage(error, "发送失败，请重试。")
+          : getErrorMessage(error, "发送失败，请重试。", {
+              debugOrStream: isStreamEndpointFailure,
+            })
         if (userMsgId) {
           updateMessageFailure(userMsgId, failureDetail)
         }
         if (streamAccepted && sessionId) {
+          // F11: after accept but before final, try reloading transcript.
+          let recoveredAssistant = false
+          try {
+            const transcript = await fetchSessionMessages(sessionId)
+            if (sessionIdRef.current === sessionId) {
+              const restoredMessages = chatMessagesFromBackendTurns(
+                transcript.messages,
+              )
+              if (restoredMessages.length > 0) {
+                setMessages(restoredMessages)
+                recoveredAssistant = restoredMessages.some(
+                  (message) => message.role === "assistant",
+                )
+              }
+            }
+          } catch {
+            // Fall through to error UX when transcript reload fails.
+          }
           upsertStreamProgress(
             streamError
               ? `处理失败：${failureDetail}`
-              : "连接中断，但服务器已收到消息；请稍后重试本条或刷新当前分析状态。",
-            "error",
+              : recoveredAssistant
+                ? "连接中断，但已从服务器恢复本轮回复。"
+                : "连接中断，但服务器已收到消息；请稍后重试本条或刷新当前分析状态。",
+            recoveredAssistant && !streamError ? "sent" : "error",
           )
+          if (recoveredAssistant && userMsgId) {
+            updateMessageStatus(userMsgId, "sent")
+          }
           await refreshReports(sessionId).catch(() => undefined)
+          if (recoveredAssistant && !streamError) {
+            setChatError(null)
+            return
+          }
         }
         setChatError(failureDetail)
       } finally {
@@ -2981,17 +3238,30 @@ export function useSessionWorkbench() {
       return
     }
 
+    // F6/F14: user report is independent of internal report failure.
     setIsLoadingInternalReport(true)
     try {
-      const [latestUserReport, latestInternalReport] = await Promise.all([
-        getUserReport(sessionId),
-        getInternalReport(sessionId),
-      ])
-      setUserReport(latestUserReport)
-      setInternalReport(latestInternalReport)
+      try {
+        const latestUserReport = await getUserReport(sessionId)
+        setUserReport(latestUserReport)
+        setReportError(null)
+      } catch (error) {
+        setModalError(getErrorMessage(error, "获取用户报告失败。"))
+      }
+
+      try {
+        const latestInternalReport = await getInternalReport(sessionId)
+        setInternalReport(latestInternalReport)
+      } catch (error) {
+        // Keep any last-good user report; surface internal failure as non-fatal.
+        setModalError((prev) =>
+          prev ??
+          getErrorMessage(error, "调试报告获取失败（用户报告仍可查看）。", {
+            debugOrStream: true,
+          }),
+        )
+      }
       setInterviewReview(null)
-    } catch (error) {
-      setModalError(getErrorMessage(error, "获取报告失败。"))
     } finally {
       setIsLoadingInternalReport(false)
     }
@@ -3036,20 +3306,32 @@ export function useSessionWorkbench() {
       setInterviewReview(null)
       persistHistoryEntry("completed", { report: MOCK_USER_REPORT })
     } else {
+      // F14: fetch user report first; internal is optional and must not fail the path.
       setIsLoadingInternalReport(true)
       try {
-        const [nextUserReport, nextInternalReport] = await Promise.all([
-          getUserReport(sessionId),
-          getInternalReport(sessionId),
-        ])
-        latestUserReport = nextUserReport
-        setUserReport(nextUserReport)
-        setInternalReport(nextInternalReport)
+        try {
+          const nextUserReport = await getUserReport(sessionId)
+          latestUserReport = nextUserReport
+          setUserReport(nextUserReport)
+          setReportError(null)
+          persistHistoryEntry("completed", { report: nextUserReport })
+        } catch (error) {
+          setModalError(getErrorMessage(error, "获取总结失败。"))
+          persistHistoryEntry("completed")
+        }
+
+        try {
+          const nextInternalReport = await getInternalReport(sessionId)
+          setInternalReport(nextInternalReport)
+        } catch (error) {
+          setModalError((prev) =>
+            prev ??
+            getErrorMessage(error, "调试报告获取失败（用户总结仍可查看）。", {
+              debugOrStream: true,
+            }),
+          )
+        }
         setInterviewReview(null)
-        persistHistoryEntry("completed", { report: nextUserReport })
-      } catch (error) {
-        setModalError(getErrorMessage(error, "获取总结失败。"))
-        persistHistoryEntry("completed")
       } finally {
         setIsLoadingInternalReport(false)
       }
@@ -3416,9 +3698,11 @@ export function useSessionWorkbench() {
   const runDebugMaterialBundle = useCallback(
     async (scenario: DebugMaterialBundleScenario, seedText?: string) => {
       if (!sessionId || isDebugBundleGenerating) {
-        setSettingsFeedback(
-          !sessionId ? "当前没有可生成材料包的会话。" : "材料包正在生成中。",
-        )
+        const message = !sessionId
+          ? "当前没有可生成材料包的会话。"
+          : "材料包正在生成中。"
+        setSettingsFeedback(message)
+        setPracticeMaterialsError(message)
         return
       }
       if (mockMode) {
@@ -3427,6 +3711,13 @@ export function useSessionWorkbench() {
           content: "[Mock] 已生成一组材料包，并写入材料库。",
         })
         setSettingsFeedback("Mock 材料包已生成。")
+        setPracticeMaterialsError(null)
+        setPracticeMaterialsBrief({
+          user_summary_zh:
+            "（Mock）已生成一组虚构练习材料，可在材料库中查看。",
+          document_briefs_zh: [],
+          scenario_label: getDebugMaterialBundleOption(scenario).label,
+        })
         return
       }
 
@@ -3435,6 +3726,7 @@ export function useSessionWorkbench() {
       if (!normalizedSeedText) {
         const message = "请先填写材料生成依据；系统不会写入演示占位材料。"
         setSettingsFeedback(message)
+        setPracticeMaterialsError(message)
         appendActivityEvent({
           kind: "debug",
           content: message,
@@ -3457,21 +3749,57 @@ export function useSessionWorkbench() {
       }
 
       setIsDebugBundleGenerating(true)
-      setSettingsFeedback("正在生成调试合成材料...")
+      setPracticeMaterialsError(null)
+      setSettingsFeedback("正在生成练习材料...")
       setDebugBundleProgress([])
       try {
-        const result = await createDebugMaterialBundleStream(
-          sessionId,
-          scenario,
-          true,
-          (event) => {
-            recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
-            updateProgress(describeDebugBundleEvent(event))
-          },
-          normalizedSeedText,
-          "ai_if_available",
-        )
+        // Product path: practice materials (default ON). Fall back to debug stream
+        // only if practice endpoint fails with 403 and debug is available.
+        let result
+        try {
+          result = await createPracticeMaterialBundleStream(
+            sessionId,
+            scenario,
+            false,
+            (event) => {
+              recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
+              updateProgress(describeDebugBundleEvent(event))
+            },
+            normalizedSeedText,
+            "ai_if_available",
+          )
+        } catch (practiceError) {
+          const status =
+            practiceError &&
+            typeof practiceError === "object" &&
+            "status" in practiceError
+              ? Number((practiceError as { status?: number }).status)
+              : 0
+          if (status !== 403) {
+            throw practiceError
+          }
+          result = await createDebugMaterialBundleStream(
+            sessionId,
+            scenario,
+            false,
+            (event) => {
+              recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
+              updateProgress(describeDebugBundleEvent(event))
+            },
+            normalizedSeedText,
+            "ai_if_available",
+          )
+        }
         setLatestDebugMaterialBundle(result)
+        setPracticeMaterialsError(null)
+        setPracticeMaterialsBrief({
+          user_summary_zh:
+            result.user_summary_zh ??
+            result.generation?.user_summary_zh ??
+            null,
+          document_briefs_zh: result.document_briefs_zh ?? [],
+          scenario_label: result.scenario_label,
+        })
         updateActivityEventStatus(progressMessageId, "sent")
         setSession((prev) =>
           prev
@@ -3517,18 +3845,20 @@ export function useSessionWorkbench() {
         await refreshMaterialPackages()
         if (result.main_flow_refresh_error) {
           setSettingsFeedback(
-            `调试合成材料已生成，但下一步刷新失败：${result.main_flow_refresh_error}`,
+            `练习材料已生成，但后续刷新失败：${result.main_flow_refresh_error}`,
           )
         } else {
-          setSettingsFeedback("AI 调试合成材料已生成，前端已接收完整流式进度。")
+          setSettingsFeedback("练习材料已生成。可在材料库与右侧中文说明中查看。")
         }
       } catch (error) {
         updateActivityEventStatus(progressMessageId, "error")
         const message = getErrorMessage(
           error,
-          "调试材料包生成失败，请稍后重试。",
+          "练习材料生成失败，请稍后重试。",
+          { debugOrStream: false },
         )
         updateProgress(`错误：${message}`)
+        setPracticeMaterialsError(message)
         setSettingsFeedback(message)
       } finally {
         setIsDebugBundleGenerating(false)
@@ -3554,6 +3884,20 @@ export function useSessionWorkbench() {
     (scenario: DebugMaterialBundleScenario, seedText?: string) =>
       runDebugMaterialBundle(scenario, seedText),
     [runDebugMaterialBundle],
+  )
+
+  const openPracticeMaterialsDialog = useCallback(() => {
+    setPracticeMaterialsError(null)
+    setPracticeMaterialsDialogOpen(true)
+  }, [])
+
+  const handlePracticeGenerate = useCallback(
+    (seedText: string) => {
+      const scenario =
+        getDefaultDebugMaterialBundleScenarioForVisaFamily(visaType)
+      return handleDebugMaterialBundleScenario(scenario, seedText)
+    },
+    [handleDebugMaterialBundleScenario, visaType],
   )
 
   const handleDebugFillCurrentGap = useCallback(
@@ -3600,6 +3944,8 @@ export function useSessionWorkbench() {
       setRuntimeDebugSnapshot(null)
       setRuntimeDebugEvents([])
       setLatestDebugMaterialBundle(null)
+      setPracticeMaterialsBrief(null)
+      setPracticeMaterialsError(null)
       updateHistoryStore((prev) =>
         prev.map((entry) => ({
           ...entry,
@@ -3619,6 +3965,8 @@ export function useSessionWorkbench() {
       setRuntimeDebugSnapshot(null)
       setRuntimeDebugEvents([])
       setLatestDebugMaterialBundle(null)
+      setPracticeMaterialsBrief(null)
+      setPracticeMaterialsError(null)
       updateHistoryStore((prev) =>
         prev.map((entry) => ({
           ...entry,
@@ -3658,36 +4006,76 @@ export function useSessionWorkbench() {
     updateHistoryStore,
   ])
 
-  const handleRestoreSession = useCallback((entry: SessionHistoryEntry) => {
-    setSession({
-      session_id: entry.session_id,
-      phase_state: entry.status === "completed" ? "completed" : "interview",
-      current_governor_decision: entry.report?.governor_decision ?? null,
-      gate_status: null,
-    })
-    setVisaType(entry.visa_type)
-    setRequiredPackage(entry.required_package)
-    const restoredMaterials = entry.materials.map(sanitizeHistoryMaterial)
-    setMessages(hydrateHistoryMessages(entry.messages, restoredMaterials))
-    setActivityEvents([])
-    setUserReport(entry.report)
-    setInternalReport(null)
-    setInterviewReview(null)
-    setUploadedMaterials(restoredMaterials)
-    setChatError(null)
-    setReportError(null)
-    setModalError(null)
-    setIsDebugBundleGenerating(false)
-    setDebugBundleProgress([])
-    setRuntimeDebugSnapshot(null)
-    setRuntimeDebugEvents([])
-    setLatestDebugMaterialBundle(null)
-    setRuntimeDebugError(null)
-    setIsReportModalOpen(false)
-    setPendingResetAfterSummary(false)
-    setSessionTime(0)
-    setIsPaused(false)
-  }, [])
+  const handleRestoreSession = useCallback(
+    (entry: SessionHistoryEntry) => {
+      // F4: prefer local rich history over empty server stub; stub → full backend load.
+      const localMatch = historyStore.find(
+        (item) => item.session_id === entry.session_id,
+      )
+      const localIsRich = Boolean(localMatch && isRichHistoryEntry(localMatch))
+      if (isEmptyHistoryStub(entry) && localIsRich && localMatch) {
+        entry = localMatch
+      } else if (isEmptyHistoryStub(entry) && !mockMode) {
+        void handleLoadBackendSession(entry.session_id)
+        return
+      }
+
+      setSession({
+        session_id: entry.session_id,
+        phase_state: entry.status === "completed" ? "completed" : "interview",
+        current_governor_decision: entry.report?.governor_decision ?? null,
+        gate_status: null,
+      })
+      setVisaType(entry.visa_type)
+      setRequiredPackage(entry.required_package)
+      const restoredMaterials = entry.materials.map(sanitizeHistoryMaterial)
+      setMessages(hydrateHistoryMessages(entry.messages, restoredMaterials))
+      setActivityEvents([])
+      setUserReport(entry.report)
+      setInternalReport(null)
+      setInterviewReview(null)
+      setUploadedMaterials(restoredMaterials)
+      setChatError(null)
+      setReportError(null)
+      setModalError(null)
+      setIsDebugBundleGenerating(false)
+      setDebugBundleProgress([])
+      setRuntimeDebugSnapshot(null)
+      setRuntimeDebugEvents([])
+      setLatestDebugMaterialBundle(null)
+      setPracticeMaterialsBrief(null)
+      setPracticeMaterialsDialogOpen(false)
+      setPracticeMaterialsError(null)
+      setRuntimeDebugError(null)
+      setIsReportModalOpen(false)
+      setPendingResetAfterSummary(false)
+      setSessionTime(0)
+      setIsPaused(false)
+
+      // If local materials are empty but this is a real server session, hydrate docs.
+      if (
+        !mockMode &&
+        restoredMaterials.length === 0 &&
+        entry.session_id
+      ) {
+        void listSessionDocuments(entry.session_id)
+          .then((listed) => {
+            if (sessionIdRef.current !== entry.session_id) {
+              return
+            }
+            const materials = mapSessionDocumentsToUploadedMaterials(listed, {
+              sessionId: entry.session_id,
+            })
+            if (materials.length) {
+              setUploadedMaterials(materials)
+            }
+          })
+          .catch(() => undefined)
+        void fetchUserReport(entry.session_id).catch(() => undefined)
+      }
+    },
+    [fetchUserReport, handleLoadBackendSession, historyStore, mockMode],
+  )
 
   const sessionTimeLabel = useMemo(() => {
     const hours = Math.floor(sessionTime / 3600)
@@ -3726,6 +4114,7 @@ export function useSessionWorkbench() {
     chatError,
     userReport,
     isLoadingReport,
+    isRefreshingReport,
     reportError,
     internalReport,
     interviewReview,
@@ -3749,6 +4138,12 @@ export function useSessionWorkbench() {
     runtimeDebugSnapshot,
     runtimeDebugEvents,
     latestDebugMaterialBundle,
+    practiceMaterialsDialogOpen,
+    setPracticeMaterialsDialogOpen,
+    practiceMaterialsBrief,
+    practiceMaterialsError,
+    openPracticeMaterialsDialog,
+    handlePracticeGenerate,
     isLoadingRuntimeDebug,
     runtimeDebugError,
     userModelConfig,

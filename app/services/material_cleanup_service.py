@@ -7,9 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import AccessKeyRecord, AccessKeySessionRecord, DocumentRecord
+from app.repositories.document_repo import DocumentRepository
 from app.services.case_memory_service import CaseMemoryService
 from app.services.gate_runtime_service import GateRuntimeService
 from app.services.material_package_archive_service import VALIDATED_ARCHIVE_SOURCE_REASON
+from app.services.profile_recompute_service import ProfileRecomputeService
 
 
 @dataclass(frozen=True)
@@ -80,13 +82,18 @@ class MaterialCleanupService:
 
         affected_sessions: list[str] = []
         if clearable_document_ids:
+            DocumentRepository(self.db).cancel_jobs_for_documents(clearable_document_ids)
             snapshots = CaseMemoryService(self.db).tombstone_documents(
                 document_ids=clearable_document_ids,
                 reason="access_key_material_cleanup",
             )
             affected_sessions = sorted(snapshots)
             gate_runtime = GateRuntimeService(self.db)
+            profile_recompute = ProfileRecomputeService(self.db)
+            case_memory = CaseMemoryService(self.db)
             for session_id in affected_sessions:
+                profile_recompute.recompute_session(session_id, save=False)
+                case_memory.rebuild_and_persist(session_id)
                 gate_runtime.refresh_session(session_id, save=False)
 
         return MaterialCleanupResult(
@@ -129,10 +136,7 @@ class MaterialCleanupService:
         return False
 
     def _is_tombstoned(self, document: DocumentRecord) -> bool:
-        artifact = dict(document.artifact_json or {})
-        return document.status == "tombstoned" or bool(
-            artifact.get("case_memory_tombstone")
-        )
+        return DocumentRepository.is_document_tombstoned(document)
 
     def _document_metadata(self, document: DocumentRecord) -> dict[str, Any]:
         artifact = dict(document.artifact_json or {})

@@ -449,7 +449,7 @@ def test_parse_worker_material_refresh_updates_graph_state_without_assistant_tur
     assert assistant_count == 0
     assert record is not None
     material_refresh = record.interviewer_state_json["last_material_refresh"]
-    assert material_refresh["agent_runtime"] == "graph"
+    assert material_refresh["agent_runtime"] == "native_interviewer"
     assert material_refresh["selected_public_runtime"] == "native_interviewer"
     assert material_refresh["runtime_execution"] == {
         "schema_version": "runtime.execution.v1",

@@ -195,6 +195,18 @@ class GeneratedMaterialBundleOutput(BaseModel):
     documents: list[GeneratedMaterialDocument] = Field(min_length=5)
     synthetic_turns: list[GeneratedMaterialSyntheticTurn] = Field(default_factory=list)
     generation_notes: list[str] = Field(default_factory=list)
+    # User-facing Chinese brief for practice materials UI (not oracle text).
+    user_summary_zh: str | None = None
+
+    @field_validator("user_summary_zh", mode="before")
+    @classmethod
+    def normalize_user_summary_zh(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
     @model_validator(mode="after")
     def validate_required_document_mix(self) -> "GeneratedMaterialBundleOutput":
@@ -340,6 +352,11 @@ class OpenAIChatCompletionsMaterialBundleRunner:
             for document in raw_documents
             if isinstance(document, dict)
         ]
+        summary = payload.get("user_summary_zh") or payload.get("practice_summary_zh")
+        if not isinstance(summary, str):
+            summary = None
+        else:
+            summary = summary.strip() or None
         return {
             "documents": documents,
             "synthetic_turns": self._normalize_synthetic_turns(
@@ -350,6 +367,7 @@ class OpenAIChatCompletionsMaterialBundleRunner:
             "generation_notes": self._normalize_generation_notes(
                 payload.get("generation_notes") or []
             ),
+            "user_summary_zh": summary,
         }
 
     def _normalize_synthetic_turns(self, value: Any) -> list[dict[str, Any]]:
@@ -569,6 +587,7 @@ class AIMaterialBundleGeneratorService:
                     "documents",
                     "synthetic_turns",
                     "generation_notes",
+                    "user_summary_zh",
                 ],
                 "document_keys": [
                     "document_type",
@@ -581,11 +600,19 @@ class AIMaterialBundleGeneratorService:
                     "/identity/full_name": "Morgan Lee",
                     "/education/school_name": "New York University",
                 },
+                "user_summary_zh_example": (
+                    "本练习包设定申请人为李明，拟赴 UC Irvine 攻读 Data Science 硕士；"
+                    "资金主要来自父母存款证明；材料为虚构练习用途。"
+                ),
             },
             "task": (
                 "Generate realistic synthetic plain-text visa materials that match "
                 "the seed_text. These are user-visible practice "
-                "documents, not oracle answers. Return only structured output."
+                "documents, not oracle answers. Return only structured output. "
+                "Also provide user_summary_zh: a short Simplified Chinese summary "
+                "(3-6 sentences) describing who the applicant is in this practice pack, "
+                "school/job/purpose, funding, and what document types were generated. "
+                "user_summary_zh must be Chinese and must not reveal oracle/conflict labels."
             ),
         }
         return json.dumps(payload, ensure_ascii=False)
@@ -604,9 +631,11 @@ class AIMaterialBundleGeneratorService:
             "6. 如果场景要求制造冲突，只能通过材料字段值不同或用户声明与材料不同表达，不要解释冲突。\n"
             "7. 不要把内部 scenario、oracle、expected_findings、prompt、trace 写进材料正文。\n"
             "8. 输出必须符合 GeneratedMaterialBundleOutput。\n"
-            "9. 顶层只能使用 documents、synthetic_turns、generation_notes。\n"
+            "9. 顶层可使用 documents、synthetic_turns、generation_notes、user_summary_zh。\n"
             "10. 每个 document 必须使用 document_type、filename、raw_text、fields、counts_toward_gate。\n"
-            "11. raw_text 必须是完整材料正文字符串；fields 必须是 JSON object，不要用数组。"
+            "11. raw_text 必须是完整材料正文字符串；fields 必须是 JSON object，不要用数组。\n"
+            "12. 必须提供 user_summary_zh：简体中文 3–6 句，说明练习人设、目的地/学校或工作、资金来源、"
+            "生成了哪些材料类型；不得出现「调试/冲突包/oracle」等内部词；不得用英文写总结。"
         )
 
     def _target_family_for_scenario(

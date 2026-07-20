@@ -1,9 +1,11 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.routers.openai_metadata import build_openai_adapter_metadata
+from app.core.dependencies import create_session_with_quota, ensure_session_access
 from app.core.visa_families import validate_declared_family
 from app.db.session import get_db
 from app.repositories.session_repo import SessionRepository
@@ -15,7 +17,6 @@ from app.services.message_service import (
     SessionNotFoundError,
 )
 from app.services.runtime_errors import ModelRuntimeError
-from app.api.routers.openai_metadata import build_openai_adapter_metadata
 from app.services.session_transcript_service import SessionTranscriptService
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["openai-compat"])
@@ -35,6 +36,7 @@ class CompatRequest(BaseModel):
 @router.post("")
 def chat_completions(
     payload: CompatRequest,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -54,8 +56,14 @@ def chat_completions(
         idempotency_key=idempotency_key,
         payload_fingerprint=transcript.request_payload_fingerprint(payload.messages),
     )
-    session_id = payload.metadata.get("session_id")
+    raw_session_id = payload.metadata.get("session_id")
+    session_id = (
+        raw_session_id.strip()
+        if isinstance(raw_session_id, str) and raw_session_id.strip()
+        else None
+    )
     if session_id:
+        ensure_session_access(session_id, request, db, allow_machine_api=True)
         session_record = session_repo.get(session_id)
         if session_record is None:
             raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
@@ -69,6 +77,12 @@ def chat_completions(
             else None
         )
         if idempotent_turn is not None:
+            ensure_session_access(
+                idempotent_turn.session_id,
+                request,
+                db,
+                allow_machine_api=True,
+            )
             session_record = session_repo.get(idempotent_turn.session_id)
             if session_record is None:
                 raise HTTPException(
@@ -84,9 +98,12 @@ def chat_completions(
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-            session_record = session_repo.create(
+            session_record = create_session_with_quota(
+                request=request,
+                db=db,
                 declared_family=declared_family,
                 gate_status_json=GateService().initial_gate_status(declared_family),
+                repo=session_repo,
             )
             context_mode = "new_session"
 

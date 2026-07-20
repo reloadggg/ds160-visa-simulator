@@ -926,6 +926,7 @@ export default function AdminPage() {
                     ["wx_entry_enabled", "微信端入口（默认关闭）"],
                     ["debug_console_enabled", "开放调试台"],
                     ["debug_material_enabled", "开放调试材料"],
+                    ["practice_materials_enabled", "练习材料生成（产品功能，默认开启）"],
                     ["rag_status_user_visible", "用户侧显示知识库状态"],
                   ] as const
                 ).map(([key, label]) => (

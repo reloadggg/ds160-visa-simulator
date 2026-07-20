@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     app_auth_protect_docs: bool = True
     app_auth_password_user_fallback_enabled: bool = False
     app_compat_api_key: str | None = None
+    # When false (default), ignore client-supplied X-Forwarded-For / X-Real-IP
+    # for rate-limit and audit IP attribution; use the direct TCP peer only.
+    # Prefer CF-Connecting-IP when present regardless of this flag.
+    # Enable only when the app is behind a reverse proxy that overwrites/appends
+    # these headers and untrusted clients cannot reach the origin directly.
+    trust_x_forwarded_for: bool = False
     allow_debug_fill: bool = False
     allow_runtime_debug: bool = False
     allow_user_model_config: bool = False
@@ -79,6 +85,10 @@ class Settings(BaseSettings):
     rag_allow_third_party_reference: bool = False
     rag_source_manifest: str = "docs/rag/us-visa-source-manifest-100plus.md"
     rag_raw_doc_dir: str = "data/rag/us_visa/raw"
+    # When True (default), gate readiness requires material understanding
+    # completed (or skipped_legacy). Set False for offline demos where
+    # parsed+legacy evidence is enough.
+    material_understanding_required: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -7,7 +7,7 @@ import ts from "typescript"
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-function loadTypeScriptModule(relativePath) {
+function loadTypeScriptModule(relativePath, runtimeRequires = {}) {
   const filename = resolve(rootDir, relativePath)
   const source = readFileSync(filename, "utf8")
   const compiled = ts.transpileModule(source, {
@@ -19,13 +19,22 @@ function loadTypeScriptModule(relativePath) {
     fileName: filename,
   })
   const cjsModule = { exports: {} }
-  const evaluate = new Function("exports", "module", compiled.outputText)
-  evaluate(cjsModule.exports, cjsModule)
+  const requireShim = (specifier) => {
+    if (Object.hasOwn(runtimeRequires, specifier)) {
+      return runtimeRequires[specifier]
+    }
+    throw new Error(`Unexpected runtime require from ${relativePath}: ${specifier}`)
+  }
+  const evaluate = new Function("exports", "module", "require", compiled.outputText)
+  evaluate(cjsModule.exports, cjsModule, requireShim)
   return cjsModule.exports
 }
 
+const apiConfig = loadTypeScriptModule("lib/api/config.ts")
 const policy = loadTypeScriptModule("lib/upload-feedback-policy.ts")
-const mappers = loadTypeScriptModule("lib/api/mappers.ts")
+const mappers = loadTypeScriptModule("lib/api/mappers.ts", {
+  "./config": apiConfig,
+})
 
 test("file upload mapper exposes case board refresh as frontend contract", () => {
   const mapped = mappers.mapFileUploadResponse({
@@ -161,6 +170,38 @@ test("queued material understanding stays outside transcript as progress", () =>
       latest_material: {
         understanding_status: "queued",
       },
+    },
+  }
+
+  assert.equal(policy.isMaterialUnderstandingFailed(response), false)
+  assert.deepEqual(
+    policy.buildMaterialUnderstandingActivity("i20.pdf", response),
+    {
+      content: "i20.pdf 已收到，案例理解正在更新，可以继续对话。",
+      status: "sending",
+    },
+  )
+})
+
+test("understanding_error alone while queued is not treated as failed (F16)", () => {
+  const response = {
+    understanding_status: "queued",
+    understanding_error: {
+      code: "stale_retry",
+      message: "previous attempt failed",
+    },
+    case_board_delta: {
+      latest_material: {
+        understanding_status: "processing",
+        understanding_error: {
+          code: "stale_retry",
+          message: "previous attempt failed",
+        },
+      },
+    },
+    caseBoardRefresh: {
+      failureMessage: "previous attempt failed",
+      understandingStatus: "processing",
     },
   }
 

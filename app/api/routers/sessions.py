@@ -10,7 +10,11 @@ from pydantic import BaseModel
 from app.core.settings import settings
 from app.core.visa_families import validate_declared_family
 from app.db.session import get_db, session_factory_from_session
-from app.core.dependencies import get_session_repo, require_session_access
+from app.core.dependencies import (
+    create_session_with_quota,
+    get_session_repo,
+    require_session_access,
+)
 from app.repositories.session_repo import SessionRepository
 from app.services.debug_fill_service import DebugFillService
 from app.services.debug_material_bundle_service import DebugMaterialBundleService
@@ -29,7 +33,6 @@ from app.db.models import (
     SessionRecord,
     SessionTurnRecord,
 )
-from app.services.access_key_service import AccessKeyService
 from app.services.admin_config_service import AdminConfigService
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
@@ -58,6 +61,96 @@ def _debug_material_enabled(db: Session) -> bool:
     return AdminConfigService(db).debug_material_enabled()
 
 
+def _practice_materials_enabled(db: Session) -> bool:
+    return AdminConfigService(db).practice_materials_enabled()
+
+
+def _material_generation_enabled(db: Session) -> bool:
+    return AdminConfigService(db).material_generation_enabled()
+
+
+def _sse_event(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _run_material_bundle_stream(
+    *,
+    session_id: str,
+    payload: DebugMaterialBundleRequest,
+    db: Session,
+    progress_stage: str,
+    progress_message: str,
+    error_prefix: str,
+) -> StreamingResponse:
+    stream_session_factory = session_factory_from_session(db)
+
+    def event_stream() -> Iterator[str]:
+        yield _sse_event("accepted", {"session_id": session_id})
+        event_queue: Queue[tuple[str, dict]] = Queue()
+
+        def run_bundle_generation() -> None:
+            worker_db = stream_session_factory()
+            try:
+                for event in DebugMaterialBundleService(
+                    worker_db,
+                ).create_bundle_events(
+                    session_id,
+                    scenario=payload.scenario,
+                    include_synthetic_user_turns=payload.include_synthetic_user_turns,
+                    seed_text=payload.seed_text,
+                    generation_mode=payload.generation_mode,
+                    include_accepted=False,
+                ):
+                    event_queue.put((event.event, event.data))
+            except LookupError as exc:
+                event_queue.put(("error", {"status": 404, "detail": str(exc)}))
+            except ValueError as exc:
+                event_queue.put(("error", {"status": 422, "detail": str(exc)}))
+            except ModelRuntimeError as exc:
+                event_queue.put(("error", exc.to_public_payload()))
+            except Exception as exc:
+                event_queue.put(
+                    (
+                        "error",
+                        {
+                            "status": 500,
+                            "detail": f"{error_prefix}: {exc}",
+                        },
+                    )
+                )
+            finally:
+                worker_db.close()
+
+        Thread(target=run_bundle_generation, daemon=True).start()
+
+        while True:
+            try:
+                event, data = event_queue.get(timeout=15)
+            except Empty:
+                yield _sse_event(
+                    "progress",
+                    {
+                        "stage": progress_stage,
+                        "message": progress_message,
+                    },
+                )
+                continue
+
+            yield _sse_event(event, data)
+            if event in {"final", "error"}:
+                return
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("", status_code=201)
 def create_session(
     payload: CreateSessionRequest,
@@ -71,25 +164,13 @@ def create_session(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     gate_status = GateService().initial_gate_status(declared_family)
-    record = repo.create(
+    record = create_session_with_quota(
+        request=request,
+        db=db,
         declared_family=declared_family,
         gate_status_json=gate_status,
+        repo=repo,
     )
-    # Middleware does not currently attach the record, so read from cookie-bound
-    # auth state only when the user logged in with an access key.
-    from app.core.simple_auth import get_current_auth_session
-
-    current_auth = get_current_auth_session(request, db, touch=False)
-    if current_auth is not None and current_auth.access_key_id:
-        try:
-            AccessKeyService(db).consume_session_quota(
-                key_id=current_auth.access_key_id,
-                session_id=record.session_id,
-            )
-        except PermissionError as exc:
-            db.delete(record)
-            db.commit()
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {
         "session_id": record.session_id,
         "phase_state": record.phase_state,
@@ -277,10 +358,6 @@ def debug_create_material_bundle(
         ) from exc
 
 
-def _sse_event(event: str, payload: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
 @router.post("/{session_id}/debug/material-bundles/stream")
 def debug_create_material_bundle_stream(
     session_id: str,
@@ -290,71 +367,67 @@ def debug_create_material_bundle_stream(
 ) -> StreamingResponse:
     if not _debug_material_enabled(db):
         raise HTTPException(status_code=403, detail="debug fill is disabled")
-    stream_session_factory = session_factory_from_session(db)
+    return _run_material_bundle_stream(
+        session_id=session_id,
+        payload=payload,
+        db=db,
+        progress_stage="debug_material_bundle",
+        progress_message="材料包仍在生成或核对中。",
+        error_prefix="debug material bundle failed",
+    )
 
-    def event_stream() -> Iterator[str]:
-        yield _sse_event("accepted", {"session_id": session_id})
-        event_queue: Queue[tuple[str, dict]] = Queue()
 
-        def run_bundle_generation() -> None:
-            worker_db = stream_session_factory()
-            try:
-                for event in DebugMaterialBundleService(
-                    worker_db,
-                ).create_bundle_events(
-                    session_id,
-                    scenario=payload.scenario,
-                    include_synthetic_user_turns=payload.include_synthetic_user_turns,
-                    seed_text=payload.seed_text,
-                    generation_mode=payload.generation_mode,
-                    include_accepted=False,
-                ):
-                    event_queue.put((event.event, event.data))
-            except LookupError as exc:
-                event_queue.put(("error", {"status": 404, "detail": str(exc)}))
-            except ValueError as exc:
-                event_queue.put(("error", {"status": 422, "detail": str(exc)}))
-            except ModelRuntimeError as exc:
-                event_queue.put(("error", exc.to_public_payload()))
-            except Exception as exc:
-                event_queue.put(
-                    (
-                        "error",
-                        {
-                            "status": 500,
-                            "detail": f"debug material bundle failed: {exc}",
-                        },
-                    )
-                )
-            finally:
-                worker_db.close()
+@router.post("/{session_id}/practice/material-bundles")
+def practice_create_material_bundle(
+    session_id: str,
+    payload: DebugMaterialBundleRequest,
+    _: None = Depends(require_session_access),
+    db: Session = Depends(get_db),
+) -> dict:
+    """User-facing practice materials (same generator as debug; product gate)."""
+    if not _material_generation_enabled(db):
+        raise HTTPException(
+            status_code=403,
+            detail="practice materials are disabled",
+        )
+    try:
+        return DebugMaterialBundleService(db).create_bundle(
+            session_id,
+            scenario=payload.scenario,
+            include_synthetic_user_turns=payload.include_synthetic_user_turns,
+            seed_text=payload.seed_text,
+            generation_mode=payload.generation_mode,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ModelRuntimeError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.to_public_payload(),
+        ) from exc
 
-        Thread(target=run_bundle_generation, daemon=True).start()
 
-        while True:
-            try:
-                event, data = event_queue.get(timeout=15)
-            except Empty:
-                yield _sse_event(
-                    "progress",
-                    {
-                        "stage": "debug_material_bundle",
-                        "message": "材料包仍在生成或核对中。",
-                    },
-                )
-                continue
-
-            yield _sse_event(event, data)
-            if event in {"final", "error"}:
-                return
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+@router.post("/{session_id}/practice/material-bundles/stream")
+def practice_create_material_bundle_stream(
+    session_id: str,
+    payload: DebugMaterialBundleRequest,
+    _: None = Depends(require_session_access),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    if not _material_generation_enabled(db):
+        raise HTTPException(
+            status_code=403,
+            detail="practice materials are disabled",
+        )
+    return _run_material_bundle_stream(
+        session_id=session_id,
+        payload=payload,
+        db=db,
+        progress_stage="practice_material_bundle",
+        progress_message="练习材料仍在生成中，请稍候。",
+        error_prefix="practice material bundle failed",
     )
 
 

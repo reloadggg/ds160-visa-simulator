@@ -79,10 +79,10 @@ export function VisaSelector({
       <div className="w-full max-w-2xl">
         <div className="text-center mb-8">
           <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl bg-primary/10">
-            <Image src="/brand-icon.svg" alt="面签模拟器" width={64} height={64} className="h-16 w-16" />
+            <Image src="/brand-icon.svg" alt="DS-160 模拟面签" width={64} height={64} className="h-16 w-16" />
           </div>
           <h1 className="text-2xl font-semibold text-foreground mb-2">
-            面签模拟器
+            DS-160 模拟面签
           </h1>
           <p className="text-muted-foreground">
             选择您要模拟的签证类型，确认后会创建一个新的面签会话

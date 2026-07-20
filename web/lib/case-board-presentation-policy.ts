@@ -24,12 +24,16 @@ export interface CaseUnderstandingPresentation {
   latestNextMove: InterviewNextMove | null
 }
 
+function caseBoardProofPoints(caseBoard: CaseBoardDelta): CaseProofPoint[] {
+  return caseBoard.open_proof_points ?? caseBoard.proof_points ?? []
+}
+
 function hasCaseBoardState(caseBoard?: CaseBoardDelta | null): caseBoard is CaseBoardDelta {
   return Boolean(
     caseBoard &&
       ((caseBoard.claims?.length ?? 0) > 0 ||
         (caseBoard.evidence_cards?.length ?? 0) > 0 ||
-        (caseBoard.open_proof_points?.length ?? 0) > 0 ||
+        caseBoardProofPoints(caseBoard).length > 0 ||
         (caseBoard.conflicts?.length ?? 0) > 0 ||
         caseBoard.latest_material ||
         caseBoard.next_move),
@@ -55,11 +59,12 @@ export function selectCaseUnderstandingPresentation(
 ): CaseUnderstandingPresentation {
   if (hasCaseBoardState(caseBoard)) {
     const latestMaterial = caseBoard.latest_material ?? null
+    const proofPoints = caseBoardProofPoints(caseBoard)
     return {
       source: "case_board",
       claims: caseBoard.claims ?? [],
       evidenceCards: caseBoard.evidence_cards ?? [],
-      proofPoints: caseBoard.open_proof_points ?? [],
+      proofPoints,
       conflicts: caseBoard.conflicts ?? [],
       latestMaterialName:
         latestMaterial?.document_type_label ??
@@ -72,6 +77,7 @@ export function selectCaseUnderstandingPresentation(
               evidence_cards: [],
               claims: [],
               open_proof_points: [],
+              proof_points: [],
               conflicts: [],
             },
           }
@@ -85,7 +91,13 @@ export function selectCaseUnderstandingPresentation(
     source: "materials",
     claims: materials.flatMap((material) => material.claims ?? []),
     evidenceCards: materials.flatMap((material) => material.evidence_cards ?? []),
-    proofPoints: materials.flatMap((material) => material.proof_points ?? []),
+    proofPoints: materials.flatMap(
+      (material) =>
+        material.proof_points ??
+        material.case_board_delta?.open_proof_points ??
+        material.case_board_delta?.proof_points ??
+        [],
+    ),
     conflicts: materials.flatMap((material) => material.conflicts ?? []),
     latestMaterialName: latestMaterial
       ? latestMaterial.document_type_label ?? latestMaterial.name

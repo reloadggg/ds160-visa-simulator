@@ -34,10 +34,10 @@ export function Sidebar({
       <div className="border-b border-white/60 px-5 pb-6 pt-12 dark:border-white/10">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-white/70 bg-blue-50/80 shadow-sm dark:border-white/12 dark:bg-white/[0.06] dark:shadow-inner dark:shadow-white/10">
-            <Image src="/brand-icon.svg" alt="面签模拟器" width={40} height={40} className="h-10 w-10" />
+            <Image src="/brand-icon.svg" alt="DS-160 模拟面签" width={40} height={40} className="h-10 w-10" />
           </div>
           <div className="min-w-0">
-            <h1 className="truncate font-semibold text-foreground">面签模拟器</h1>
+            <h1 className="truncate font-semibold text-foreground">DS-160 模拟面签</h1>
             <p className="text-xs font-mono text-muted-foreground">{APP_VERSION_LABEL}</p>
           </div>
         </div>

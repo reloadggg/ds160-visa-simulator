@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import SessionRecord
@@ -39,6 +40,15 @@ class SessionRepository:
 
     def get(self, session_id: str) -> SessionRecord | None:
         return self.db.get(SessionRecord, session_id)
+
+    def get_for_update(self, session_id: str) -> SessionRecord | None:
+        """Load session row with SELECT ... FOR UPDATE (no-op lock on SQLite)."""
+        statement = (
+            select(SessionRecord)
+            .where(SessionRecord.session_id == session_id)
+            .with_for_update()
+        )
+        return self.db.scalars(statement).first()
 
     def append_runtime_history(
         self,

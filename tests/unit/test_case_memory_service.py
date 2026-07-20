@@ -1097,3 +1097,194 @@ def test_case_memory_service_tombstones_document_evidence(tmp_path) -> None:
     finally:
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def test_rebuild_and_persist_fixes_sticky_snapshot_after_artifact_inject(
+    tmp_path,
+) -> None:
+    """Simulate package import / debug inject: artifact mutates without rebuild.
+
+    A prior empty snapshot must not hide new material claims until rebuild.
+    """
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-sticky-rebuild.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-sticky", declared_family="f1"))
+            db.commit()
+
+        with testing_session_local() as db:
+            service = CaseMemoryService(db)
+            empty = service.get_or_build_snapshot("sess-sticky")
+            db.commit()
+            assert empty.claims == []
+            assert empty.evidence_cards == []
+
+        with testing_session_local() as db:
+            document = DocumentRecord(
+                document_id="doc-injected",
+                session_id="sess-sticky",
+                filename="i20.pdf",
+                status="parsed",
+                artifact_json={
+                    "document_type": "i20",
+                    "understanding_status": "completed",
+                    "material_understanding_result": MaterialUnderstandingResult(
+                        evidence_cards=[
+                            EvidenceCard(
+                                evidence_id="ev-school",
+                                source_type="uploaded_file",
+                                document_id="doc-injected",
+                                excerpt="School Name: Sticky U",
+                                claim_refs=["claim-school"],
+                                confidence=0.9,
+                            )
+                        ],
+                        extracted_claims=[
+                            CaseClaim(
+                                claim_id="claim-school",
+                                field_path="/education/school_name",
+                                value="Sticky U",
+                                status="documented",
+                                supporting_evidence_ids=["ev-school"],
+                                confidence=0.9,
+                            )
+                        ],
+                        proof_points=[
+                            ProofPoint(
+                                proof_point_id="proof-school",
+                                visa_family="f1",
+                                question="Why this school?",
+                                status="supported",
+                                why_it_matters="School choice is a core F-1 narrative.",
+                                claim_refs=["claim-school"],
+                                evidence_refs=["ev-school"],
+                            )
+                        ],
+                        confidence=0.9,
+                    ).model_dump(mode="json"),
+                },
+                raw_bytes=b"i20",
+            )
+            db.add(document)
+            db.commit()
+
+        with testing_session_local() as db:
+            service = CaseMemoryService(db)
+            sticky = service.get_or_build_snapshot("sess-sticky")
+            assert sticky.claims == [], "cached empty snapshot must still be sticky"
+
+            rebuilt = service.rebuild_and_persist("sess-sticky")
+            db.commit()
+            assert rebuilt is not None
+            assert [claim.claim_id for claim in rebuilt.claims] == ["claim-school"]
+            assert [card.evidence_id for card in rebuilt.evidence_cards] == [
+                "ev-school"
+            ]
+
+            board = service.public_case_board("sess-sticky")
+            assert [item["claim_id"] for item in board["claims"]] == ["claim-school"]
+            assert board["proof_points"] == board["open_proof_points"]
+            assert board["proof_points"][0]["proof_point_id"] == "proof-school"
+
+            persisted = db.get(CaseMemorySnapshotRecord, "sess-sticky")
+            assert persisted is not None
+            assert persisted.snapshot_json["claims"][0]["claim_id"] == "claim-school"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_invalidate_snapshot_forces_rebuild_on_next_read(tmp_path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-invalidate.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-inv", declared_family="f1"))
+            db.commit()
+
+        with testing_session_local() as db:
+            service = CaseMemoryService(db)
+            service.get_or_build_snapshot("sess-inv")
+            db.commit()
+            assert db.get(CaseMemorySnapshotRecord, "sess-inv") is not None
+
+            service.invalidate_snapshot("sess-inv")
+            db.commit()
+            assert db.get(CaseMemorySnapshotRecord, "sess-inv") is None
+
+            # Re-read rebuilds and re-persists
+            service.get_or_build_snapshot("sess-inv")
+            db.commit()
+            assert db.get(CaseMemorySnapshotRecord, "sess-inv") is not None
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_build_board_emits_proof_points_and_open_proof_points_alias(
+    tmp_path,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'case-memory-proof-alias.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session_local = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+
+    try:
+        with testing_session_local() as db:
+            db.add(SessionRecord(session_id="sess-1", declared_family="f1"))
+            db.add(
+                DocumentRecord(
+                    document_id="doc-1",
+                    session_id="sess-1",
+                    filename="funding.pdf",
+                    artifact_json={"document_type": "funding_proof"},
+                    raw_bytes=b"funding",
+                )
+            )
+            db.commit()
+
+        result = MaterialUnderstandingResult(
+            proof_points=[
+                ProofPoint(
+                    proof_point_id="funding_proof",
+                    visa_family="f1",
+                    question="Show funding support",
+                    status="missing",
+                    why_it_matters="Funding proof is required for F-1 cases.",
+                )
+            ],
+            confidence=0.5,
+        )
+        with testing_session_local() as db:
+            service = CaseMemoryService(db)
+            service.upsert_material_understanding(
+                document_id="doc-1",
+                job=MaterialUnderstandingJob(
+                    job_id="job-1",
+                    document_id="doc-1",
+                    status="completed",
+                    result=result,
+                ),
+            )
+            db.commit()
+            board = service.public_case_board("sess-1")
+            assert "proof_points" in board
+            assert "open_proof_points" in board
+            assert board["proof_points"] == board["open_proof_points"]
+            assert board["proof_points"][0]["proof_point_id"] == "funding_proof"
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

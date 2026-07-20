@@ -28,7 +28,7 @@ test("workbench exposes current-key logout from session and pre-session chrome",
   assert.match(source, /await logout\(\)/)
   assert.match(source, /router\.replace\("\/"\)/)
   assert.match(source, /onLogout=\{\(\) => void handleLogoutToHome\(\)\}/)
-  assert.match(source, /退出当前 Key/)
+  assert.match(source, /退出当前密钥/)
 })
 
 test("top bar and settings panel provide switch-account actions", () => {
@@ -36,8 +36,8 @@ test("top bar and settings panel provide switch-account actions", () => {
   const settings = readProjectFile("components/ds160/settings-panel.tsx")
 
   assert.match(topBar, /onLogout: \(\) => void/)
-  assert.match(topBar, /退出当前 Key/)
+  assert.match(topBar, /退出当前密钥/)
   assert.match(settings, /当前授权 Key/)
-  assert.match(settings, /退出当前 Key \/ 切换账号/)
+  assert.match(settings, /退出当前密钥 \/ 切换账号/)
   assert.match(settings, /Key ID：\$\{accessKeyQuota\.key_id\}/)
 })

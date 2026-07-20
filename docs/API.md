@@ -524,6 +524,8 @@ data: {"assistant_message":"...","requested_documents":[]}
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
+| `GET` | `/v1/sessions/{session_id}/files` | Session access | 列出会话材料（含 understanding_status） |
+| `GET` | `/v1/sessions/{session_id}/documents` | Session access | 同上（恢复会话 / 轮询理解状态） |
 | `POST` | `/v1/sessions/{session_id}/files` | Session access | 上传材料 |
 | `GET` | `/v1/sessions/{session_id}/files/{document_id}/content` | Session access | 预览/下载原始材料内容 |
 | `DELETE` | `/v1/sessions/{session_id}/files/{document_id}` | Session access | tombstone 一份材料 |
@@ -532,6 +534,36 @@ data: {"assistant_message":"...","requested_documents":[]}
 | `POST` | `/v1/wx/upload-tickets/{ticket}/files` | Short-lived ticket | 用 ticket 上传微信聊天文件，返回 `202` |
 | `GET` | `/v1/material-packages` | Session access + debug material switch | 列出已验证 material package archive |
 | `POST` | `/v1/sessions/{session_id}/material-packages/{package_id}/import` | Session access + debug material switch | 导入已验证 material package |
+
+#### `GET /v1/sessions/{session_id}/documents` / `GET /v1/sessions/{session_id}/files`
+
+列出当前会话材料，供会话恢复与前端轮询 `understanding_status`。两条路径返回同一 payload。
+
+```json
+{
+  "session_id":"sess_abc123",
+  "count":1,
+  "documents":[
+    {
+      "document_id":"doc_abc123",
+      "filename":"i20.pdf",
+      "status":"parsed",
+      "understanding_status":"completed",
+      "document_type":"i20",
+      "uploaded_at":null,
+      "content_url":"/v1/sessions/sess_abc123/files/doc_abc123/content",
+      "case_board_delta":{"latest_material":{"document_id":"doc_abc123"},"claim_count":1,"evidence_card_count":1},
+      "tombstoned":false
+    }
+  ]
+}
+```
+
+Notes:
+
+- 需要 `require_session_access`；
+- `understanding_status` 常见值：`queued` / `processing` / `completed` / `failed` / `skipped_legacy`；
+- tombstoned 材料仍会出现在列表中（`status=tombstoned`，`tombstoned=true`），便于 UI 显示删除结果。
 
 #### `POST /v1/sessions/{session_id}/files`
 
@@ -685,8 +717,9 @@ Ticket-specific errors:
 
 边界要分清：
 
+- **practice material generation（产品功能）**：`/practice/material-bundles` 与 `/practice/material-bundles/stream`，由 `practice_materials_enabled` 控制（**默认开启**），面向普通用户用文字描述生成**虚构练习材料**；响应含 `user_summary_zh`、`document_briefs_zh`、`is_practice_material`。
 - **material package archive/list/import**：读取和导入已经验证过的模板资产，可用于受控演示、回归验证和客户 demo 初始化。
-- **debug material generation**：`/debug/material-bundles` 和 `/debug/fill-current-gap` 这类本地/受控测试能力，用来生成 synthetic/debug materials；不要作为公开生产用户功能开放。
+- **debug material generation**：`/debug/material-bundles` 和 `/debug/fill-current-gap` 这类本地/受控测试能力，用来生成 synthetic/debug materials；与 practice 开关独立，不要与产品入口混用。
 - 当前 archive/list/import 仍受 `debug_material_enabled` / `ALLOW_DEBUG_FILL` 保护开关约束；如果关闭，会返回 `403`，这是预期的安全边界。
 
 ```json
@@ -724,6 +757,9 @@ Ticket-specific errors:
 | `GET` | `/v1/sessions/{session_id}/reports/export` | Session access | 导出 session 快照 |
 
 #### `GET /v1/sessions/{session_id}/reports/user`
+
+`requested_documents` 与消息 turn 响应对齐（面试官当前要求的材料类型）。Case Board 中 `proof_points` 为规范字段，`open_proof_points` 为同内容兼容别名。
+
 
 ```json
 {
@@ -1029,9 +1065,24 @@ Failure still returns a structured body instead of raising FastAPI error for mos
 }
 ```
 
-### 7.11 Debug endpoints
+### 7.11 Practice material endpoints（产品功能）
 
-Debug endpoints 只面向本地或受控测试环境。`debug/runtime` 是只读观测；`debug/material-bundles` 与 `debug/fill-current-gap` 会生成或写入 synthetic/debug materials，不能当成普通公开 demo 用户能力。公开演示如果需要稳定材料，应优先使用已经验证并发布的 material package archive，而不是现场生成 debug material。
+普通用户可在工作台用背景描述生成虚构练习材料，无需上传真实证件。由后台 `practice_materials_enabled` 控制，**默认 `true`**，与 debug console / debug material 开关解耦。
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/v1/sessions/{session_id}/practice/material-bundles` | Session access + practice materials enabled | 非流式生成练习材料包 |
+| `POST` | `/v1/sessions/{session_id}/practice/material-bundles/stream` | Session access + practice materials enabled | SSE 进度 + 最终练习材料包 |
+
+Notes:
+
+- 关闭 `practice_materials_enabled` 时返回 `403`（文案含 practice materials are disabled），前端应隐藏入口；
+- 成功响应建议包含：`user_summary_zh`（简体中文总述）、`document_briefs_zh`、`is_practice_material: true`、documents / evidence；
+- `user_summary_zh` 不得泄露 oracle / conflict 调试标签；材料仅供模拟面签。
+
+### 7.12 Debug endpoints
+
+Debug endpoints 只面向本地或受控测试环境。`debug/runtime` 是只读观测；`debug/material-bundles` 与 `debug/fill-current-gap` 会生成或写入 synthetic/debug materials，**不能**替代上一节的 practice 产品入口。公开演示若需要稳定材料，优先用已验证 material package archive。
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
@@ -1268,6 +1319,8 @@ PATCH  /v1/admin/settings
 POST   /v1/admin/model-config/models
 POST   /v1/admin/model-config/test
 GET    /v1/admin/rag/status
+POST   /v1/sessions/{session_id}/practice/material-bundles
+POST   /v1/sessions/{session_id}/practice/material-bundles/stream
 GET    /v1/sessions/{session_id}/debug/runtime
 POST   /v1/sessions/{session_id}/debug/fill-current-gap
 POST   /v1/sessions/{session_id}/debug/material-bundles

@@ -3,13 +3,23 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.settings import settings
 from app.db.models import DocumentRecord, JobRecord, SessionRecord
 from app.domain.document_types import normalize_document_type
 from app.domain.evidence import DocumentAssessment
 from app.domain.runtime import GateOverallStatus
+from app.repositories.document_repo import DocumentRepository
 from app.repositories.session_repo import SessionRepository
 
 UNDERSTANDING_JOB_KINDS = {"case_understanding"}
+_READY_UNDERSTANDING_STATUSES = frozenset({"completed", "skipped_legacy"})
+_TERMINAL_GOVERNOR_DECISIONS = frozenset(
+    {"simulated_refusal", "passed", "not_passed", "refused"}
+)
+_TERMINAL_PHASE_STATES = frozenset({"completed", "session_closed"})
+_TERMINAL_INTERVIEWER_STATUSES = frozenset(
+    {"simulated_refusal", "passed", "not_passed", "refused", "completed"}
+)
 
 
 class GateRuntimeService:
@@ -29,7 +39,8 @@ class GateRuntimeService:
             dict(item) for item in gate_status.get("required_documents", [])
         ]
         if record.declared_family is None:
-            record.phase_state = "intake"
+            if not self.is_terminal_session(record):
+                record.phase_state = "intake"
             record.gate_status_json = {
                 "declared_family": None,
                 "scenario_key": None,
@@ -67,7 +78,14 @@ class GateRuntimeService:
             ]
             is_uploaded = bool(matched_documents)
             is_parsed = any(document.status == "parsed" for document in matched_documents)
-            meets_minimum_fields = self._meets_minimum_fields(record, doc_type, is_parsed)
+            is_material_ready = any(
+                self._document_material_ready(document) for document in matched_documents
+            )
+            meets_minimum_fields = self._meets_minimum_fields(
+                record,
+                doc_type,
+                is_material_ready=is_material_ready,
+            )
 
             if meets_minimum_fields:
                 item["status"] = "ready"
@@ -82,10 +100,18 @@ class GateRuntimeService:
 
             if not meets_minimum_fields:
                 all_required_ready = False
-            if is_uploaded and not is_parsed:
-                has_waiting_parse = True
             if matched_jobs:
                 has_waiting_parse = True
+            elif is_uploaded and not is_parsed:
+                has_waiting_parse = True
+            elif is_uploaded and not is_material_ready:
+                # Parsed but understanding still in-flight → waiting.
+                # Failed understanding stays pending (not ready), not waiting forever.
+                if any(
+                    self._understanding_in_flight(document)
+                    for document in matched_documents
+                ):
+                    has_waiting_parse = True
 
         if all_required_ready:
             gate_status["status"] = GateOverallStatus.READY_FOR_INTERVIEW
@@ -93,11 +119,31 @@ class GateRuntimeService:
             gate_status["status"] = GateOverallStatus.WAITING_FOR_PARSE
         else:
             gate_status["status"] = GateOverallStatus.PENDING_DOCUMENTS
-        record.phase_state = "interview"
+        # Terminal sessions must stay closed; parse/material refresh must not
+        # reopen interview phase after refusal or completion.
+        if not self.is_terminal_session(record):
+            record.phase_state = "interview"
 
         gate_status["required_documents"] = required_documents
         record.gate_status_json = gate_status
         return self._persist(record, save=save)
+
+    @staticmethod
+    def is_terminal_session(record: SessionRecord) -> bool:
+        if record.phase_state in _TERMINAL_PHASE_STATES:
+            return True
+        if record.current_governor_decision in _TERMINAL_GOVERNOR_DECISIONS:
+            return True
+        interviewer_state = record.interviewer_state_json or {}
+        if interviewer_state.get("status") in _TERMINAL_INTERVIEWER_STATUSES:
+            return True
+        if interviewer_state.get("interview_result") in {
+            "passed",
+            "not_passed",
+            "refused",
+        }:
+            return True
+        return False
 
     def build_gate_response(self, record: SessionRecord) -> dict:
         gate_status = record.gate_status_json or {}
@@ -214,25 +260,47 @@ class GateRuntimeService:
         return False
 
     def _counts_toward_gate(self, document: DocumentRecord) -> bool:
-        artifact = dict(document.artifact_json or {})
-        tombstone = artifact.get("case_memory_tombstone")
-        if document.status in {"deleted", "tombstoned"}:
-            return False
-        if isinstance(tombstone, dict) and tombstone.get("status") == "tombstoned":
+        if DocumentRepository.is_document_tombstoned(document):
             return False
         if DocumentAssessment.from_artifact(document.artifact_json).counts_toward_gate is False:
             return False
         return True
 
+    def _document_understanding_status(self, document: DocumentRecord) -> str | None:
+        artifact = dict(document.artifact_json or {})
+        status = artifact.get("understanding_status")
+        if isinstance(status, str) and status.strip():
+            return status.strip()
+        return None
+
+    def _understanding_in_flight(self, document: DocumentRecord) -> bool:
+        status = self._document_understanding_status(document)
+        return status in {None, "queued", "processing"}
+
+    def _document_material_ready(self, document: DocumentRecord) -> bool:
+        """True when the document can satisfy a gate item.
+
+        Default: status must be ``parsed`` and understanding completed (or
+        skipped_legacy). When ``material_understanding_required`` is False,
+        parsed alone is enough for offline demos.
+        """
+        if document.status != "parsed":
+            return False
+        if not settings.material_understanding_required:
+            return True
+        understanding_status = self._document_understanding_status(document)
+        return understanding_status in _READY_UNDERSTANDING_STATUSES
+
     def _meets_minimum_fields(
         self,
         record: SessionRecord,
         document_type: str,
-        is_parsed: bool,
+        *,
+        is_material_ready: bool,
     ) -> bool:
         if document_type != "funding_proof":
-            return is_parsed
-        if not is_parsed:
+            return is_material_ready
+        if not is_material_ready:
             return False
 
         profile_json = record.profile_json or {}

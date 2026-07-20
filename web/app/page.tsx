@@ -11,6 +11,7 @@ const DEFAULT_APP_CONFIG: AppConfig = {
   wx_entry_enabled: false,
   debug_console_enabled: false,
   debug_material_enabled: false,
+  practice_materials_enabled: true,
   user_model_config_enabled: false,
   rag_status_user_visible: false,
 }

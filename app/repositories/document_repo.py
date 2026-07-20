@@ -1,10 +1,13 @@
 from time import time_ns
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, load_only
 
 from app.db.models import DocumentRecord, JobRecord
+
+_ACTIVE_JOB_STATUSES = ("queued", "processing")
+_CLAIM_SCAN_LIMIT = 32
 
 
 class DocumentRepository:
@@ -37,6 +40,16 @@ class DocumentRepository:
     def save_document(self, document: DocumentRecord) -> DocumentRecord:
         self.db.add(document)
         return document
+
+    @staticmethod
+    def is_document_tombstoned(document: DocumentRecord | None) -> bool:
+        if document is None:
+            return False
+        if document.status in {"deleted", "tombstoned"}:
+            return True
+        artifact = dict(document.artifact_json or {})
+        tombstone = artifact.get("case_memory_tombstone")
+        return isinstance(tombstone, dict) and tombstone.get("status") == "tombstoned"
 
     def list_session_documents(self, session_id: str) -> list[DocumentRecord]:
         return list(
@@ -93,18 +106,118 @@ class DocumentRepository:
         self.db.flush()
         return job
 
+    def cancel_jobs_for_document(
+        self,
+        document_id: str,
+        *,
+        statuses: tuple[str, ...] = _ACTIVE_JOB_STATUSES,
+    ) -> int:
+        jobs = list(
+            self.db.scalars(
+                select(JobRecord).where(JobRecord.status.in_(statuses))
+            )
+        )
+        cancelled = 0
+        for job in jobs:
+            payload = job.payload_json or {}
+            if payload.get("document_id") != document_id:
+                continue
+            job.status = "cancelled"
+            cancelled += 1
+        if cancelled:
+            self.db.flush()
+        return cancelled
+
+    def cancel_jobs_for_session(
+        self,
+        session_id: str,
+        *,
+        statuses: tuple[str, ...] = _ACTIVE_JOB_STATUSES,
+    ) -> int:
+        jobs = list(
+            self.db.scalars(
+                select(JobRecord).where(
+                    JobRecord.session_id == session_id,
+                    JobRecord.status.in_(statuses),
+                )
+            )
+        )
+        for job in jobs:
+            job.status = "cancelled"
+        if jobs:
+            self.db.flush()
+        return len(jobs)
+
+    def cancel_jobs_for_documents(
+        self,
+        document_ids: list[str],
+        *,
+        statuses: tuple[str, ...] = _ACTIVE_JOB_STATUSES,
+    ) -> int:
+        target_ids = {item for item in document_ids if item}
+        if not target_ids:
+            return 0
+        jobs = list(
+            self.db.scalars(
+                select(JobRecord).where(JobRecord.status.in_(statuses))
+            )
+        )
+        cancelled = 0
+        for job in jobs:
+            payload = job.payload_json or {}
+            if payload.get("document_id") not in target_ids:
+                continue
+            job.status = "cancelled"
+            cancelled += 1
+        if cancelled:
+            self.db.flush()
+        return cancelled
+
     def claim_next_job(self, kind: str) -> JobRecord | None:
-        job = self.db.scalar(
+        """Claim the oldest queued job whose document is not tombstoned.
+
+        Uses best-effort row locking (``FOR UPDATE SKIP LOCKED`` when the
+        dialect supports it) and an atomic status transition so concurrent
+        workers do not double-claim. Jobs for tombstoned documents are
+        cancelled and skipped.
+        """
+        statement = (
             select(JobRecord)
             .where(
                 JobRecord.kind == kind,
                 JobRecord.status == "queued",
             )
-            .order_by(JobRecord.job_id.asc()),
-            )
-        if job is None:
-            return None
+            .order_by(JobRecord.job_id.asc())
+            .limit(_CLAIM_SCAN_LIMIT)
+        )
+        try:
+            statement = statement.with_for_update(skip_locked=True)
+        except Exception:
+            # Dialects without SKIP LOCKED (e.g. some SQLite builds) fall back
+            # to the plain ordered select; atomic UPDATE still prevents double-claim.
+            pass
 
-        job.status = "processing"
-        self.db.flush()
-        return job
+        candidates = list(self.db.scalars(statement))
+        for job in candidates:
+            document_id = (job.payload_json or {}).get("document_id")
+            if document_id:
+                document = self.get_document(str(document_id))
+                if self.is_document_tombstoned(document):
+                    job.status = "cancelled"
+                    self.db.flush()
+                    continue
+
+            result = self.db.execute(
+                update(JobRecord)
+                .where(
+                    JobRecord.job_id == job.job_id,
+                    JobRecord.status == "queued",
+                )
+                .values(status="processing")
+            )
+            if result.rowcount != 1:
+                continue
+            self.db.flush()
+            self.db.refresh(job)
+            return job
+        return None

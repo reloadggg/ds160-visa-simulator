@@ -1115,7 +1115,7 @@ def test_debug_material_bundle_graph_runtime_does_not_leak_oracle_context(
     assert assistant_count == 0
     assert record is not None
     metadata = record.interviewer_state_json["last_material_refresh"]
-    assert metadata["agent_runtime"] == "graph"
+    assert metadata["agent_runtime"] == "native_interviewer"
     assert metadata["selected_public_runtime"] == "native_interviewer"
     assert metadata["runtime_execution"] == {
         "schema_version": "runtime.execution.v1",

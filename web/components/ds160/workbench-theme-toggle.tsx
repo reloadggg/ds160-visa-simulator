@@ -27,9 +27,11 @@ export function WorkbenchThemeToggle({
   )
   const { resolvedTheme, setTheme } = useTheme()
 
-  const isDark = mounted ? resolvedTheme !== "light" : true
+  // Default product theme is light; avoid flashing dark before hydration.
+  const isDark = mounted ? resolvedTheme === "dark" : false
   const nextTheme = isDark ? "light" : "dark"
-  const label = isDark ? "切换白色主题" : "切换黑色主题"
+  const label = isDark ? "切换到浅色主题" : "切换到深色主题"
+  const shortLabel = isDark ? "浅色" : "深色"
 
   return (
     <Button
@@ -41,16 +43,16 @@ export function WorkbenchThemeToggle({
       disabled={!mounted}
       onClick={() => setTheme(nextTheme)}
       className={cn(
-        "rounded-full border-white/70 bg-white/70 text-slate-700 shadow-sm hover:bg-white hover:text-slate-950",
-        "dark:border-white/12 dark:bg-white/[0.06] dark:text-slate-100 dark:shadow-black/20 dark:hover:border-cyan-200/35 dark:hover:bg-cyan-200/10 dark:hover:text-white",
+        "rounded-full border-border bg-card text-foreground shadow-sm",
+        "hover:bg-accent hover:text-accent-foreground",
+        "dark:border-white/12 dark:bg-white/[0.06] dark:text-slate-100",
+        "dark:hover:border-cyan-200/35 dark:hover:bg-cyan-200/10 dark:hover:text-white",
         className,
       )}
     >
-      {isDark ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+      {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       {compact ? null : (
-        <span className="hidden sm:inline">
-          {isDark ? "黑色主题" : "白色主题"}
-        </span>
+        <span className="hidden sm:inline">{shortLabel}</span>
       )}
     </Button>
   )

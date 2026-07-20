@@ -171,11 +171,13 @@ function WxWorkbenchShell() {
             <WxChatPanel
               messages={workbench.messages}
               isSending={workbench.isSending}
+              isSessionTerminal={workbench.isSessionTerminal}
               error={workbench.chatError}
               onSend={workbench.sendTextMessage}
+              onRetryMessage={workbench.retryMessage}
             />
             <WxUploadEntry
-              disabled={!workbench.sessionId}
+              disabled={!workbench.sessionId || workbench.isSessionTerminal}
               isUploading={workbench.isUploading}
               isNativeUploadStarting={workbench.isNativeUploadStarting}
               isRefreshingUploadTicket={workbench.isRefreshingUploadTicket}

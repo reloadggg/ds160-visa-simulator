@@ -1,6 +1,8 @@
+import { rewriteBackendContentUrl } from "./config"
 import type {
   AllowedAction,
   AllowedActionCode,
+  AttachmentKind,
   BackendDocumentAssessment,
   BackendCaseBoardDelta,
   BackendCaseBoardRefresh,
@@ -17,6 +19,8 @@ import type {
   BackendRequiredDocumentStatus,
   BackendRequiredPackage,
   BackendSession,
+  BackendSessionDocumentListItem,
+  BackendSessionDocumentListResponse,
   BackendSessionGateStatus,
   BackendUserReport,
   DocumentAssessment,
@@ -43,7 +47,11 @@ import type {
   RequiredPackage,
   RiskLevel,
   Session,
+  SessionDocumentCaseBoardSummary,
+  SessionDocumentListItem,
+  SessionDocumentListResponse,
   SessionGateStatus,
+  UploadedMaterial,
   UserReport,
   VisaFamily,
   VisaFamilyCode,
@@ -288,27 +296,67 @@ export function toDocumentLabel(documentType?: string | null): string {
   return DOCUMENT_LABELS[documentType] ?? humanizeUnknownCode("材料")
 }
 
+const HUMANIZE_EXACT_PHRASES: Record<string, string> = {
+  "formal interview": "正式问答",
+}
+
+/** Known Chinese labels already produced by this mapper (idempotency). */
+const HUMANIZE_KNOWN_LABELS = new Set<string>([
+  ...Object.values(DOCUMENT_LABELS),
+  ...Object.values(VISA_FAMILY_LABEL_BY_CODE),
+  ...Object.values(BACKEND_TEXT_LABELS),
+  ...Object.values(INTERVIEW_STATUS_LABELS),
+  ...Object.values(INTERVIEW_RESULT_LABELS),
+  ...Object.values(HUMANIZE_EXACT_PHRASES),
+  ...Object.values(RISK_LEVEL_LABELS),
+])
+
+function lookupHumanizeCode(code: string): string | null {
+  return (
+    DOCUMENT_LABELS[code] ??
+    VISA_FAMILY_LABEL_BY_CODE[code as VisaFamilyCode] ??
+    BACKEND_TEXT_LABELS[code] ??
+    INTERVIEW_STATUS_LABELS[code] ??
+    INTERVIEW_RESULT_LABELS[code] ??
+    HUMANIZE_EXACT_PHRASES[code] ??
+    null
+  )
+}
+
+/**
+ * Map known backend enum/document codes to Chinese labels.
+ * Does NOT aggressively substring-replace free prose (avoids corrupting
+ * e.g. "Please review your I-20" via replaceAll("review", ...)).
+ * Only exact whole-string codes or whole-token snake_case / SCREAMING codes.
+ */
 export function humanizeBackendText(text?: string | null): string {
   if (!text) {
     return ""
   }
 
-  let next = text
-  for (const [code, label] of Object.entries(DOCUMENT_LABELS)) {
-    next = next.replaceAll(code, label)
-  }
-  for (const [code, label] of Object.entries(VISA_FAMILY_LABEL_BY_CODE)) {
-    next = next.replaceAll(code, label)
-  }
-  for (const [code, label] of Object.entries(BACKEND_TEXT_LABELS)) {
-    next = next.replaceAll(code, label)
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return ""
   }
 
-  return next
-    .replaceAll("formal interview", "正式问答")
-    .replaceAll("interview", "面签问答")
-    .replaceAll("refusal", "拒签")
-    .replaceAll("review", "复核")
+  // Idempotent: already a known Chinese label
+  if (HUMANIZE_KNOWN_LABELS.has(trimmed) || HUMANIZE_KNOWN_LABELS.has(text)) {
+    return text
+  }
+
+  // Exact whole-string code / phrase
+  const exact = lookupHumanizeCode(trimmed) ?? lookupHumanizeCode(text)
+  if (exact) {
+    return exact
+  }
+
+  // Whole-token replacement only for backend-style codes:
+  // snake_case, SCREAMING_SNAKE, or short known document codes (ds160, i20, ...).
+  // Never rewrite plain English words like "review" / "interview" / "refusal".
+  const CODE_TOKEN =
+    /\b(?:[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|ds160|i20|i797|lca|f1|j1|h1b)\b/g
+
+  return text.replace(CODE_TOKEN, (token) => lookupHumanizeCode(token) ?? token)
 }
 
 function normalizeRiskLevel(value?: string | null): RiskLevel {
@@ -535,15 +583,20 @@ function mapCaseDocumentTypeCandidate(
 function mapCaseEvidenceCard(
   item: BackendCaseEvidenceCard,
 ): CaseEvidenceCard | null {
-  if (!item.evidence_id || !item.excerpt) {
+  // Require evidence_id only; empty excerpt is allowed (don't drop useful rows).
+  if (!item.evidence_id) {
     return null
   }
+  const rawExcerpt =
+    typeof item.excerpt === "string" ? item.excerpt : ""
   return {
     evidence_id: item.evidence_id,
     source_type: item.source_type,
     document_id: item.document_id ?? null,
     page_number: item.page_number ?? null,
-    excerpt: humanizeBackendText(item.excerpt),
+    excerpt: rawExcerpt.trim()
+      ? humanizeBackendText(rawExcerpt)
+      : "",
     visual_anchor: item.visual_anchor ?? null,
     claim_refs: normalizeStringList(item.claim_refs),
     confidence: item.confidence ?? null,
@@ -570,15 +623,19 @@ function mapCaseClaim(item: BackendCaseClaim): CaseClaim | null {
 }
 
 function mapCaseProofPoint(item: BackendCaseProofPoint): CaseProofPoint | null {
-  if (!item.proof_point_id || !item.question || !item.why_it_matters) {
+  // Require id + question; empty why_it_matters is OK (relax F10).
+  const proofPointId = item.proof_point_id
+  const question =
+    typeof item.question === "string" ? item.question.trim() : ""
+  if (!proofPointId || !question) {
     return null
   }
   return {
-    proof_point_id: item.proof_point_id,
+    proof_point_id: proofPointId,
     visa_family: item.visa_family,
-    question: humanizeBackendText(item.question),
+    question: humanizeBackendText(question),
     status: item.status ?? "partial",
-    why_it_matters: humanizeBackendText(item.why_it_matters),
+    why_it_matters: humanizeBackendText(item.why_it_matters) || "",
     claim_refs: normalizeStringList(item.claim_refs),
     evidence_refs: normalizeStringList(item.evidence_refs),
     metadata: item.metadata,
@@ -635,6 +692,7 @@ function compactMapped<TInput, TOutput>(
 
 export function mapMaterialPackageDocument(
   document: MaterialPackageDocument,
+  sessionId?: string | null,
 ): MaterialPackageDocument {
   return {
     ...document,
@@ -642,7 +700,10 @@ export function mapMaterialPackageDocument(
     document_type_label:
       document.document_type_label ??
       nullableDocumentLabel(document.document_type),
-    content_url: document.content_url ?? null,
+    content_url: rewriteBackendContentUrl(document.content_url, {
+      sessionId,
+      documentId: document.document_id,
+    }),
     status: document.status ?? null,
     understanding_status: document.understanding_status ?? null,
     raw_text: document.raw_text ?? null,
@@ -655,7 +716,10 @@ export function mapMaterialPackageArchiveItem(
 ): MaterialPackageArchiveItem {
   const templateId = firstNonEmptyText(item.template_id, item.demo_template_id)
   const templateLabel = humanizeBackendText(item.template_label) || null
-  const documents = compactMapped(item.documents, mapMaterialPackageDocument)
+  const sessionId = item.source_session_id ?? null
+  const documents = compactMapped(item.documents, (document) =>
+    mapMaterialPackageDocument(document, sessionId),
+  )
   const nextItem: MaterialPackageArchiveItem = {
     ...item,
     label:
@@ -700,7 +764,9 @@ export function mapMaterialPackageImportResponse(
   const remainingRequiredDocuments = payload.remaining_required_documents ?? []
   return {
     ...payload,
-    documents: compactMapped(payload.documents, mapMaterialPackageDocument),
+    documents: compactMapped(payload.documents, (document) =>
+      mapMaterialPackageDocument(document, payload.session_id),
+    ),
     assistant_message: humanizeBackendText(payload.assistant_message) || null,
     governor_decision: payload.governor_decision ?? null,
     requested_documents: requestedDocuments,
@@ -721,6 +787,11 @@ function mapCaseBoardDelta(
   const candidates = compactMapped(
     latest?.document_type_candidates,
     mapCaseDocumentTypeCandidate,
+  )
+  // Dual fields: read either open_proof_points or proof_points, emit both.
+  const proofPoints = compactMapped(
+    delta.open_proof_points ?? delta.proof_points,
+    mapCaseProofPoint,
   )
   return {
     latest_material: latest
@@ -743,10 +814,8 @@ function mapCaseBoardDelta(
       : null,
     evidence_cards: compactMapped(delta.evidence_cards, mapCaseEvidenceCard),
     claims: compactMapped(delta.claims, mapCaseClaim),
-    open_proof_points: compactMapped(
-      delta.open_proof_points ?? delta.proof_points,
-      mapCaseProofPoint,
-    ),
+    open_proof_points: proofPoints,
+    proof_points: proofPoints,
     conflicts: compactMapped(delta.conflicts, mapCaseConflict),
     next_move: mapInterviewNextMove(delta.next_move),
   }
@@ -924,6 +993,7 @@ export function mapInterviewReviewResponse(
 
 export function mapFileUploadResponse(
   payload: BackendFileUploadResponse,
+  sessionId?: string | null,
 ): FileUploadResponse {
   const requestedDocuments = payload.requested_documents ?? []
   const remainingRequiredDocuments = payload.remaining_required_documents ?? []
@@ -944,10 +1014,14 @@ export function mapFileUploadResponse(
     documentAssessment?.feedback_message ?? null,
     documentAssessment?.main_flow_feedback?.message ?? null,
   )
+  const documentId = payload.document_id
 
   return {
-    document_id: payload.document_id,
-    content_url: payload.content_url ?? null,
+    document_id: documentId,
+    content_url: rewriteBackendContentUrl(payload.content_url, {
+      sessionId,
+      documentId,
+    }),
     document_status: payload.document_status,
     job_id: payload.job_id,
     job_status: payload.job_status,
@@ -974,6 +1048,228 @@ export function mapFileUploadResponse(
       remainingRequiredDocuments.map(toDocumentLabel),
     gate_progress: mapGateProgress(payload.gate_progress),
   }
+}
+
+function isFullCaseBoardDeltaShape(
+  value: unknown,
+): value is BackendCaseBoardDelta {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return (
+    Array.isArray(record.evidence_cards) ||
+    Array.isArray(record.claims) ||
+    Array.isArray(record.open_proof_points) ||
+    Array.isArray(record.proof_points) ||
+    Array.isArray(record.conflicts) ||
+    Boolean(record.next_move)
+  )
+}
+
+function mapSessionDocumentCaseBoardSummary(
+  delta?: BackendSessionDocumentListItem["case_board_delta"] | null,
+): SessionDocumentCaseBoardSummary | CaseBoardDelta | null {
+  if (!delta) {
+    return null
+  }
+  if (isFullCaseBoardDeltaShape(delta)) {
+    return mapCaseBoardDelta(delta)
+  }
+  const summary = delta as SessionDocumentCaseBoardSummary
+  const latest = summary.latest_material
+  return {
+    latest_material: latest
+      ? {
+          document_id: latest.document_id ?? null,
+          filename: latest.filename ?? null,
+          understanding_status: latest.understanding_status ?? null,
+          understanding_error: mapMaterialUnderstandingError(
+            latest.understanding_error,
+          ),
+          document_type: latest.document_type ?? null,
+          document_type_label:
+            latest.document_type_label ??
+            nullableDocumentLabel(latest.document_type),
+          document_type_candidates: latest.document_type_candidates ?? [],
+          relevance: latest.relevance ?? null,
+          supported_claims: normalizeStringList(latest.supported_claims),
+          confidence: latest.confidence ?? null,
+          feedback_message:
+            humanizeBackendText(latest.feedback_message) || null,
+          unknowns: normalizeStringList(latest.unknowns).map(
+            humanizeBackendText,
+          ),
+        }
+      : null,
+    claim_count:
+      typeof summary.claim_count === "number" ? summary.claim_count : undefined,
+    evidence_card_count:
+      typeof summary.evidence_card_count === "number"
+        ? summary.evidence_card_count
+        : undefined,
+  }
+}
+
+function guessMimeTypeFromFilename(filename: string): string {
+  const lower = filename.toLowerCase()
+  if (lower.endsWith(".pdf")) return "application/pdf"
+  if (lower.endsWith(".png")) return "image/png"
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg"
+  if (lower.endsWith(".gif")) return "image/gif"
+  if (lower.endsWith(".webp")) return "image/webp"
+  if (lower.endsWith(".txt")) return "text/plain"
+  return "application/octet-stream"
+}
+
+function guessAttachmentKind(
+  filename: string,
+  mimeType?: string | null,
+): AttachmentKind {
+  if (mimeType?.startsWith("image/")) return "image"
+  if (mimeType === "application/pdf") return "pdf"
+  const lower = filename.toLowerCase()
+  if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(lower)) return "image"
+  if (lower.endsWith(".pdf")) return "pdf"
+  return "file"
+}
+
+function humanizeUnderstandingStatusLabel(
+  status?: string | null,
+  tombstoned?: boolean,
+): string {
+  if (tombstoned || status === "tombstoned" || status === "deleted") {
+    return "已删除"
+  }
+  switch (status) {
+    case "queued":
+      return "排队中"
+    case "processing":
+      return "理解中"
+    case "completed":
+    case "parsed":
+      return "已理解"
+    case "failed":
+    case "error":
+      return "理解失败"
+    case "skipped_legacy":
+      return "已跳过"
+    case "uploaded":
+      return "已上传"
+    default:
+      return status?.trim() || "已上传"
+  }
+}
+
+export function mapSessionDocumentListItem(
+  item: BackendSessionDocumentListItem | SessionDocumentListItem,
+  sessionId?: string | null,
+): SessionDocumentListItem {
+  const documentId = item.document_id
+  const filename =
+    typeof item.filename === "string" && item.filename.trim()
+      ? item.filename
+      : "document"
+  const tombstoned = Boolean(
+    item.tombstoned ||
+      item.status === "tombstoned" ||
+      item.status === "deleted",
+  )
+  return {
+    document_id: documentId,
+    filename,
+    status: item.status ?? (tombstoned ? "tombstoned" : "uploaded"),
+    understanding_status: item.understanding_status ?? null,
+    document_type: item.document_type ?? null,
+    document_type_label:
+      "document_type_label" in item && item.document_type_label
+        ? item.document_type_label
+        : nullableDocumentLabel(item.document_type),
+    uploaded_at: item.uploaded_at ?? null,
+    content_url: rewriteBackendContentUrl(item.content_url, {
+      sessionId,
+      documentId,
+    }),
+    case_board_delta: mapSessionDocumentCaseBoardSummary(item.case_board_delta),
+    tombstoned,
+  }
+}
+
+export function mapSessionDocumentListResponse(
+  payload: BackendSessionDocumentListResponse | SessionDocumentListResponse,
+): SessionDocumentListResponse {
+  const sessionId = payload.session_id
+  const documents = (payload.documents ?? []).map((item) =>
+    mapSessionDocumentListItem(item, sessionId),
+  )
+  return {
+    session_id: sessionId,
+    count:
+      typeof payload.count === "number" ? payload.count : documents.length,
+    documents,
+  }
+}
+
+/**
+ * Map a session document list item into the workbench UploadedMaterial shape.
+ */
+export function mapSessionDocumentToUploadedMaterial(
+  item: BackendSessionDocumentListItem | SessionDocumentListItem,
+  sessionId: string,
+): UploadedMaterial {
+  const mapped = mapSessionDocumentListItem(item, sessionId)
+  const mimeType = guessMimeTypeFromFilename(mapped.filename)
+  const fullDelta = isFullCaseBoardDeltaShape(item.case_board_delta)
+    ? mapCaseBoardDelta(item.case_board_delta as BackendCaseBoardDelta)
+    : null
+  const proofPoints =
+    fullDelta?.open_proof_points ?? fullDelta?.proof_points ?? []
+
+  return {
+    id: mapped.document_id,
+    session_id: sessionId,
+    name: mapped.filename,
+    mime_type: mimeType,
+    kind: guessAttachmentKind(mapped.filename, mimeType),
+    preview_url: null,
+    content_url: mapped.content_url,
+    uploaded_at: mapped.uploaded_at ?? new Date(0).toISOString(),
+    status_label: humanizeUnderstandingStatusLabel(
+      mapped.understanding_status ?? mapped.status,
+      mapped.tombstoned,
+    ),
+    document_id: mapped.document_id,
+    document_status: mapped.status,
+    understanding_status: mapped.understanding_status,
+    understanding_error:
+      fullDelta?.latest_material?.understanding_error ?? null,
+    document_type: mapped.document_type,
+    document_type_label: mapped.document_type_label,
+    relevance: fullDelta?.latest_material?.relevance ?? null,
+    feedback_message: fullDelta?.latest_material?.feedback_message ?? null,
+    evidence_cards: fullDelta?.evidence_cards ?? [],
+    claims: fullDelta?.claims ?? [],
+    proof_points: proofPoints,
+    conflicts: fullDelta?.conflicts ?? [],
+    next_move: fullDelta?.next_move ?? null,
+    case_board_delta: fullDelta,
+  }
+}
+
+/**
+ * Map a documents list response to UploadedMaterial[].
+ * Tombstoned rows are excluded by default (session restore materials panel).
+ */
+export function mapSessionDocumentsToUploadedMaterials(
+  payload: BackendSessionDocumentListResponse | SessionDocumentListResponse,
+  options?: { includeTombstoned?: boolean; sessionId?: string | null },
+): UploadedMaterial[] {
+  const sessionId = options?.sessionId ?? payload.session_id
+  const includeTombstoned = Boolean(options?.includeTombstoned)
+  const list = mapSessionDocumentListResponse(payload)
+  return list.documents
+    .filter((item) => includeTombstoned || !item.tombstoned)
+    .map((item) => mapSessionDocumentToUploadedMaterial(item, sessionId))
 }
 
 export function describeRequestedDocuments(documentCodes: string[]): string {

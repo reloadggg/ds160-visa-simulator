@@ -894,7 +894,7 @@ def test_message_turn_graph_starts_without_materials_after_f1_selection(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_runtime"] == "graph"
+    assert payload["agent_runtime"] == "native_interviewer"
     assert payload["selected_public_runtime"] == "native_interviewer"
     assert payload["assistant_message"] == (
         "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
@@ -1391,7 +1391,7 @@ def test_messages_stream_graph_shadow_keeps_final_payload_public(
     assert final_payload["assistant_message"] == (
         "你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
     )
-    assert final_payload["agent_runtime"] == "graph_shadow"
+    assert final_payload["agent_runtime"] == "native_interviewer"
     assert final_payload["selected_public_runtime"] == "native_interviewer"
     assert (
         final_payload["runtime_execution"]["execution_runtime"]
@@ -1556,7 +1556,7 @@ def test_message_turn_graph_shadow_uses_native_public_response_and_single_assist
     assert payload["assistant_message"] == (
         "你选择计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
     )
-    assert payload["agent_runtime"] == "graph_shadow"
+    assert payload["agent_runtime"] == "native_interviewer"
     assert payload["selected_public_runtime"] == "native_interviewer"
     assert payload["runtime_execution"] == {
         "schema_version": "runtime.execution.v1",
@@ -1592,7 +1592,7 @@ def test_message_turn_graph_shadow_uses_native_public_response_and_single_assist
         "runtime_execution"
     ]
     assert turns[1].metadata_json.get("graph_shadow") is None
-    assert turns[1].metadata_json["agent_runtime"] == "graph_shadow"
+    assert turns[1].metadata_json["agent_runtime"] == "native_interviewer"
     assert turns[1].metadata_json["selected_public_runtime"] == "native_interviewer"
     assert turns[1].metadata_json["runtime_execution"] == payload[
         "runtime_execution"
@@ -1686,7 +1686,7 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     assert payload["assistant_message"] == (
         "你提到想学计算机方向。这个项目和你毕业后的计划具体怎么衔接？"
     )
-    assert payload["agent_runtime"] == "graph"
+    assert payload["agent_runtime"] == "native_interviewer"
     assert payload["selected_public_runtime"] == "native_interviewer"
     assert payload["native_run_id"].startswith("native-run-")
     assert "graph_run_id" not in payload
@@ -1726,7 +1726,7 @@ def test_message_turn_graph_mode_writes_public_response_and_single_assistant_tur
     ]
     assistant_turn = turns[1]
     metadata = assistant_turn.metadata_json
-    assert metadata["agent_runtime"] == "graph"
+    assert metadata["agent_runtime"] == "native_interviewer"
     assert metadata["selected_public_runtime"] == "native_interviewer"
     assert metadata["runtime_execution"] == payload["runtime_execution"]
     assert metadata["native_run_id"] == payload["native_run_id"]
@@ -1935,7 +1935,7 @@ def test_message_turn_graph_canary_hundred_percent_uses_native_compat_alias(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_runtime"] == "graph"
+    assert payload["agent_runtime"] == "native_interviewer"
     assert payload["selected_public_runtime"] == "native_interviewer"
     assert payload["runtime_execution"]["configured_runtime"] == "graph_canary"
     assert payload["runtime_execution"]["compatibility_runtime_label"] == "graph_canary"
@@ -1982,7 +1982,7 @@ def test_message_turn_graph_canary_zero_percent_still_uses_native_compat_alias(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_runtime"] == "graph"
+    assert payload["agent_runtime"] == "native_interviewer"
     assert payload["selected_public_runtime"] == "native_interviewer"
     assert payload["runtime_execution"]["configured_runtime"] == "graph_canary"
     assert payload["runtime_execution"]["compatibility_runtime_label"] == "graph_canary"
@@ -2115,7 +2115,7 @@ def test_message_turn_graph_native_missing_model_returns_503_without_canned_fall
     assert turns == []
 
 
-def test_message_turn_keeps_user_turn_when_native_quality_guard_blocks_output(
+def test_message_turn_deletes_user_turn_when_native_quality_guard_blocks_output(
     client: TestClient,
     db_session_factory,
     monkeypatch,
@@ -2161,11 +2161,27 @@ def test_message_turn_keeps_user_turn_when_native_quality_guard_blocks_output(
             .order_by(SessionTurnRecord.turn_index)
         ).all()
 
-    assert [(turn.role, turn.source) for turn in turns] == [
-        ("user", "user_message")
-    ]
-    assert turns[0].client_message_id == "client-quality-guard-1"
-    assert "NYU" in turns[0].content
+    # Incomplete user turn is cleaned up so the session is not stuck on 409.
+    assert turns == []
+
+    # A new client_message_id can continue after quality-guard failure.
+    install_native_fixed_interview_response(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="这个项目和你毕业后的计划具体怎么衔接？",
+    )
+    retry = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "role": "user",
+            "content": "I chose NYU because the program strengthens my AI engineering skills before I return to China.",
+            "client_message_id": "client-quality-guard-2",
+        },
+    )
+    assert retry.status_code == 200
+    assert retry.json()["assistant_message"] == (
+        "这个项目和你毕业后的计划具体怎么衔接？"
+    )
 
 
 def test_get_messages_returns_public_transcript(
@@ -2262,7 +2278,7 @@ def test_messages_stream_graph_mode_keeps_sse_contract(
     assert "analyzing" in event_names
     assert event_names[-1] == "final"
     final_payload = events[-1][1]
-    assert final_payload["agent_runtime"] == "graph"
+    assert final_payload["agent_runtime"] == "native_interviewer"
     assert final_payload["selected_public_runtime"] == "native_interviewer"
     assert final_payload["runtime_execution"]["configured_runtime"] == "graph"
     assert (
@@ -2876,6 +2892,9 @@ def test_gate_progress_reports_ready_uploaded_and_missing_mix(
                     "filename": "ds160.txt",
                     "source_type": "text",
                     "document_type": "ds160",
+                    # Gate ready requires understanding when
+                    # material_understanding_required=True (default).
+                    "understanding_status": "completed",
                 },
             )
         )

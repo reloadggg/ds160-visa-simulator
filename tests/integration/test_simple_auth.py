@@ -310,6 +310,40 @@ def test_invalid_password_is_rejected_and_rate_limited(
     assert response.json() == {"detail": "too many login attempts"}
 
 
+def test_admin_login_is_rate_limited(
+    client: TestClient,
+    enabled_auth: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "admin_auth_password", "admin-secret")
+    LOGIN_FAILURES.clear()
+
+    for _ in range(2):
+        response = client.post(
+            "/v1/admin/login",
+            json={"password": "wrong"},
+            headers={"Origin": ORIGIN},
+        )
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid credentials"}
+
+    response = client.post(
+        "/v1/admin/login",
+        json={"password": "wrong"},
+        headers={"Origin": ORIGIN},
+    )
+    assert response.status_code == 429
+    assert response.json() == {"detail": "too many login attempts"}
+
+    # User login failures use a separate bucket from admin.
+    user_response = client.post(
+        "/v1/auth/login",
+        json={"password": "wrong"},
+        headers={"Origin": ORIGIN},
+    )
+    assert user_response.status_code == 401
+
+
 def test_docs_are_protected_when_auth_is_enabled(
     client: TestClient,
     enabled_auth: None,
@@ -422,11 +456,13 @@ def test_login_audit_records_cloudflare_ip_for_user_success_and_failure(
     assert events[1].failure_reason == "invalid_credentials"
 
 
-def test_login_audit_ip_resolution_falls_back_to_forwarded_for(
+def test_login_audit_ip_resolution_uses_rightmost_xff_when_trusted(
     client: TestClient,
     db_session_factory,
     enabled_auth: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(settings_module.settings, "trust_x_forwarded_for", True)
     response = client.post(
         "/v1/auth/login",
         json={"password": "test-password"},
@@ -443,5 +479,33 @@ def test_login_audit_ip_resolution_falls_back_to_forwarded_for(
     with db_session_factory() as db:
         [event] = db.query(AuthLoginEventRecord).all()
 
-    assert event.client_ip == "198.51.100.77"
+    # Rightmost hop is the one appended by the trusted proxy.
+    assert event.client_ip == "10.0.0.2"
     assert event.client_ip_source == "x-forwarded-for"
+
+
+def test_login_audit_ignores_xff_when_trust_disabled(
+    client: TestClient,
+    db_session_factory,
+    enabled_auth: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "trust_x_forwarded_for", False)
+    response = client.post(
+        "/v1/auth/login",
+        json={"password": "test-password"},
+        headers={
+            "Origin": ORIGIN,
+            "X-Forwarded-For": "198.51.100.77, 10.0.0.2",
+            "X-Real-IP": "192.0.2.55",
+        },
+    )
+    assert response.status_code == 200
+
+    from app.db.models import AuthLoginEventRecord
+
+    with db_session_factory() as db:
+        [event] = db.query(AuthLoginEventRecord).all()
+
+    assert event.client_ip == "testclient"
+    assert event.client_ip_source == "direct"

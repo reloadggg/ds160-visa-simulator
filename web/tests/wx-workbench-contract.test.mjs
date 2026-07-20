@@ -39,6 +39,62 @@ test("wx workbench reuses existing non-streaming API contracts only", () => {
   assert.doesNotMatch(source, /useSessionWorkbench/)
 })
 
+test("wx restores materials via listSessionDocuments and rewrites content_url", () => {
+  const source = read("hooks/use-wx-workbench.ts")
+  const client = read("lib/api/client.ts")
+  assert.match(source, /listSessionDocuments/)
+  assert.match(source, /mapSessionDocumentsToUploadedMaterials/)
+  assert.match(source, /loadSessionDocuments/)
+  assert.match(source, /getFileContentUrl\(/)
+  assert.match(client, /export async function listSessionDocuments/)
+  assert.match(client, /\/v1\/sessions\/\$\{sessionId\}\/documents/)
+  assert.match(source, /tombstoned/)
+  assert.doesNotMatch(
+    source,
+    /content_url:\s*upload\.content_url\s*\?\?\s*\(upload\.document_id/,
+  )
+})
+
+test("wx polls documents list after upload and refreshes report on terminal", () => {
+  const source = read("hooks/use-wx-workbench.ts")
+  assert.match(source, /queueMaterialUnderstandingRefresh/)
+  assert.match(source, /MATERIAL_UNDERSTANDING_POLL_DELAYS_MS/)
+  assert.match(source, /sessionIdRef\.current !== targetSessionId/)
+  assert.match(source, /isTerminalMaterialUnderstandingStatus/)
+  assert.match(source, /refreshReport\(targetSessionId\)/)
+  assert.match(source, /queueMaterialUnderstandingRefresh\(sessionId, uploadedIds\)/)
+})
+
+test("wx send guard uses sendingRef and blocks terminal sessions", () => {
+  const source = read("hooks/use-wx-workbench.ts")
+  assert.match(source, /sendingRef/)
+  assert.match(source, /isTerminalInterviewState/)
+  assert.match(source, /isSessionTerminal/)
+  assert.match(source, /retryMessage/)
+  assert.match(source, /reuseMessageId/)
+  assert.match(source, /client_message_id/)
+  assert.match(source, /retry_content/)
+})
+
+test("wx revokes object URLs for image previews", () => {
+  const source = read("hooks/use-wx-workbench.ts")
+  assert.match(source, /URL\.createObjectURL/)
+  assert.match(source, /URL\.revokeObjectURL/)
+  assert.match(source, /revokeIfObjectUrl|revokeMaterialObjectUrls/)
+})
+
+test("wx message list exposes retry for failed user messages", () => {
+  const list = read("components/wx/wx-message-list.tsx")
+  const panel = read("components/wx/wx-chat-panel.tsx")
+  const shell = read("components/wx/wx-shell.tsx")
+  assert.match(list, /onRetryMessage/)
+  assert.match(list, /重试本条/)
+  assert.match(panel, /onRetryMessage/)
+  assert.match(panel, /isSessionTerminal/)
+  assert.match(shell, /retryMessage/)
+  assert.match(shell, /isSessionTerminal/)
+})
+
 test("wx route does not import desktop workbench panels", () => {
   const page = read("app/wx/page.tsx")
   const shell = read("components/wx/wx-shell.tsx")

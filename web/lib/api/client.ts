@@ -7,6 +7,7 @@ import {
   mapMessageResponse,
   mapRequiredPackage,
   mapSession,
+  mapSessionDocumentListResponse,
   toVisaFamilyCode,
   mapUserReport,
 } from "./mappers"
@@ -29,11 +30,13 @@ import type {
   AdminSettings,
   AdminLoginAuditResponse,
   AppConfig,
+  BackendDeleteSessionDocumentResponse,
   BackendFileUploadResponse,
   BackendInternalReport,
   BackendMessageResponse,
   BackendRequiredPackage,
   BackendSession,
+  BackendSessionDocumentListResponse,
   BackendSessionListResponse,
   ClearSessionsResponse,
   BackendSessionMessagesResponse,
@@ -43,6 +46,7 @@ import type {
   DebugMaterialBundleScenario,
   DebugMaterialBundleStreamEvent,
   DebugFillResponse,
+  DeleteSessionDocumentResponse,
   FileUploadResponse,
   InternalReport,
   InterviewReviewResponse,
@@ -60,6 +64,7 @@ import type {
   RuntimeDebugEvent,
   RuntimeDebugSnapshot,
   Session,
+  SessionDocumentListResponse,
   SessionExportPayload,
   UserModelRuntimeConfig,
   UserReport,
@@ -567,6 +572,25 @@ export async function createDebugMaterialBundle(
   return handleResponse<DebugMaterialBundleResponse>(response)
 }
 
+export async function createPracticeMaterialBundleStream(
+  sessionId: string,
+  scenario: DebugMaterialBundleScenario | string,
+  includeSyntheticUserTurns: boolean,
+  onEvent: (event: DebugMaterialBundleStreamEvent) => void,
+  seedText?: string | null,
+  generationMode = "ai_if_available",
+): Promise<DebugMaterialBundleResponse> {
+  return createMaterialBundleStream(
+    `/v1/sessions/${sessionId}/practice/material-bundles/stream`,
+    sessionId,
+    scenario,
+    includeSyntheticUserTurns,
+    onEvent,
+    seedText,
+    generationMode,
+  )
+}
+
 export async function createDebugMaterialBundleStream(
   sessionId: string,
   scenario: DebugMaterialBundleScenario | string,
@@ -575,8 +599,28 @@ export async function createDebugMaterialBundleStream(
   seedText?: string | null,
   generationMode = "ai_if_available",
 ): Promise<DebugMaterialBundleResponse> {
+  return createMaterialBundleStream(
+    `/v1/sessions/${sessionId}/debug/material-bundles/stream`,
+    sessionId,
+    scenario,
+    includeSyntheticUserTurns,
+    onEvent,
+    seedText,
+    generationMode,
+  )
+}
+
+async function createMaterialBundleStream(
+  path: string,
+  sessionId: string,
+  scenario: DebugMaterialBundleScenario | string,
+  includeSyntheticUserTurns: boolean,
+  onEvent: (event: DebugMaterialBundleStreamEvent) => void,
+  seedText?: string | null,
+  generationMode = "ai_if_available",
+): Promise<DebugMaterialBundleResponse> {
   const response = await apiFetch(
-    buildApiUrl(`/v1/sessions/${sessionId}/debug/material-bundles/stream`),
+    buildApiUrl(path),
     {
       method: "POST",
       headers: getAuthHeaders("application/json"),
@@ -672,6 +716,41 @@ export async function importMaterialPackage(
   )
 }
 
+export async function listSessionDocuments(
+  sessionId: string,
+): Promise<SessionDocumentListResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/documents`),
+    { headers: getAuthHeaders() },
+  )
+  return mapSessionDocumentListResponse(
+    await handleResponse<BackendSessionDocumentListResponse>(response),
+  )
+}
+
+export async function deleteSessionDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<DeleteSessionDocumentResponse> {
+  const response = await apiFetch(
+    buildApiUrl(
+      `/v1/sessions/${sessionId}/files/${encodeURIComponent(documentId)}`,
+    ),
+    {
+      method: "DELETE",
+      headers: getAuthHeaders(),
+    },
+  )
+  const payload = await handleResponse<BackendDeleteSessionDocumentResponse>(
+    response,
+  )
+  return {
+    ...payload,
+    document_id: payload.document_id ?? documentId,
+    document_status: payload.document_status ?? "tombstoned",
+  }
+}
+
 export async function uploadFile(
   sessionId: string,
   file: File,
@@ -694,6 +773,7 @@ export async function uploadFile(
 
   return mapFileUploadResponse(
     await handleResponse<BackendFileUploadResponse>(response),
+    sessionId,
   )
 }
 
@@ -715,9 +795,10 @@ function mapWxUploadTicketUploadResult(
   payload: NonNullable<
     BackendWxUploadTicketStatusResponse["upload_results"]
   >[number],
+  sessionId?: string | null,
 ): WxUploadTicketUploadResult {
   const uploadPayload = payload.upload ?? payload.result ?? {}
-  const mappedUpload = mapFileUploadResponse(uploadPayload)
+  const mappedUpload = mapFileUploadResponse(uploadPayload, sessionId)
   return {
     document_id:
       payload.document_id ?? mappedUpload.document_id ?? null,
@@ -749,7 +830,9 @@ export async function getWxUploadTicketStatus(
     uploaded_count: payload.uploaded_count ?? uploadResults.length,
     remaining_files: payload.remaining_files ?? null,
     status: payload.status ?? "active",
-    upload_results: uploadResults.map(mapWxUploadTicketUploadResult),
+    upload_results: uploadResults.map((item) =>
+      mapWxUploadTicketUploadResult(item, payload.session_id),
+    ),
   }
 }
 
