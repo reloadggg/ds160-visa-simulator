@@ -136,7 +136,9 @@ function isTerminalInterviewState(
   return (
     phaseState === "completed" ||
     phaseState === "session_closed" ||
-    ["passed", "refused", "simulated_refusal"].includes(governorDecision ?? "") ||
+    ["passed", "not_passed", "refused", "simulated_refusal"].includes(
+      governorDecision ?? "",
+    ) ||
     userReport?.interview_result === "passed" ||
     userReport?.interview_result === "refused" ||
     userReport?.interview_status === "simulated_refusal"
@@ -635,7 +637,7 @@ export function useWxWorkbench() {
       if (response.governor_decision) {
         setGovernorDecision(response.governor_decision)
         if (
-          ["passed", "refused", "simulated_refusal"].includes(
+          ["passed", "not_passed", "refused", "simulated_refusal"].includes(
             response.governor_decision,
           )
         ) {
@@ -746,11 +748,9 @@ export function useWxWorkbench() {
     try {
       const status: WxUploadTicketStatusResponse = await getWxUploadTicketStatus(ticket)
       const effectiveSessionId = targetSessionId ?? status.session_id
-      if (
-        sessionIdRef.current &&
-        sessionIdRef.current !== effectiveSessionId
-      ) {
-        // ticket belongs to another session; still apply if no active session switch mid-flight
+      // Cross-session guard: never merge ticket results into a different active session.
+      if (sessionIdRef.current !== effectiveSessionId) {
+        return
       }
       const materials = status.upload_results.map((result) =>
         ticketUploadToMaterial(effectiveSessionId, result),
@@ -759,6 +759,9 @@ export function useWxWorkbench() {
         setUploadedMaterials((current) => mergeMaterials(current, materials))
         setNativeUploadNotice(`已同步 ${materials.length} 个微信聊天文件。`)
         await refreshReport(effectiveSessionId)
+        if (sessionIdRef.current !== effectiveSessionId) {
+          return
+        }
         const docIds = materials
           .map((item) => item.document_id)
           .filter((id): id is string => Boolean(id))

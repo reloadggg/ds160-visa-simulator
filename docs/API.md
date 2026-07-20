@@ -102,6 +102,18 @@ Authorization: Bearer <machine-api-key>
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 
+#### Machine key 权限矩阵（trusted backends only）
+
+| 能力 | Machine bearer (`APP_COMPAT_API_KEY`) | Access-key user cookie | Admin cookie |
+| --- | --- | --- | --- |
+| 认证入口 | 仅上述两个 OpenAI-compatible 路径 | 全站 user API（auth 开启时） | 全站 + `/v1/admin/*` |
+| 新建 session（compat 无 `session_id`） | 允许；不绑定 access-key quota（machine 不是 access key） | 允许；创建时扣该 key 的 session quota | 允许 |
+| 复用已有 `metadata.session_id` | 允许（**admin-equivalent** 全 session 写） | 仅 `AccessKeySession` 绑定归属的 session；跨 key → `403` | 允许任意 session |
+| 消息写入 / transcript import | 允许（经 compat adapter） | 仅归属 session | 允许 |
+| 材料上传、报告、practice/debug 等非 compat 路由 | **不**把 machine bearer 当登录态 | 按 session access | 允许 |
+
+**部署约定：** machine key 等价于在 compat 写路径上的强权限（可打开任意 `session_id` 并写入消息）。只应发给**可信后端**（内网服务、受控集成），不要嵌进公开前端或不可信客户端。未配置 `APP_COMPAT_API_KEY` 时 machine 路径不可用。
+
 ### 3.4 CSRF / Origin
 
 开启 `APP_AUTH_CSRF_PROTECTION=true` 时，受 Cookie 保护的非安全方法需要合法 `Origin` 或 `Referer`。允许来源来自请求 host、`CORS_ALLOW_ORIGINS`，以及反代传入的 `X-Forwarded-Host` / `X-Forwarded-Proto`。
@@ -111,6 +123,17 @@ Authorization: Bearer <machine-api-key>
 ```json
 {"detail":"csrf validation failed"}
 ```
+
+### 3.5 客户端 IP 信任（登录限流 / 审计）
+
+`request_metadata` 用于登录失败限流与 `AuthLoginEvent` 审计 IP。开关：`TRUST_X_FORWARDED_FOR` / `settings.trust_x_forwarded_for`（**默认 `false`**）。
+
+| `trust_x_forwarded_for` | 行为 |
+| --- | --- |
+| `false`（默认） | **忽略** `CF-Connecting-IP`、`X-Forwarded-For`、`X-Real-IP`；只用直连 `request.client.host`。防止客户端伪造头绕过 rate limit。 |
+| `true` | 解析顺序：`CF-Connecting-IP` → 右端 `X-Forwarded-For` hop → `X-Real-IP` → 直连 peer。 |
+
+生产在 Cloudflare 后必须：`TRUST_X_FORWARDED_FOR=true`，并**网络层**把源站限制为 Cloudflare（或其它可信反代）IP；不要对公网裸奔 origin。
 
 ## 4. 快速工作流
 
@@ -309,14 +332,14 @@ SSE `error` event 常见形态：
 | --- | --- |
 | `400` | 后台模型配置不完整，或测试请求缺少必要配置 |
 | `401` | 未登录、Cookie 失效、machine bearer token 缺失/错误 |
-| `403` | CSRF 失败、access key 无权访问该 session、feature flag 未开启 |
+| `403` | CSRF 失败、access key 无权访问该 session（含 OpenAI-compat 跨 key 复用）、feature flag 未开启（如 practice / debug 关闭） |
 | `404` | session、document、runtime trace、access key 或 upload ticket 不存在 |
-| `409` | 会话已关闭、重复消息仍在处理中、签证类别未锁定、upload ticket 已完成/停用/超限 |
+| `409` | 会话已关闭、重复消息仍在处理中、签证类别未锁定、upload ticket 已完成/停用/超限、**同一 session 材料包生成已在进行中** |
 | `410` | upload ticket 已过期 |
 | `413` | 上传文件超过限制 |
 | `415` | 不支持的文件类型 |
-| `422` | 请求字段不合法、签证类别不支持、debug scenario / generation mode 不合法 |
-| `429` | 登录限流或上游模型限流 |
+| `422` | 请求字段不合法、签证类别不支持、debug/practice scenario 或 generation mode 不合法、`seed_text` 超过 `MATERIAL_GENERATION_SEED_MAX_CHARS` |
+| `429` | 登录限流、材料包生成 session/access-key 滑动窗口超限、或上游模型限流 |
 | `502` / `503` / `504` | 上游模型、RAG、材料生成或连接/超时问题 |
 
 ## 7. Endpoint Reference
@@ -339,12 +362,13 @@ Success example:
   "show_github_link": false,
   "debug_console_enabled": false,
   "debug_material_enabled": false,
+  "practice_materials_enabled": true,
   "user_model_config_enabled": false,
   "rag_status_user_visible": false
 }
 ```
 
-注意：当前 public app config 不向普通用户开放 BYOK 和 RAG 状态；后台 DB flag 只用于受控内部 endpoint guard，不代表普通公开能力已开放。
+注意：当前 public app config 不向普通用户开放 BYOK 和 RAG 状态；后台 DB flag 只用于受控内部 endpoint guard，不代表普通公开能力已开放。`practice_materials_enabled`（默认 `true`）控制工作台练习材料入口；与 `debug_console_enabled` / `debug_material_enabled` **解耦**——仅开 debug **不会**放行 practice API。
 
 前端使用说明：
 
@@ -717,9 +741,9 @@ Ticket-specific errors:
 
 边界要分清：
 
-- **practice material generation（产品功能）**：`/practice/material-bundles` 与 `/practice/material-bundles/stream`，由 `practice_materials_enabled` 控制（**默认开启**），面向普通用户用文字描述生成**虚构练习材料**；响应含 `user_summary_zh`、`document_briefs_zh`、`is_practice_material`。
+- **practice material generation（产品功能）**：`/practice/material-bundles` 与 `/practice/material-bundles/stream`，**仅**由 `practice_materials_enabled` 控制（**默认开启**）。**不是** `practice OR debug`：`practice_materials_enabled=false` 且 `debug_material_enabled=true` 时 practice 仍返回 `403`。响应含 `source:"practice"`、`is_practice_material:true`、`user_summary_zh`、`document_briefs_zh`；**不含** `expected_findings`。
 - **material package archive/list/import**：读取和导入已经验证过的模板资产，可用于受控演示、回归验证和客户 demo 初始化。
-- **debug material generation**：`/debug/material-bundles` 和 `/debug/fill-current-gap` 这类本地/受控测试能力，用来生成 synthetic/debug materials；与 practice 开关独立，不要与产品入口混用。
+- **debug material generation**：`/debug/material-bundles` 和 `/debug/fill-current-gap` 这类本地/受控测试能力，用来生成 synthetic/debug materials；由 debug material 开关控制，与 practice 开关独立，不要与产品入口混用。Debug 响应可含 `expected_findings`，`is_practice_material` 为 `false`，`source:"debug"`。
 - 当前 archive/list/import 仍受 `debug_material_enabled` / `ALLOW_DEBUG_FILL` 保护开关约束；如果关闭，会返回 `403`，这是预期的安全边界。
 
 ```json
@@ -963,10 +987,23 @@ Response:
 
 ### 7.10 Admin runtime model config and settings
 
+后台支持**多渠道** OpenAI 兼容 endpoint：每个渠道有独立 `base_url` / `api_key` / `model`，通过 `active_model_channel_id` 指定当前运行时来源。
+
+兼容说明：
+
+- 仍保留扁平字段 `model_base_url` / `model_api_key` / `model_name`（镜像 **当前激活渠道**），旧客户端 PATCH 这些字段会写入/更新激活渠道。
+- 读 `GET /settings` 时若只有旧扁平三元组、尚无 `model_channels`，会自动迁移为一条「默认渠道」并持久化。
+- 响应**永不**回显 `api_key` 原文，只给 `api_key_configured` / `model_api_key_configured`。
+
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/v1/admin/settings` | Admin Cookie | 读取后台设置，API key 只返回 configured bool |
-| `PATCH` | `/v1/admin/settings` | Admin Cookie | 更新后台设置 |
+| `GET` | `/v1/admin/settings` | Admin Cookie | 读取后台设置（含渠道列表） |
+| `PATCH` | `/v1/admin/settings` | Admin Cookie | 更新后台设置；扁平 model_* 会同步激活渠道 |
+| `GET` | `/v1/admin/model-channels` | Admin Cookie | 列出渠道 + 当前激活 id |
+| `POST` | `/v1/admin/model-channels` | Admin Cookie | 新建渠道（可 `activate=true`） |
+| `PATCH` | `/v1/admin/model-channels/{channel_id}` | Admin Cookie | 更新渠道；api_key 留空不改 |
+| `DELETE` | `/v1/admin/model-channels/{channel_id}` | Admin Cookie | 删除渠道；若删的是激活项则回退到剩余第一条 |
+| `POST` | `/v1/admin/model-channels/{channel_id}/activate` | Admin Cookie | 切换当前运行时渠道 |
 | `POST` | `/v1/admin/model-config/models` | Admin Cookie | 用 draft/saved/env 配置读取模型列表 |
 | `POST` | `/v1/admin/model-config/test` | Admin Cookie | 做低成本 chat completion 连通性测试 |
 
@@ -978,10 +1015,22 @@ Response:
   "model_name":"gpt-compatible-model",
   "model_streaming_enabled":true,
   "model_api_key_configured":true,
+  "active_model_channel_id":"ch_abc123",
+  "model_channels":[
+    {
+      "id":"ch_abc123",
+      "name":"yxxb-grok",
+      "base_url":"https://models.example.test/v1",
+      "model":"gpt-compatible-model",
+      "streaming_enabled":true,
+      "api_key_configured":true
+    }
+  ],
   "user_model_config_enabled":false,
   "show_github_link":false,
   "debug_console_enabled":false,
   "debug_material_enabled":false,
+  "practice_materials_enabled":true,
   "rag_status_user_visible":false
 }
 ```
@@ -1001,8 +1050,27 @@ Request:
 }
 ```
 
-Response 会规范化 `model_base_url` 到 `/v1`，并隐藏 `model_api_key` 原文。
+Response 会规范化 `model_base_url` 到 `/v1`，隐藏 `model_api_key` 原文，并同步到 `model_channels` 中的激活渠道。
 
+#### Model channels（推荐）
+
+```http
+POST /v1/admin/model-channels
+{
+  "name":"yxxb",
+  "base_url":"https://sub.example/v1",
+  "api_key":"<key>",
+  "model":"grok-4.5",
+  "streaming_enabled":true,
+  "activate":true
+}
+```
+
+```http
+POST /v1/admin/model-channels/{channel_id}/activate
+```
+
+切换激活渠道后，runtime（`AgentModelFactory` / native interviewer / material generator）立即使用该渠道的 base_url + key + model。
 #### `POST /v1/admin/model-config/models`
 
 Request 可为空，表示使用 saved/admin/env snapshot：
@@ -1067,18 +1135,89 @@ Failure still returns a structured body instead of raising FastAPI error for mos
 
 ### 7.11 Practice material endpoints（产品功能）
 
-普通用户可在工作台用背景描述生成虚构练习材料，无需上传真实证件。由后台 `practice_materials_enabled` 控制，**默认 `true`**，与 debug console / debug material 开关解耦。
+普通用户可在工作台用背景描述生成虚构练习材料，无需上传真实证件。
+
+#### Gate（仅 practice 开关）
+
+| 条件 | Practice `/practice/material-bundles*` | Debug `/debug/material-bundles*` |
+| --- | --- | --- |
+| `practice_materials_enabled=true` | 允许（仍需 session access + rate/lock） | 由 debug material 开关单独决定 |
+| `practice_materials_enabled=false`，`debug_material_enabled=true` | **`403`** `practice materials are disabled` | 若 debug 开启则可调 debug 路径 |
+| 两者均 false | **`403`** | **`403`** debug fill is disabled |
+
+Practice 路由**只**调用 `practice_materials_enabled`；**不要**假设「开了 debug 就能调 practice」。前端在 `practice_materials_enabled === false` 时应隐藏入口。
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `POST` | `/v1/sessions/{session_id}/practice/material-bundles` | Session access + practice materials enabled | 非流式生成练习材料包 |
 | `POST` | `/v1/sessions/{session_id}/practice/material-bundles/stream` | Session access + practice materials enabled | SSE 进度 + 最终练习材料包 |
 
-Notes:
+#### Request schema（practice）
 
-- 关闭 `practice_materials_enabled` 时返回 `403`（文案含 practice materials are disabled），前端应隐藏入口；
-- 成功响应建议包含：`user_summary_zh`（简体中文总述）、`document_briefs_zh`、`is_practice_material: true`、documents / evidence；
-- `user_summary_zh` 不得泄露 oracle / conflict 调试标签；材料仅供模拟面签。
+```json
+{
+  "scenario":"normal_f1_bundle",
+  "include_synthetic_user_turns":false,
+  "seed_text":"我要去 Example University 读 MS CS，父母资助学费和生活费。",
+  "generation_mode":"ai_if_available"
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `scenario` | `normal_f1_bundle` | 与 debug 共用 scenario 名（见 7.12） |
+| `include_synthetic_user_turns` | **`false`**（产品默认；debug 默认为 `true`） | 是否写入合成用户轮次 |
+| `seed_text` | `null` | 背景描述；最大长度 `settings.material_generation_seed_max_chars`（默认 **4000** 字符）；超长 → **`422`** |
+| `generation_mode` | `ai_if_available` | 与 debug 相同 |
+
+#### Response（practice）
+
+成功体 / SSE `final` **不包含** `expected_findings`（oracle 字段仅 debug 保留）。典型字段：
+
+```json
+{
+  "session_id":"sess_abc123",
+  "bundle_id":"…",
+  "scenario":"normal_f1_bundle",
+  "scenario_label":"…",
+  "documents":[],
+  "synthetic_turns":[],
+  "user_summary_zh":"…",
+  "document_briefs_zh":[],
+  "is_practice_material":true,
+  "source":"practice",
+  "assistant_message":null,
+  "main_flow_refresh_error":null,
+  "generation":{}
+}
+```
+
+- `source` 恒为 `"practice"`；`is_practice_material` 恒为 `true`（仅 practice 源为 true，debug 为 false）。
+- `user_summary_zh` / 练习文案不得泄露 oracle、conflict 调试标签；材料仅供模拟面签。
+- Practice 路径不把 `expected_findings` 注入 Case Board / case memory 冲突。
+
+#### 生成实现（分片）
+
+服务端对 AI 材料包采用 **chunked generation**（规划 facts → 按 `required_documents` **逐份** `chat.completions` → 中文摘要），并为每段请求设置 `max_tokens` 上限与连接错误重试。目的是降低「一次吐整包 JSON」在不稳定 OpenAI-compatible 网关上的长连接失败。调试时可用 env：
+
+- `AI_MATERIAL_BUNDLE_TIMEOUT_SECONDS`（单次调用超时，默认 90）
+- `AI_MATERIAL_DOC_MAX_TOKENS` / `AI_MATERIAL_SUMMARY_MAX_TOKENS`
+- `AI_MATERIAL_GENERATION_MAX_RETRIES`
+
+上游连接失败仍可能返回 **503**；校验失败（结构不合格等）可能 **502**。失败路径**不**写入演示占位材料。
+
+#### 并发、限流与失败码（practice 与 debug material-bundles 共用 guard）
+
+| HTTP | 条件 | `detail` 示例 |
+| --- | --- | --- |
+| `409` | 同一 `session_id` 已有生成 in-flight（`material_generation.status=running`，TTL 内） | `material generation already in progress for this session` |
+| `429` | session 或 access-key 滑动窗口超过 `MATERIAL_GENERATION_*_LIMIT` | `material generation rate limit exceeded`（或更具体文案） |
+| `422` | `seed_text` 超长、非法 scenario / generation_mode 等 | Pydantic / service validation |
+| `403` | practice 开关关闭（仅 practice 路径）或 debug 开关关闭（仅 debug 路径） | 见上表 |
+
+默认限流（可用 env 覆盖，见 `.env.example`）：session **5**/小时、access key **20**/小时、in-flight lock TTL **900s**、`seed_text` max **4000**。Session 侧计数写在 `interviewer_state_json.material_generation`；access-key 计数为**进程内**（多 worker 需共享存储才能跨进程严格一致）。
+
+Stream：SSE 事件族与 debug 类似（`accepted` / `progress` / `final` / `error` 等）；`final` 为上述 practice payload（无 oracle）。
 
 ### 7.12 Debug endpoints
 
@@ -1092,7 +1231,7 @@ Debug endpoints 只面向本地或受控测试环境。`debug/runtime` 是只读
 | `GET` | `/v1/sessions/{session_id}/debug/runtime` | Session access + runtime debug | 获取 runtime debug snapshot |
 | `GET` | `/v1/sessions/{session_id}/runtime-traces/{run_id}` | Session access + runtime debug | 获取单个 runtime trace |
 
-Debug 开关来自后台 settings；初始默认值可由 `ALLOW_RUNTIME_DEBUG` / `ALLOW_DEBUG_FILL` 注入。生产公开环境建议保持 debug material 关闭；如为了受控 demo 临时开启，应同时限制访问入口、记录发布窗口，并在演示后关闭。
+Debug 开关来自后台 settings；初始默认值可由 `ALLOW_RUNTIME_DEBUG` / `ALLOW_DEBUG_FILL` 注入。生产公开环境建议保持 debug material 关闭；如为了受控 demo 临时开启，应同时限制访问入口、记录发布窗口，并在演示后关闭。Debug material-bundles 与 practice 共用 generation rate/lock（409/429），但 gate 仅看 debug material 开关。
 
 #### `GET /v1/sessions/{session_id}/debug/runtime`
 
@@ -1129,6 +1268,9 @@ Request:
 }
 ```
 
+- `include_synthetic_user_turns` 默认 **`true`**（与 practice 产品默认不同）。
+- `seed_text` 同样受 `material_generation_seed_max_chars` 约束（超长 422）。
+
 Current scenario examples:
 
 - `normal_f1_bundle`
@@ -1150,13 +1292,15 @@ Response excerpt:
   "scenario":"school_mismatch_bundle",
   "scenario_label":"学校材料冲突包",
   "documents":[{"document_id":"doc_1","filename":"synthetic_i20.txt","document_type":"i20"}],
+  "source":"debug",
+  "is_practice_material":false,
   "expected_findings":[],
   "assistant_message":"Please clarify the school mismatch.",
   "main_flow_refresh_error":null
 }
 ```
 
-`expected_findings` 只给 API 测试和前端调试展示，不应写入材料正文、evidence excerpt、profile 或 document review prompt/context。
+`expected_findings` **仅 debug 响应保留**，只给 API 测试和前端调试展示，不应写入材料正文、evidence excerpt、profile 或 document review prompt/context。Practice 最终 payload **省略**该字段。
 
 #### `POST /v1/sessions/{session_id}/debug/material-bundles/stream`
 
@@ -1174,9 +1318,9 @@ Response excerpt:
 - `final`
 - `error`
 
-`final` 包含完整 `DebugMaterialBundleResponse`；`error` 可能是 `{status, detail}` 或模型运行错误 payload。
+`final` 包含完整 debug material bundle 响应（含 `expected_findings`）；`error` 可能是 `{status, detail}` 或模型运行错误 payload。
 
-### 7.12 OpenAI-compatible adapters
+### 7.13 OpenAI-compatible adapters
 
 这些 endpoint 是 DS-160 产品层 adapter，不是模型供应商透传代理。它们会创建/复用本地 session、导入 transcript、运行 `MessageService`，并把 Case Board / runtime metadata 放到响应里。
 
@@ -1184,6 +1328,22 @@ Response excerpt:
 | --- | --- | --- | --- |
 | `POST` | `/v1/chat/completions` | Cookie or machine bearer | OpenAI Chat Completions 风格入口 |
 | `POST` | `/v1/responses` | Cookie or machine bearer | OpenAI Responses 风格入口 |
+
+#### Breaking note：ownership + quota（post-review 硬化）
+
+历史上部分客户端可能假设「只要有任意有效 Cookie / 知道 `session_id` 就能在 compat 路径继续写」。当前合同：
+
+1. **Session ownership（access-key 用户）**  
+   当 `app_auth` 开启且当前 principal 绑定了 `access_key_id` 时，`metadata.session_id`（或 idempotency 解析出的 session）必须由该 key 拥有（`AccessKeySession`）。跨 key 复用他人 session → **`403`**  
+   `detail`: `session is not available for this access key`。
+2. **Quota on create**  
+   Access-key 用户在 compat 路径**新建** session（未传可用 `session_id`）时走 `create_session_with_quota`：创建与扣次在同一逻辑单元；quota 用尽 → **`403`**（非静默成功）。
+3. **Machine key**  
+   `Authorization: Bearer <APP_COMPAT_API_KEY>` 仅在 `/v1/chat/completions` 与 `/v1/responses` 被 middleware 接受；对该两路径上的 `ensure_session_access(..., allow_machine_api=True)` 为 **admin-equivalent 全 session 写**。不绑定 access-key quota。**仅部署给可信后端**（见 §3.3 矩阵）。
+4. **Admin cookie**  
+   可访问任意 session；不经 access-key ownership 检查。
+
+集成方若仍用「共享 session_id + 不同 access key」做横向协作，会在 ownership 检查处失败——这是有意的破坏性收紧，不是偶然 403。
 
 #### `POST /v1/chat/completions`
 
@@ -1209,6 +1369,7 @@ Rules:
 
 - `messages` 至少包含一条 `user`；最后一条 `user` 是本轮输入；
 - 推荐传 `metadata.session_id` 复用会话；新建会话时需要 `metadata.declared_family`；
+- 复用 session 时执行 ownership（见上）；跨 key → `403`；
 - `metadata.client_message_id` / `metadata.idempotency_key` / HTTP `Idempotency-Key` 都可参与幂等；
 - `system` message 作为请求上下文，不进入 public transcript。
 
@@ -1260,6 +1421,7 @@ Rules:
 - `instructions` 会作为请求级 system message；
 - `previous_response_id` 必须映射到本地 assistant turn；
 - 同时传 `metadata.session_id` 和 `previous_response_id` 时必须指向同一 session；
+- ownership / quota / machine-key 规则与 chat completions 相同；
 - 当前不承诺完整官方 Responses API 的工具调用、远端会话保存或全量字段。
 
 Response excerpt:
@@ -1292,6 +1454,8 @@ GET    /v1/sessions/{session_id}/required-package
 GET    /v1/sessions/{session_id}/messages
 POST   /v1/sessions/{session_id}/messages
 POST   /v1/sessions/{session_id}/messages/stream
+GET    /v1/sessions/{session_id}/files
+GET    /v1/sessions/{session_id}/documents
 POST   /v1/sessions/{session_id}/files
 GET    /v1/sessions/{session_id}/files/{document_id}/content
 DELETE /v1/sessions/{session_id}/files/{document_id}
@@ -1316,6 +1480,11 @@ GET    /v1/admin/access-keys/{key_id}/sessions
 GET    /v1/admin/sessions/{session_id}/messages
 GET    /v1/admin/settings
 PATCH  /v1/admin/settings
+GET    /v1/admin/model-channels
+POST   /v1/admin/model-channels
+PATCH  /v1/admin/model-channels/{channel_id}
+DELETE /v1/admin/model-channels/{channel_id}
+POST   /v1/admin/model-channels/{channel_id}/activate
 POST   /v1/admin/model-config/models
 POST   /v1/admin/model-config/test
 GET    /v1/admin/rag/status

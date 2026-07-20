@@ -190,6 +190,47 @@ def test_refuse_then_parse_keeps_phase_closed(
     assert message_response.status_code == 409
 
 
+def test_get_evidence_excerpt_returns_none_for_tombstoned_document(
+    db_session_factory,
+) -> None:
+    from app.db.evidence_models import EvidenceItemRecord
+    from app.services.evidence_service import EvidenceService
+
+    with db_session_factory() as db:
+        db.add(SessionRecord(session_id="sess-evi", declared_family="f1"))
+        db.add(
+            DocumentRecord(
+                document_id="doc-evi",
+                session_id="sess-evi",
+                filename="funding.pdf",
+                status="tombstoned",
+                artifact_json={
+                    "case_memory_tombstone": {
+                        "status": "tombstoned",
+                        "reason": "test",
+                    }
+                },
+            )
+        )
+        db.add(
+            EvidenceItemRecord(
+                evidence_id="evi-tomb",
+                session_id="sess-evi",
+                document_id="doc-evi",
+                chunk_id="chunk-1",
+                evidence_type="funding_proof",
+                field_path="/funding/primary_source",
+                value="parents",
+                excerpt="Parent sponsor bank statement",
+                confidence=1.0,
+                metadata_json={},
+            )
+        )
+        db.commit()
+
+        assert EvidenceService(db).get_evidence_excerpt("evi-tomb") is None
+
+
 def test_claim_next_job_skips_tombstoned_document(db_session_factory) -> None:
     with db_session_factory() as db:
         db.add(SessionRecord(session_id="sess-1", declared_family="f1"))

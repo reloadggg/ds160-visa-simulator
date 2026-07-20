@@ -110,12 +110,18 @@ async def upload_file_with_ticket(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     service = WxUploadTicketService(db)
+    # Reserve the max_files slot under lock BEFORE FileService.upload so two
+    # concurrent requests cannot both create documents when max_files=1.
     try:
-        ticket_record = service.validate_for_upload(ticket)
+        ticket_record = service.reserve_upload_slot(ticket)
     except WxUploadTicketError as exc:
         _raise_ticket_error(exc)
 
     if session_id and session_id != ticket_record.session_id:
+        try:
+            service.release_upload_slot(ticket_record)
+        except WxUploadTicketError:
+            pass
         raise HTTPException(
             status_code=403,
             detail="upload ticket does not match session",
@@ -123,10 +129,15 @@ async def upload_file_with_ticket(
 
     record = db.get(SessionRecord, ticket_record.session_id)
     if record is not None and _session_is_terminal(record):
+        try:
+            service.release_upload_slot(ticket_record)
+        except WxUploadTicketError:
+            pass
         raise HTTPException(status_code=409, detail="本轮面签已结束，不能继续上传材料。")
 
     raw_bytes = await file.read()
     filename = original_name or file.filename or "wechat-upload"
+    created_document_id: str | None = None
     try:
         result = FileService(db).upload(
             ticket_record.session_id,
@@ -136,22 +147,75 @@ async def upload_file_with_ticket(
             document_type,
             context_text,
         )
+        created_document_id = result.document_id
+        upload_payload = _file_upload_payload(ticket_record.session_id, result)
+        ticket_record = service.finalize_reserved_upload(
+            ticket_record,
+            result_payload=upload_payload,
+            filename=filename,
+            content_type=file.content_type,
+            size=len(raw_bytes),
+        )
     except SessionNotFoundError as exc:
+        _rollback_reserved_upload(
+            db,
+            service,
+            ticket_record,
+            document_id=created_document_id,
+        )
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except FileTooLargeError as exc:
+        _rollback_reserved_upload(
+            db,
+            service,
+            ticket_record,
+            document_id=created_document_id,
+        )
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except UnsupportedFileTypeError as exc:
+        _rollback_reserved_upload(
+            db,
+            service,
+            ticket_record,
+            document_id=created_document_id,
+        )
         raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except Exception:
+        _rollback_reserved_upload(
+            db,
+            service,
+            ticket_record,
+            document_id=created_document_id,
+        )
+        raise
 
-    upload_payload = _file_upload_payload(ticket_record.session_id, result)
-    ticket_record = service.record_upload_result(
-        ticket_record,
-        result_payload=upload_payload,
-        filename=filename,
-        content_type=file.content_type,
-        size=len(raw_bytes),
-    )
     return {
         **service.status_payload(ticket=ticket, record=ticket_record),
         "upload": upload_payload,
     }
+
+
+def _rollback_reserved_upload(
+    db: Session,
+    service: WxUploadTicketService,
+    ticket_record,
+    *,
+    document_id: str | None,
+) -> None:
+    """Release reserved slot and optional-tombstone a partially created document."""
+    try:
+        service.release_upload_slot(ticket_record)
+    except WxUploadTicketError:
+        pass
+    if not document_id:
+        return
+    try:
+        from app.services.case_memory_service import CaseMemoryService
+
+        CaseMemoryService(db).tombstone_document(
+            document_id=document_id,
+            reason="wx_upload_ticket_rollback",
+        )
+        db.commit()
+    except Exception:
+        db.rollback()

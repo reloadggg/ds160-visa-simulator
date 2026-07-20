@@ -95,10 +95,12 @@ PR-B8 Security harden (rate limit, tickets, secrets)  ── optional batch
 
 **验收**
 
-- [ ] Quality guard 失败后，新 `client_message_id` 可继续发消息。
-- [ ] 同 session 并发 2 请求：一个成功，一个 409/或串行成功，**不会**出现两条未匹配 assistant 的“双线对话”。
-- [ ] 用户 turn 提交 claims 后 runtime 失败：snapshot 中无该 turn 的 claims；board 与 transcript 一致。
-- [ ] 现有 idempotent 重试（同 `client_message_id` + 已有 assistant）仍返回同一结果。
+- [x] Quality guard 失败后，新 `client_message_id` 可继续发消息。
+- [x] 同 session 并发 2 请求：一个成功，一个 409/或串行成功，**不会**出现两条未匹配 assistant 的“双线对话”。
+  - **实现说明（2026-07-20 post-review WP-C / F6）**：`SELECT ... FOR UPDATE` 在 SQLite 上为 no-op，且锁**不**跨越 LLM 调用。交叉请求互斥改为 committed `interviewer_state_json.processing_user_turn` 标志（与 user turn 同事务提交；assistant 提交或 cleanup 时清除）。Postgres 上 FOR UPDATE 仍可序列化短临界区。集成测试：`test_concurrent_message_posts_reject_second_with_409`。
+  - **B1 状态：partial → complete for “no double user turn”** via processing flag（非 long FOR UPDATE spanning LLM）。
+- [x] 用户 turn 提交 claims 后 runtime 失败：snapshot 中无该 turn 的 claims；board 与 transcript 一致。
+- [x] 现有 idempotent 重试（同 `client_message_id` + 已有 assistant）仍返回同一结果。
 
 **不改**
 
@@ -398,6 +400,8 @@ Package import / debug fill / 部分 cleanup **不** rebuild。
 ## 9. Tracking checklist
 
 - [x] PR-B1 Turn failure & concurrency  
+  - Originally marked complete after short FOR UPDATE + failure cleanup.  
+  - **Honest status (post-review 2026-07-20 WP-C):** complete for **no double user turn** via committed `processing_user_turn` flag + unanswered check; **not** “lock spans LLM” (by design). SQLite FOR UPDATE remains no-op.  
 - [x] PR-B2 Case memory invalidation  
 - [x] PR-B3 Material lifecycle + documents API  
 - [x] PR-B4 AuthZ + atomic quota  
@@ -408,7 +412,8 @@ Package import / debug fill / 部分 cleanup **不** rebuild。
 - [x] Update `docs/runtime-contracts.md` + `docs/API.md` after B3/B6  
 - [x] No frontend commits in these PRs (frontend WIP left unstaged for user)  
 
-> Implemented on local `main` via concurrent worktree agents + merge (2026-07-20). Not pushed.
+> Implemented on local `main` via concurrent worktree agents + merge (2026-07-20). Not pushed.  
+> B1 concurrency honesty + processing flag hardened in post-review WP-C (2026-07-20).
 
 ---
 

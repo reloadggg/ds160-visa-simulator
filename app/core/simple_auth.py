@@ -121,29 +121,29 @@ def _rightmost_forwarded_ip(header_value: str | None) -> str | None:
 def request_metadata(request: Request) -> ClientRequestMetadata:
     """Extract client metadata for auth, audit, and rate limiting.
 
-    IP resolution order:
-    1. ``CF-Connecting-IP`` when present (Cloudflare edge sets this; spoofable
-       only if the origin is reachable without Cloudflare).
-    2. When ``trust_x_forwarded_for`` is enabled: rightmost ``X-Forwarded-For``
-       hop, else ``X-Real-IP``.
-    3. Otherwise: the direct TCP peer (``request.client.host``).
+    IP resolution when ``trust_x_forwarded_for`` is enabled (trusted proxy /
+    Cloudflare origin allowlist required in production):
+    1. ``CF-Connecting-IP`` when present (Cloudflare edge client IP).
+    2. Rightmost ``X-Forwarded-For`` hop, else ``X-Real-IP``.
+    3. Direct TCP peer (``request.client.host``).
 
-    With ``trust_x_forwarded_for=false`` (default), client-supplied proxy
-    headers other than CF-Connecting-IP are ignored so forged XFF cannot
-    bypass login rate limits.
+    When ``trust_x_forwarded_for`` is false (default), all client-supplied
+    proxy headers including ``CF-Connecting-IP`` are ignored so forged headers
+    cannot bypass login rate limits. Production behind Cloudflare must set
+    ``TRUST_X_FORWARDED_FOR=true`` **and** restrict origin access to Cloudflare
+    (or another trusted proxy) IP ranges.
     """
 
-    cf_connecting_ip = _first_header_value(request.headers.get("cf-connecting-ip"))
-    if cf_connecting_ip:
-        return ClientRequestMetadata(
-            client_ip=cf_connecting_ip,
-            client_ip_source="cf-connecting-ip",
-            user_agent=request.headers.get("user-agent"),
-            cf_ray=request.headers.get("cf-ray"),
-            cf_country=request.headers.get("cf-ipcountry"),
-        )
-
     if settings.trust_x_forwarded_for:
+        cf_connecting_ip = _first_header_value(request.headers.get("cf-connecting-ip"))
+        if cf_connecting_ip:
+            return ClientRequestMetadata(
+                client_ip=cf_connecting_ip,
+                client_ip_source="cf-connecting-ip",
+                user_agent=request.headers.get("user-agent"),
+                cf_ray=request.headers.get("cf-ray"),
+                cf_country=request.headers.get("cf-ipcountry"),
+            )
         forwarded_for = _rightmost_forwarded_ip(request.headers.get("x-forwarded-for"))
         if forwarded_for:
             return ClientRequestMetadata(

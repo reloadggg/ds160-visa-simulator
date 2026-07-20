@@ -55,6 +55,42 @@ export interface AdminSettings {
   model_name?: string | null
   model_streaming_enabled?: boolean
   model_api_key_configured?: boolean
+  /** Multi-channel providers; active channel drives runtime. */
+  model_channels?: AdminModelChannel[]
+  active_model_channel_id?: string | null
+}
+
+export interface AdminModelChannel {
+  id: string
+  name: string
+  base_url?: string | null
+  model?: string | null
+  streaming_enabled?: boolean
+  api_key_configured?: boolean
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface AdminModelChannelCreateRequest {
+  name: string
+  base_url: string
+  api_key: string
+  model?: string | null
+  streaming_enabled?: boolean
+  activate?: boolean
+}
+
+export interface AdminModelChannelUpdateRequest {
+  name?: string
+  base_url?: string
+  api_key?: string
+  model?: string | null
+  streaming_enabled?: boolean
+}
+
+export interface AdminModelChannelListResponse {
+  model_channels: AdminModelChannel[]
+  active_model_channel_id?: string | null
 }
 
 export type AdminAccessKeyStatusFilter = "enabled" | "disabled" | "all"

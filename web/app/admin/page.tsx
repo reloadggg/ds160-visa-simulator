@@ -5,8 +5,11 @@ import Link from "next/link"
 import { ArrowRight, BarChart3, KeyRound, LinkIcon, LockKeyhole, Radar, Sparkles } from "lucide-react"
 import { buildApiUrl } from "@/lib/api/config"
 import {
+  activateAdminModelChannel,
   clearAdminAccessKeyMaterials,
   createAdminAccessKey,
+  createAdminModelChannel,
+  deleteAdminModelChannel,
   fetchAdminModelConfigModels,
   getAdminLoginAudit,
   getAdminSettings,
@@ -14,6 +17,7 @@ import {
   revealAdminAccessKeySecret,
   testAdminModelConfig,
   updateAdminAccessKey,
+  updateAdminModelChannel,
   updateAdminSettings,
 } from "@/lib/api/client"
 import type {
@@ -21,6 +25,7 @@ import type {
   AdminAccessKeyStatusFilter,
   AdminLoginAuditEvent,
   AdminLoginAuditIpStat,
+  AdminModelChannel,
   AdminModelConfigTestResponse,
   AdminSettings,
   ModelListItem,
@@ -78,6 +83,7 @@ type ModelDraft = {
   apiKey: string
   modelName: string
   streamingEnabled: boolean
+  name: string
 }
 
 const DEFAULT_MODEL_DRAFT: ModelDraft = {
@@ -85,6 +91,7 @@ const DEFAULT_MODEL_DRAFT: ModelDraft = {
   apiKey: "",
   modelName: "",
   streamingEnabled: true,
+  name: "",
 }
 
 function formatDateTime(
@@ -194,12 +201,18 @@ export default function AdminPage() {
   )
   const [ragFile, setRagFile] = useState<File | null>(null)
   const [modelDraft, setModelDraft] = useState<ModelDraft>(DEFAULT_MODEL_DRAFT)
+  const [modelChannels, setModelChannels] = useState<AdminModelChannel[]>([])
+  const [activeModelChannelId, setActiveModelChannelId] = useState<string | null>(
+    null,
+  )
+  const [editingChannelId, setEditingChannelId] = useState<string | null>(null)
   const [availableModels, setAvailableModels] = useState<ModelListItem[]>([])
   const [modelSource, setModelSource] = useState<string | null>(null)
   const [modelTestResult, setModelTestResult] =
     useState<AdminModelConfigTestResponse | null>(null)
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [isTestingModel, setIsTestingModel] = useState(false)
+  const [isSavingChannel, setIsSavingChannel] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -263,11 +276,21 @@ export default function AdminPage() {
     setAuditEvents(auditPayload.events)
     setIpStats(auditPayload.ip_stats)
     setRagStatus(ragPayload)
+    const channels = settingsPayload.model_channels ?? []
+    const activeId = settingsPayload.active_model_channel_id ?? null
+    setModelChannels(channels)
+    setActiveModelChannelId(activeId)
+    const active =
+      channels.find((channel) => channel.id === activeId) ?? channels[0] ?? null
+    setEditingChannelId(active?.id ?? null)
     setModelDraft({
-      baseUrl: settingsPayload.model_base_url ?? "",
+      name: active?.name ?? "",
+      baseUrl: active?.base_url ?? settingsPayload.model_base_url ?? "",
       apiKey: "",
-      modelName: settingsPayload.model_name ?? "",
-      streamingEnabled: settingsPayload.model_streaming_enabled !== false,
+      modelName: active?.model ?? settingsPayload.model_name ?? "",
+      streamingEnabled:
+        active?.streaming_enabled ??
+        settingsPayload.model_streaming_enabled !== false,
     })
   }
 
@@ -505,20 +528,121 @@ export default function AdminPage() {
     }
   }
 
-  const saveModelSettings = async () => {
+  const applyChannelState = (
+    channels: AdminModelChannel[],
+    activeId: string | null | undefined,
+    settingsPayload?: AdminSettings,
+  ) => {
+    setModelChannels(channels)
+    setActiveModelChannelId(activeId ?? null)
+    if (settingsPayload) {
+      setSettings(settingsPayload)
+    }
+  }
+
+  const loadChannelIntoDraft = (channel: AdminModelChannel | null) => {
+    setEditingChannelId(channel?.id ?? null)
+    setModelDraft({
+      name: channel?.name ?? "",
+      baseUrl: channel?.base_url ?? "",
+      apiKey: "",
+      modelName: channel?.model ?? "",
+      streamingEnabled: channel?.streaming_enabled !== false,
+    })
+    setAvailableModels([])
+    setModelTestResult(null)
+  }
+
+  const saveModelChannel = async () => {
+    setError(null)
+    setIsSavingChannel(true)
+    try {
+      const name = modelDraft.name.trim() || "未命名渠道"
+      const baseUrl = modelDraft.baseUrl.trim()
+      if (!baseUrl) {
+        throw new Error("请填写 Base URL")
+      }
+      if (editingChannelId) {
+        const payload = await updateAdminModelChannel(editingChannelId, {
+          name,
+          base_url: baseUrl,
+          api_key: modelDraft.apiKey.trim() || undefined,
+          model: modelDraft.modelName.trim() || null,
+          streaming_enabled: modelDraft.streamingEnabled,
+        })
+        applyChannelState(
+          payload.model_channels,
+          payload.active_model_channel_id,
+        )
+        setModelDraft((current) => ({ ...current, apiKey: "" }))
+        setNotice(`渠道「${name}」已更新。`)
+      } else {
+        if (!modelDraft.apiKey.trim()) {
+          throw new Error("新建渠道必须填写 API Key")
+        }
+        const payload = await createAdminModelChannel({
+          name,
+          base_url: baseUrl,
+          api_key: modelDraft.apiKey.trim(),
+          model: modelDraft.modelName.trim() || null,
+          streaming_enabled: modelDraft.streamingEnabled,
+          activate: modelChannels.length === 0,
+        })
+        applyChannelState(
+          payload.model_channels,
+          payload.active_model_channel_id,
+        )
+        setEditingChannelId(payload.channel.id)
+        setModelDraft((current) => ({
+          ...current,
+          apiKey: "",
+          name: payload.channel.name,
+        }))
+        setNotice(`渠道「${name}」已创建。`)
+      }
+      const nextSettings = await getAdminSettings()
+      setSettings(nextSettings)
+    } catch (err) {
+      setError(errorMessage(err, "模型渠道保存失败"))
+    } finally {
+      setIsSavingChannel(false)
+    }
+  }
+
+  const activateChannel = async (channelId: string) => {
     setError(null)
     try {
-      const next = await updateAdminSettings({
-        model_base_url: modelDraft.baseUrl.trim(),
-        model_api_key: modelDraft.apiKey.trim() || undefined,
-        model_name: modelDraft.modelName.trim(),
-        model_streaming_enabled: modelDraft.streamingEnabled,
-      })
-      setSettings(next)
-      setModelDraft((current) => ({ ...current, apiKey: "" }))
-      setNotice("运行时模型配置已保存。")
+      const payload = await activateAdminModelChannel(channelId)
+      applyChannelState(payload.model_channels, payload.active_model_channel_id)
+      const active =
+        payload.model_channels.find((channel) => channel.id === channelId) ??
+        null
+      loadChannelIntoDraft(active)
+      const nextSettings = await getAdminSettings()
+      setSettings(nextSettings)
+      setNotice(`已切换运行时渠道：${active?.name ?? channelId}`)
     } catch (err) {
-      setError(errorMessage(err, "运行时模型配置保存失败"))
+      setError(errorMessage(err, "切换渠道失败"))
+    }
+  }
+
+  const removeChannel = async (channelId: string) => {
+    setError(null)
+    try {
+      const payload = await deleteAdminModelChannel(channelId)
+      applyChannelState(payload.model_channels, payload.active_model_channel_id)
+      const nextActive =
+        payload.model_channels.find(
+          (channel) => channel.id === payload.active_model_channel_id,
+        ) ??
+        payload.model_channels[0] ??
+        null
+      loadChannelIntoDraft(nextActive)
+      const nextSettings = await getAdminSettings()
+      setSettings(nextSettings)
+      setNotice("渠道已删除。")
+    } catch (err) {
+      setError(errorMessage(err, "删除渠道失败"))
     }
   }
 
@@ -541,7 +665,7 @@ export default function AdminPage() {
   }
 
   const saveSelectedModel = async () => {
-    await saveModelSettings()
+    await saveModelChannel()
   }
 
   const testModel = async () => {
@@ -1018,77 +1142,172 @@ export default function AdminPage() {
         <section id="model-config" className="rounded-[24px] border border-white/10 bg-white/[0.045] p-5 shadow-lg shadow-black/25 backdrop-blur-xl">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">运行时模型配置</h2>
+              <h2 className="text-lg font-semibold">模型渠道</h2>
               <p className="mt-1 text-sm text-slate-400">
-                后台保存的配置会作为模拟面签运行时模型来源；API Key
-                留空时保持既有密钥不变。
+                可添加多个 OpenAI 兼容渠道（base URL + key + model），并指定一个
+                为当前运行时来源。激活渠道会覆盖旧的单字段模型配置。
               </p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-2 text-xs text-slate-300">
-              Key 状态：
-              {settings?.model_api_key_configured ? "已配置" : "未配置"}
+              激活：
+              {modelChannels.find((c) => c.id === activeModelChannelId)?.name ??
+                (settings?.model_api_key_configured ? "旧配置" : "未配置")}
             </div>
           </div>
-          <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr_auto]">
-            <input
-              value={modelDraft.baseUrl}
-              onChange={(event) =>
-                setModelDraft((current) => ({
-                  ...current,
-                  baseUrl: event.target.value,
-                }))
-              }
-              className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
-              placeholder="Base URL，例如 https://.../v1"
-            />
-            <input
-              value={modelDraft.apiKey}
-              onChange={(event) =>
-                setModelDraft((current) => ({
-                  ...current,
-                  apiKey: event.target.value,
-                }))
-              }
-              type="password"
-              className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
-              placeholder={
-                settings?.model_api_key_configured
-                  ? "已配置；留空不修改"
-                  : "API Key"
-              }
-            />
-            {availableModels.length ? (
-              <select
-                value={modelDraft.modelName}
-                onChange={(event) =>
-                  setModelDraft((current) => ({
-                    ...current,
-                    modelName: event.target.value,
-                  }))
-                }
-                className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
-              >
-                <option value="">选择模型</option>
-                {availableModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label || model.id}
-                  </option>
-                ))}
-              </select>
+
+          <div className="mt-4 space-y-2">
+            {modelChannels.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
+                还没有渠道。在下方填写后点「保存渠道」。
+              </div>
             ) : (
+              modelChannels.map((channel) => {
+                const isActive = channel.id === activeModelChannelId
+                const isEditing = channel.id === editingChannelId
+                return (
+                  <div
+                    key={channel.id}
+                    className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 ${
+                      isActive
+                        ? "border-cyan-300/30 bg-cyan-300/10"
+                        : "border-white/10 bg-white/[0.045]"
+                    }`}
+                  >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-white">
+                          {channel.name}
+                        </span>
+                        {isActive ? (
+                          <span className="rounded-full bg-cyan-300/20 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+                            当前运行时
+                          </span>
+                        ) : null}
+                        {isEditing ? (
+                          <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-slate-300">
+                            编辑中
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-slate-400">
+                        {channel.base_url || "-"} · {channel.model || "未选模型"} ·
+                        Key {channel.api_key_configured ? "已配置" : "缺失"}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <button
+                        className="rounded-xl border border-white/10 bg-white/[0.08] px-3 py-1.5 font-semibold text-slate-200"
+                        onClick={() => loadChannelIntoDraft(channel)}
+                      >
+                        编辑
+                      </button>
+                      {!isActive ? (
+                        <button
+                          className="rounded-xl bg-white px-3 py-1.5 font-semibold text-slate-950"
+                          onClick={() => void activateChannel(channel.id)}
+                        >
+                          设为运行时
+                        </button>
+                      ) : null}
+                      <button
+                        className="rounded-xl border border-red-300/20 bg-red-500/10 px-3 py-1.5 font-semibold text-red-100"
+                        onClick={() => void removeChannel(channel.id)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-200">
+                {editingChannelId ? "编辑渠道" : "新建渠道"}
+              </h3>
+              {editingChannelId ? (
+                <button
+                  className="text-xs text-slate-400 underline-offset-2 hover:text-white hover:underline"
+                  onClick={() => loadChannelIntoDraft(null)}
+                >
+                  改为新建
+                </button>
+              ) : null}
+            </div>
+            <div className="grid gap-3 lg:grid-cols-2">
               <input
-                value={modelDraft.modelName}
+                value={modelDraft.name}
                 onChange={(event) =>
                   setModelDraft((current) => ({
                     ...current,
-                    modelName: event.target.value,
+                    name: event.target.value,
                   }))
                 }
                 className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
-                placeholder="模型名称"
+                placeholder="渠道名称，例如 yxxb / venlacy"
               />
-            )}
-            <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-4 text-sm">
+              <input
+                value={modelDraft.baseUrl}
+                onChange={(event) =>
+                  setModelDraft((current) => ({
+                    ...current,
+                    baseUrl: event.target.value,
+                  }))
+                }
+                className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
+                placeholder="Base URL，例如 https://.../v1"
+              />
+              <input
+                value={modelDraft.apiKey}
+                onChange={(event) =>
+                  setModelDraft((current) => ({
+                    ...current,
+                    apiKey: event.target.value,
+                  }))
+                }
+                type="password"
+                className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
+                placeholder={
+                  editingChannelId
+                    ? "API Key（留空则不修改）"
+                    : "API Key（新建必填）"
+                }
+              />
+              {availableModels.length ? (
+                <select
+                  value={modelDraft.modelName}
+                  onChange={(event) =>
+                    setModelDraft((current) => ({
+                      ...current,
+                      modelName: event.target.value,
+                    }))
+                  }
+                  className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white"
+                >
+                  <option value="">选择模型</option>
+                  {availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label || model.id}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={modelDraft.modelName}
+                  onChange={(event) =>
+                    setModelDraft((current) => ({
+                      ...current,
+                      modelName: event.target.value,
+                    }))
+                  }
+                  className="h-11 rounded-2xl border border-white/10 bg-white/[0.06] px-4 text-white placeholder:text-slate-500"
+                  placeholder="模型名称，例如 grok-4.5"
+                />
+              )}
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
                 checked={modelDraft.streamingEnabled}
@@ -1101,40 +1320,43 @@ export default function AdminPage() {
               />
               流式输出
             </label>
+            <div className="mt-4 flex flex-wrap gap-2 text-sm">
+              <button
+                className="rounded-2xl bg-white px-4 py-2 font-semibold text-slate-950 shadow-lg shadow-white/10 transition hover:bg-cyan-50 disabled:opacity-50"
+                onClick={() => void saveModelChannel()}
+                disabled={isSavingChannel}
+              >
+                {isSavingChannel ? "保存中..." : "保存渠道"}
+              </button>
+              <button
+                className="rounded-2xl border border-white/10 bg-white/[0.08] px-4 py-2 font-semibold text-slate-200 disabled:opacity-50"
+                onClick={() => void fetchModels()}
+                disabled={isFetchingModels}
+              >
+                {isFetchingModels ? "拉取中..." : "拉取模型列表"}
+              </button>
+              <button
+                className="rounded-2xl border border-white/10 bg-white/[0.08] px-4 py-2 font-semibold text-slate-200"
+                onClick={() => void saveSelectedModel()}
+                disabled={isSavingChannel}
+              >
+                保存所选模型
+              </button>
+              <button
+                className="rounded-2xl bg-black/60 px-4 py-2 font-semibold text-white disabled:opacity-50"
+                onClick={() => void testModel()}
+                disabled={isTestingModel}
+              >
+                {isTestingModel ? "测试中..." : "连通性测试"}
+              </button>
+              {modelSource ? (
+                <span className="self-center text-xs text-slate-400">
+                  列表来源：{modelSource}
+                </span>
+              ) : null}
+            </div>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2 text-sm">
-            <button
-              className="rounded-2xl bg-white px-4 py-2 font-semibold text-slate-950 shadow-lg shadow-white/10 transition hover:bg-cyan-50"
-              onClick={() => void saveModelSettings()}
-            >
-              Save
-            </button>
-            <button
-              className="rounded-2xl border border-white/10 bg-white/[0.08] px-4 py-2 font-semibold text-slate-200 disabled:opacity-50"
-              onClick={() => void fetchModels()}
-              disabled={isFetchingModels}
-            >
-              {isFetchingModels ? "Fetching..." : "Fetch Models"}
-            </button>
-            <button
-              className="rounded-2xl border border-white/10 bg-white/[0.08] px-4 py-2 font-semibold text-slate-200"
-              onClick={() => void saveSelectedModel()}
-            >
-              Save Model
-            </button>
-            <button
-              className="rounded-2xl bg-black/60 px-4 py-2 font-semibold text-white disabled:opacity-50"
-              onClick={() => void testModel()}
-              disabled={isTestingModel}
-            >
-              {isTestingModel ? "Testing..." : "Test"}
-            </button>
-            {modelSource ? (
-              <span className="self-center text-xs text-slate-400">
-                模型来源：{modelSource}
-              </span>
-            ) : null}
-          </div>
+
           {modelTestResult ? (
             <div
               className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${modelTestResult.ok ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100" : "border-amber-300/20 bg-amber-300/10 text-amber-100"}`}

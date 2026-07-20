@@ -22,6 +22,8 @@ class SessionRepository:
         self,
         declared_family: str | None,
         gate_status_json: dict,
+        *,
+        commit: bool = True,
     ) -> SessionRecord:
         record = SessionRecord(
             session_id=f"sess-{uuid4().hex[:12]}",
@@ -34,15 +36,26 @@ class SessionRepository:
             current_focus_json={},
         )
         self.db.add(record)
-        self.db.commit()
-        self.db.refresh(record)
+        if commit:
+            self.db.commit()
+            self.db.refresh(record)
+        else:
+            self.db.flush()
         return record
 
     def get(self, session_id: str) -> SessionRecord | None:
         return self.db.get(SessionRecord, session_id)
 
     def get_for_update(self, session_id: str) -> SessionRecord | None:
-        """Load session row with SELECT ... FOR UPDATE (no-op lock on SQLite)."""
+        """Load session row with ``SELECT ... FOR UPDATE``.
+
+        On PostgreSQL this takes a row lock until the current transaction ends.
+        On SQLite the FOR UPDATE clause is effectively a no-op (SQLite only
+        locks the whole DB file on write, and the lock does not span unlocked
+        multi-second work such as LLM calls). Callers that need cross-request
+        mutual exclusion under SQLite must also use a committed processing
+        flag or similar application-level guard (see MessageService).
+        """
         statement = (
             select(SessionRecord)
             .where(SessionRecord.session_id == session_id)

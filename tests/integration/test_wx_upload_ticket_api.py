@@ -302,3 +302,60 @@ def test_ticket_upload_rejects_when_file_limit_reached(
 
     assert first_response.status_code == 202
     assert second_response.status_code == 409
+
+
+def test_ticket_upload_max_files_holds_under_concurrency(
+    client: TestClient,
+    db_session_factory,
+    enabled_auth: None,
+) -> None:
+    """F8: reserve-before-upload so only one document sticks when max_files=1."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    access_key = seed_access_key_session(db_session_factory)
+    login_with_key(client, access_key)
+    ticket = create_ticket(client)
+    with db_session_factory() as db:
+        record = db.get(WxUploadTicketRecord, hash_ticket(ticket))
+        assert record is not None
+        record.max_files = 1
+        db.add(record)
+        db.commit()
+
+    def upload(name: str):
+        return client.post(
+            f"/v1/wx/upload-tickets/{ticket}/files",
+            files={"file": (name, build_pdf_bytes(name), "application/pdf")},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(upload, f"file-{i}.pdf") for i in range(2)]
+        responses = [future.result(timeout=30) for future in as_completed(futures)]
+
+    statuses = sorted(response.status_code for response in responses)
+    assert 202 in statuses
+    assert 409 in statuses
+
+    with db_session_factory() as db:
+        ticket_record = db.get(WxUploadTicketRecord, hash_ticket(ticket))
+        assert ticket_record is not None
+        assert ticket_record.uploaded_count == 1
+        assert ticket_record.status == "completed"
+        documents = db.scalars(
+            select(DocumentRecord).where(
+                DocumentRecord.session_id == ticket_record.session_id
+            )
+        ).all()
+        live_docs = [
+            doc
+            for doc in documents
+            if doc.status not in {"tombstoned", "deleted"}
+            and not (
+                isinstance((doc.artifact_json or {}).get("case_memory_tombstone"), dict)
+                and (doc.artifact_json or {})
+                .get("case_memory_tombstone", {})
+                .get("status")
+                == "tombstoned"
+            )
+        ]
+        assert len(live_docs) == 1

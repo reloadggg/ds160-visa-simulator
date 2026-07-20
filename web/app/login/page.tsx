@@ -503,7 +503,13 @@ function Workbench() {
 
       <PracticeMaterialsDialog
         open={practiceMaterialsDialogOpen}
-        onOpenChange={setPracticeMaterialsDialogOpen}
+        onOpenChange={(nextOpen) => {
+          // Parent glue: never dismiss while generation is in flight.
+          if (!nextOpen && isDebugBundleGenerating) {
+            return
+          }
+          setPracticeMaterialsDialogOpen(nextOpen)
+        }}
         visaType={visaType}
         isGenerating={isDebugBundleGenerating}
         progressLines={debugBundleProgress}

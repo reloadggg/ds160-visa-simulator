@@ -86,10 +86,11 @@ def create_session_with_quota(
     gate_status_json: dict | None = None,
     repo: SessionRepository | None = None,
 ) -> SessionRecord:
-    """Create a session and consume access-key quota when applicable.
+    """Create a session and consume access-key quota in one logical unit.
 
-    Rolls back (deletes) the session if quota consumption fails so create +
-    quota stay transactional from the caller's perspective.
+    Session row is flushed (not committed) before quota consume so a quota
+    failure never leaves a committed orphan session. ``consume_session_quota``
+    commits both the session insert and the quota binding together.
     """
     session_repo = repo or SessionRepository(db)
     family = declared_family
@@ -105,19 +106,27 @@ def create_session_with_quota(
     if gate_status is None:
         gate_status = GateService().initial_gate_status(family)
 
-    record = session_repo.create(
-        declared_family=family,
-        gate_status_json=gate_status,
-    )
     access_key_id = current_access_key_id(request, db)
     if access_key_id:
+        # Flush-only create so quota failure can roll back without an orphan
+        # committed session row (F19).
+        record = session_repo.create(
+            declared_family=family,
+            gate_status_json=gate_status,
+            commit=False,
+        )
         try:
             AccessKeyService(db).consume_session_quota(
                 key_id=access_key_id,
                 session_id=record.session_id,
             )
         except PermissionError as exc:
-            db.delete(record)
-            db.commit()
+            db.rollback()
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return record
+        db.refresh(record)
+        return record
+
+    return session_repo.create(
+        declared_family=family,
+        gate_status_json=gate_status,
+    )

@@ -1219,6 +1219,7 @@ export function mapSessionDocumentToUploadedMaterial(
 ): UploadedMaterial {
   const mapped = mapSessionDocumentListItem(item, sessionId)
   const mimeType = guessMimeTypeFromFilename(mapped.filename)
+  const kind = guessAttachmentKind(mapped.filename, mimeType)
   const fullDelta = isFullCaseBoardDeltaShape(item.case_board_delta)
     ? mapCaseBoardDelta(item.case_board_delta as BackendCaseBoardDelta)
     : null
@@ -1230,8 +1231,9 @@ export function mapSessionDocumentToUploadedMaterial(
     session_id: sessionId,
     name: mapped.filename,
     mime_type: mimeType,
-    kind: guessAttachmentKind(mapped.filename, mimeType),
-    preview_url: null,
+    kind,
+    // Image previews: use content_url so restored materials show thumbnails (wx parity).
+    preview_url: kind === "image" ? mapped.content_url ?? null : null,
     content_url: mapped.content_url,
     uploaded_at: mapped.uploaded_at ?? new Date(0).toISOString(),
     status_label: humanizeUnderstandingStatusLabel(

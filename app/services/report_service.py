@@ -663,9 +663,15 @@ class ReportService:
         """Project top-level requested_documents aligned with turn responses.
 
         Prefer explicit interviewer/runtime requested_documents. When the key is
-        absent, fall back to current focus + remaining required docs + missing
-        evidence so the report contract stays useful for frontend consumers.
+        absent, fall back only to document_type-like values: current focus
+        document_type (when kind is required_document) plus
+        remaining_required_documents. Never dump raw missing_evidence entries
+        (those may be proof_point ids, not document types).
         """
+        # missing_evidence is intentionally unused in the fallback path: it may
+        # contain proof_point ids rather than document types.
+        del missing_evidence
+
         if "requested_documents" in effective_interviewer_state:
             return self._dedupe_document_types(
                 effective_interviewer_state.get("requested_documents")
@@ -681,10 +687,9 @@ class ReportService:
         ):
             projected.append(focus_document_type.strip())
 
-        for source in (remaining_required_documents, missing_evidence):
-            for document_type in self._dedupe_document_types(source):
-                if document_type not in projected:
-                    projected.append(document_type)
+        for document_type in self._dedupe_document_types(remaining_required_documents):
+            if document_type not in projected:
+                projected.append(document_type)
         return projected
 
     def _dedupe_document_types(self, value: Any) -> list[str]:

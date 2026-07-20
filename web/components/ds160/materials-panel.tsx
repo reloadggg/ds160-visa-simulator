@@ -41,15 +41,9 @@ interface MaterialsPanelProps {
   isPracticeGenerating?: boolean
 }
 
-/** Practice / synthetic materials (text-generated or debug bundle). */
+/** Practice materials: only the explicit product flag (not debug oracle bundles). */
 function isPracticeMaterial(material: UploadedMaterial): boolean {
-  return Boolean(
-    material.synthetic_bundle_id ||
-      material.debug_bundle_scenario ||
-      // Defensive: allow future practice marker without a type change yet.
-      (material as UploadedMaterial & { is_practice_material?: boolean })
-        .is_practice_material,
-  )
+  return Boolean(material.is_practice_material)
 }
 
 function formatDateTime(value: string): string {
@@ -162,7 +156,9 @@ function RawTextBlock({ rawText }: { rawText?: string | null }) {
 }
 
 function ExpectedFindings({ material }: { material: UploadedMaterial }) {
+  // Oracle「核验线索」is debug-console only — never on practice product path.
   if (
+    material.is_practice_material ||
     !material.expected_findings?.length ||
     !material.synthetic_bundle_id ||
     material.material_package_source === "archive_import"

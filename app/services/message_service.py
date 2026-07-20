@@ -30,6 +30,11 @@ from app.services.session_read_model_service import SessionReadModelService
 
 logger = logging.getLogger(__name__)
 
+# Committed flag on SessionRecord.interviewer_state_json so concurrent requests
+# see an in-flight user turn even when SQLite FOR UPDATE is a no-op and the row
+# lock does not span the multi-second LLM call.
+_PROCESSING_USER_TURN_KEY = "processing_user_turn"
+
 
 class DuplicateTurnInProgressError(RuntimeError):
     def __init__(self, session_id: str, client_message_id: str) -> None:
@@ -127,6 +132,7 @@ class MessageService:
         provider_retry_event_callback: ProviderRetryEventCallback | None = None,
     ) -> dict:
         committed_user_turn: SessionTurnRecord | None = None
+        processing_flag_set = False
         record = self.session_repo.get(session_id)
         if record is None:
             raise SessionNotFoundError(session_id)
@@ -134,9 +140,14 @@ class MessageService:
             raise SessionClosedError(session_id, self._closed_session_detail(record))
         record = self.gate_runtime.refresh_session(session_id, save=False)
 
-        # Short session-row locks only: (1) unanswered check + append user turn,
-        # (2) apply state + append assistant. Avoid holding FOR UPDATE across the
-        # multi-second LLM call while still serializing concurrent writers.
+        # Concurrency model (B1 / F6):
+        # - Short session-row locks only: (1) unanswered/processing check +
+        #   append user turn + set processing flag, (2) apply state + append
+        #   assistant + clear flag. FOR UPDATE does NOT span the multi-second
+        #   LLM call.
+        # - On SQLite, FOR UPDATE is a no-op; the committed processing flag
+        #   (and unanswered-user-turn check) provides the cross-request guard
+        #   so concurrent POSTs cannot double-append user turns.
         record = self._lock_session_row(session_id)
 
         if client_message_id:
@@ -155,9 +166,29 @@ class MessageService:
                 record.session_id,
                 in_progress_turn.client_message_id or client_message_id or "",
             )
+        processing_marker = self._processing_user_turn_marker(record)
+        if processing_marker is not None:
+            marker_client_message_id = processing_marker.get("client_message_id")
+            if (
+                not client_message_id
+                or not isinstance(marker_client_message_id, str)
+                or marker_client_message_id != client_message_id
+            ):
+                raise DuplicateTurnInProgressError(
+                    record.session_id,
+                    (
+                        marker_client_message_id
+                        if isinstance(marker_client_message_id, str)
+                        else client_message_id or ""
+                    ),
+                )
 
         try:
             try:
+                # Same critical section / commit: append user turn (no commit)
+                # + set processing flag, then single commit so concurrent
+                # readers either see both or neither. FOR UPDATE is held only
+                # until this commit (not across the LLM call).
                 user_turn = self.session_turn_repo.append_user_turn(
                     session_id=record.session_id,
                     content=message_text,
@@ -166,12 +197,21 @@ class MessageService:
                         record,
                         client_message_id=client_message_id,
                     ),
-                    commit=True,
+                    commit=False,
                 )
-                # append_user_turn(commit=True) ends the transaction and releases
-                # the row lock acquired above.
+                self._set_processing_user_turn(
+                    record,
+                    turn_id=user_turn.turn_id,
+                    client_message_id=client_message_id,
+                )
+                self.db.add(record)
+                self.db.commit()
+                self.db.refresh(user_turn)
+                self.db.refresh(record)
                 committed_user_turn = user_turn
+                processing_flag_set = True
             except DuplicateClientMessageIdError as exc:
+                self.db.rollback()
                 duplicate_response = self._duplicate_turn_response(
                     record,
                     client_message_id=exc.client_message_id,
@@ -182,6 +222,7 @@ class MessageService:
                     record.session_id,
                     exc.client_message_id,
                 ) from exc
+
             self._capture_interview_memory(record.session_id, user_turn)
             self._capture_user_turn_claims(record.session_id, user_turn, message_text)
             self.db.commit()
@@ -199,6 +240,8 @@ class MessageService:
                 )
                 assistant_turn = self._append_assistant_turn(record, response)
                 self._sync_runtime_view_contract(record, response, assistant_turn)
+                self._clear_processing_user_turn(record)
+                processing_flag_set = False
                 self.session_repo.save(record)
                 return response
 
@@ -218,6 +261,8 @@ class MessageService:
             self._apply_graph_response_state(record, response)
             assistant_turn = self._append_assistant_turn(record, response)
             self._sync_runtime_view_contract(record, response, assistant_turn)
+            self._clear_processing_user_turn(record)
+            processing_flag_set = False
             self._strip_internal_runtime_fields(response)
             self.session_repo.save(record)
             return response
@@ -227,6 +272,8 @@ class MessageService:
                 exc
             ):
                 self._cleanup_incomplete_committed_user_turn(committed_user_turn)
+            elif processing_flag_set:
+                self._clear_processing_flag_best_effort(session_id)
             raise
 
     def _lock_session_row(self, session_id: str) -> SessionRecord:
@@ -234,6 +281,51 @@ class MessageService:
         if record is None:
             raise SessionNotFoundError(session_id)
         return record
+
+    def _processing_user_turn_marker(self, record: SessionRecord) -> dict | None:
+        state = dict(record.interviewer_state_json or {})
+        marker = state.get(_PROCESSING_USER_TURN_KEY)
+        if not isinstance(marker, dict):
+            return None
+        turn_id = marker.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            return None
+        return marker
+
+    def _set_processing_user_turn(
+        self,
+        record: SessionRecord,
+        *,
+        turn_id: str,
+        client_message_id: str | None,
+    ) -> None:
+        state = dict(record.interviewer_state_json or {})
+        marker: dict = {"turn_id": turn_id}
+        if client_message_id:
+            marker["client_message_id"] = client_message_id
+        state[_PROCESSING_USER_TURN_KEY] = marker
+        record.interviewer_state_json = state
+
+    def _clear_processing_user_turn(self, record: SessionRecord) -> None:
+        state = dict(record.interviewer_state_json or {})
+        if _PROCESSING_USER_TURN_KEY not in state:
+            return
+        state.pop(_PROCESSING_USER_TURN_KEY, None)
+        record.interviewer_state_json = state
+
+    def _clear_processing_flag_best_effort(self, session_id: str) -> None:
+        try:
+            record = self.session_repo.get(session_id)
+            if record is None:
+                return
+            self._clear_processing_user_turn(record)
+            self.session_repo.save(record)
+        except Exception:
+            self.db.rollback()
+            logger.exception(
+                "failed to clear processing_user_turn flag",
+                extra={"session_id": session_id},
+            )
 
     def _user_turn_metadata(
         self,
@@ -275,6 +367,7 @@ class MessageService:
         try:
             persisted_turn = self.db.get(SessionTurnRecord, user_turn.turn_id)
             if persisted_turn is None:
+                self._clear_processing_flag_best_effort(user_turn.session_id)
                 return
             session_id = persisted_turn.session_id
             session_turns = self.session_turn_repo.list_session_turns(session_id)
@@ -284,6 +377,10 @@ class MessageService:
             if has_later_turn:
                 return
             self.db.delete(persisted_turn)
+            record = self.session_repo.get(session_id)
+            if record is not None:
+                self._clear_processing_user_turn(record)
+                self.db.add(record)
             self.db.commit()
             # Drop claims/evidence that were attached to the deleted turn so the
             # case memory snapshot cannot retain orphan user-turn assertions.
@@ -879,6 +976,8 @@ class MessageService:
             )
             if key in existing_state
         }
+        # processing_user_turn is cleared explicitly by the caller after assistant
+        # commit paths; do not preserve a stale flag into the replaced state.
         record.interviewer_state_json = {
             **preserved_state,
             "owner": (

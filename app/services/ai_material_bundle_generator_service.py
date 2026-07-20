@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from typing import Any, Literal, Protocol, TypeVar
 
-from openai import APIStatusError, OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy.orm import Session
 
@@ -21,6 +23,8 @@ from app.services.runtime_errors import (
     ModelUnavailableError,
     ProviderAPIError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 GeneratedBundleScenario = Literal[
@@ -87,6 +91,23 @@ DOCUMENT_TEXT_KEYS = (
 )
 
 
+def _looks_like_date_of_issue_line(line: str) -> bool:
+    """True for passport-style date lines, not oracle prompts like ``Issue: Missing``.
+
+    Models often emit ``Issue: 01 JAN 2025`` which must not be treated as oracle.
+    """
+    stripped = line.strip()
+    if not stripped.casefold().startswith("issue:"):
+        return False
+    rest = stripped.split(":", 1)[-1].strip()
+    if not rest:
+        return False
+    # Date-like: digits, month abbreviations, slashes, dashes, spaces.
+    if any(ch.isdigit() for ch in rest):
+        return True
+    return False
+
+
 def find_oracle_text_marker(text: str) -> str | None:
     normalized = text.casefold()
     for marker in ORACLE_TEXT_MARKERS:
@@ -96,8 +117,22 @@ def find_oracle_text_marker(text: str) -> str | None:
         normalized_line = line.strip().casefold()
         for prefix in ORACLE_LINE_PREFIXES:
             if normalized_line.startswith(prefix.casefold()):
+                if prefix.casefold() == "issue:" and _looks_like_date_of_issue_line(line):
+                    continue
                 return prefix
     return None
+
+
+def sanitize_generated_raw_text(text: str) -> str:
+    """Rewrite ambiguous ``Issue: <date>`` lines to ``Date of Issue:``."""
+    lines: list[str] = []
+    for line in text.splitlines():
+        if _looks_like_date_of_issue_line(line):
+            rest = line.split(":", 1)[-1].strip()
+            lines.append(f"Date of Issue: {rest}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def normalize_material_fields(value: Any) -> dict[str, str]:
@@ -160,7 +195,7 @@ class GeneratedMaterialDocument(BaseModel):
     @field_validator("raw_text")
     @classmethod
     def validate_raw_text(cls, value: str) -> str:
-        normalized = value.strip()
+        normalized = sanitize_generated_raw_text(value.strip())
         if not normalized:
             raise ValueError("raw_text must not be empty")
         marker = find_oracle_text_marker(normalized)
@@ -234,7 +269,15 @@ class AIMaterialBundleRunner(Protocol):
 
 
 class OpenAIChatCompletionsMaterialBundleRunner:
-    """OpenAI-compatible chat adapter for AI-native material bundle generation."""
+    """OpenAI-compatible chat adapter for AI-native material bundle generation.
+
+    Uses **chunked** generation (plan + per-document) with ``max_tokens`` caps and
+    connection retries so unstable free gateways are less likely to drop long
+    single-shot JSON responses.
+    """
+
+    # Marker so AIMaterialBundleGeneratorService can prefer chunked path.
+    supports_chunked_generation = True
 
     def run(
         self,
@@ -243,13 +286,44 @@ class OpenAIChatCompletionsMaterialBundleRunner:
         instructions: str,
         output_type: type[TOutput],
         runtime: dict[str, Any],
+        max_tokens: int | None = None,
     ) -> TOutput:
+        """Single JSON completion (used by chunked steps and legacy callers)."""
+        payload = self.complete_json(
+            prompt=prompt,
+            instructions=instructions,
+            runtime=runtime,
+            max_tokens=max_tokens,
+        )
+        if output_type is GeneratedMaterialBundleOutput:
+            normalized = self._normalize_material_payload(payload)
+            return output_type.model_validate(normalized)
+        if output_type is GeneratedMaterialDocument:
+            document = self._normalize_document_payload(payload)
+            # allow wrapping if model returned {"document": {...}}
+            if (
+                not document.get("document_type")
+                and isinstance(payload.get("document"), dict)
+            ):
+                document = self._normalize_document_payload(payload["document"])
+            return output_type.model_validate(document)
+        return output_type.model_validate(payload)
+
+    def complete_json(
+        self,
+        *,
+        prompt: str,
+        instructions: str,
+        runtime: dict[str, Any],
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
         client = self._build_client(runtime)
         completion = self._create_completion(
             client=client,
             runtime=runtime,
             instructions=instructions,
             prompt=prompt,
+            max_tokens=max_tokens,
         )
         content = completion.choices[0].message.content
         if not content:
@@ -261,9 +335,7 @@ class OpenAIChatCompletionsMaterialBundleRunner:
                 upstream_code="model_output_invalid",
                 error_category="model_output_invalid",
             )
-        payload = self._parse_json_content(content)
-        normalized = self._normalize_material_payload(payload)
-        return output_type.model_validate(normalized)
+        return self._parse_json_content(content)
 
     def _create_completion(
         self,
@@ -272,6 +344,7 @@ class OpenAIChatCompletionsMaterialBundleRunner:
         runtime: dict[str, Any],
         instructions: str,
         prompt: str,
+        max_tokens: int | None = None,
     ):
         model_name = self._string_or_none(runtime.get("model"))
         if model_name is None:
@@ -282,14 +355,47 @@ class OpenAIChatCompletionsMaterialBundleRunner:
                 model=model_name,
                 missing_env_vars=runtime.get("model_unavailable_missing_env_vars"),
             )
-        return client.chat.completions.create(
-            model=model_name,
-            messages=[
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": prompt},
             ],
-            response_format={"type": "json_object"},
-        )
+            "response_format": {"type": "json_object"},
+        }
+        if max_tokens is not None and max_tokens > 0:
+            kwargs["max_tokens"] = int(max_tokens)
+
+        max_retries = max(0, int(settings.ai_material_generation_max_retries))
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return client.chat.completions.create(**kwargs)
+            except (APIConnectionError, APITimeoutError) as exc:
+                last_error = exc
+                if attempt >= max_retries:
+                    break
+                delay = 0.6 * (attempt + 1)
+                logger.warning(
+                    "material generation LLM connection/timeout; retrying",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_retries": max_retries,
+                        "delay_s": delay,
+                        "model": model_name,
+                        "error": type(exc).__name__,
+                    },
+                )
+                time.sleep(delay)
+            except APIStatusError as exc:
+                # Retry soft 5xx once; do not retry 4xx.
+                if exc.status_code >= 500 and attempt < max_retries:
+                    last_error = exc
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+                raise
+        assert last_error is not None
+        raise last_error
 
     def _build_client(self, runtime: dict[str, Any]) -> OpenAI:
         user_config = current_user_model_config()
@@ -319,10 +425,15 @@ class OpenAIChatCompletionsMaterialBundleRunner:
                 model=model_name,
                 missing_env_vars=runtime.get("model_unavailable_missing_env_vars"),
             )
+        # Prefer admin model name when available.
+        if admin_config.source == "admin" and admin_config.model:
+            runtime["model"] = admin_config.model
+            runtime["provider"] = "openai_compatible"
         return OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=settings.ai_material_bundle_timeout_seconds,
+            max_retries=0,  # we handle retries ourselves for connection errors
             default_headers=openai_compat_default_headers(),
         )
 
@@ -490,29 +601,41 @@ class AIMaterialBundleGeneratorService:
                 missing_env_vars=runtime.get("model_unavailable_missing_env_vars"),
             )
 
-        prompt = self._build_prompt(
-            record=record,
-            scenario=scenario,
-            seed_text=normalized_seed,
-            include_synthetic_user_turns=include_synthetic_user_turns,
+        required_documents = self._required_documents_for_scenario(
+            scenario,
+            record.declared_family,
+        )
+        target_family = self._target_family_for_scenario(
+            scenario,
+            record.declared_family,
         )
         try:
-            output = self.runner.run(
-                prompt=prompt,
-                instructions=self._build_instructions(
-                    self._target_family_for_scenario(
-                        scenario,
-                        record.declared_family,
-                    )
-                ),
-                output_type=GeneratedMaterialBundleOutput,
-                runtime=runtime,
-            )
-            output = GeneratedMaterialBundleOutput.model_validate(output)
-            required_documents = self._required_documents_for_scenario(
-                scenario,
-                record.declared_family,
-            )
+            if getattr(self.runner, "supports_chunked_generation", False):
+                output, generation_mode = self._generate_chunked(
+                    record=record,
+                    scenario=scenario,
+                    seed_text=normalized_seed,
+                    include_synthetic_user_turns=include_synthetic_user_turns,
+                    required_documents=required_documents,
+                    target_family=target_family,
+                    runtime=runtime,
+                )
+            else:
+                # Unit tests / alternate runners: single-shot path.
+                prompt = self._build_prompt(
+                    record=record,
+                    scenario=scenario,
+                    seed_text=normalized_seed,
+                    include_synthetic_user_turns=include_synthetic_user_turns,
+                )
+                output = self.runner.run(
+                    prompt=prompt,
+                    instructions=self._build_instructions(target_family),
+                    output_type=GeneratedMaterialBundleOutput,
+                    runtime=runtime,
+                )
+                output = GeneratedMaterialBundleOutput.model_validate(output)
+                generation_mode = "single_shot"
             self._validate_required_documents(
                 output,
                 required_documents,
@@ -523,20 +646,282 @@ class AIMaterialBundleGeneratorService:
 
         trace = {
             "generator": "openai_chat_completions",
+            "generation_mode": generation_mode,
             "provider": runtime.get("provider"),
             "model": runtime.get("model"),
             "reasoning_effort": runtime.get("reasoning_effort"),
             "prompt_pack_id": "ds160.ai_material_bundle",
-            "prompt_version": "v1",
+            "prompt_version": "v2_chunked",
             "seed_text_present": True,
-            "target_family": self._target_family_for_scenario(
-                scenario,
-                record.declared_family,
-            ),
+            "target_family": target_family,
             "required_documents": required_documents,
             "timeout_seconds": settings.ai_material_bundle_timeout_seconds,
+            "doc_max_tokens": settings.ai_material_doc_max_tokens,
+            "summary_max_tokens": settings.ai_material_summary_max_tokens,
         }
         return output, trace
+
+    def _generate_chunked(
+        self,
+        *,
+        record: SessionRecord,
+        scenario: GeneratedBundleScenario,
+        seed_text: str,
+        include_synthetic_user_turns: bool,
+        required_documents: list[str],
+        target_family: str,
+        runtime: dict[str, Any],
+    ) -> tuple[GeneratedMaterialBundleOutput, str]:
+        """Plan facts + generate one document per LLM call (more reliable)."""
+        runner = self.runner
+        plan = self._generate_plan(
+            runner=runner,
+            record=record,
+            scenario=scenario,
+            seed_text=seed_text,
+            target_family=target_family,
+            required_documents=required_documents,
+            runtime=runtime,
+        )
+        documents: list[GeneratedMaterialDocument] = []
+        for document_type in required_documents:
+            document = self._generate_one_document(
+                runner=runner,
+                record=record,
+                scenario=scenario,
+                seed_text=seed_text,
+                target_family=target_family,
+                document_type=document_type,
+                plan=plan,
+                runtime=runtime,
+            )
+            documents.append(document)
+
+        # Ensure minimum document count for schema (at least 5).
+        while len(documents) < 5 and documents:
+            # Should not happen for standard families; stop rather than loop forever.
+            break
+
+        synthetic_turns: list[GeneratedMaterialSyntheticTurn] = []
+        if include_synthetic_user_turns:
+            synthetic_turns = self._synthetic_turns_from_plan(plan, seed_text)
+
+        user_summary_zh = self._generate_user_summary(
+            runner=runner,
+            seed_text=seed_text,
+            target_family=target_family,
+            plan=plan,
+            document_types=[doc.document_type for doc in documents],
+            runtime=runtime,
+        )
+        output = GeneratedMaterialBundleOutput(
+            documents=documents,
+            synthetic_turns=synthetic_turns,
+            generation_notes=[
+                "chunked_generation",
+                f"documents={len(documents)}",
+            ],
+            user_summary_zh=user_summary_zh,
+        )
+        return output, "chunked_per_document"
+
+    def _generate_plan(
+        self,
+        *,
+        runner: Any,
+        record: SessionRecord,
+        scenario: GeneratedBundleScenario,
+        seed_text: str,
+        target_family: str,
+        required_documents: list[str],
+        runtime: dict[str, Any],
+    ) -> dict[str, Any]:
+        instructions = (
+            "你是 DS-160 练习材料规划器。只输出 JSON，不要输出 markdown。\n"
+            "根据 seed_text 提取一致的事实，供后续逐份生成材料使用。\n"
+            "不要写 Issue/Missing/Expected/Defect 等调试词。"
+        )
+        payload = {
+            "task": "plan_material_facts",
+            "seed_text": seed_text,
+            "target_family": target_family,
+            "scenario": scenario,
+            "required_documents": required_documents,
+            "scenario_rules": self._scenario_rules(scenario),
+            "output_schema": {
+                "applicant_full_name": "string",
+                "passport_number": "string",
+                "nationality": "string",
+                "school_name": "string|null",
+                "program_name": "string|null",
+                "funding_primary_source": "string",
+                "funding_amount_usd": "string|number|null",
+                "sponsor_relationship": "string|null",
+                "sponsor_names": "string|null",
+                "purpose": "string",
+                "extra_facts": ["short strings"],
+            },
+        }
+        plan = runner.complete_json(
+            prompt=json.dumps(payload, ensure_ascii=False),
+            instructions=instructions,
+            runtime=runtime,
+            max_tokens=int(settings.ai_material_summary_max_tokens),
+        )
+        if not isinstance(plan, dict):
+            return {"seed_text": seed_text, "target_family": target_family}
+        plan.setdefault("seed_text", seed_text)
+        plan.setdefault("target_family", target_family)
+        return plan
+
+    def _generate_one_document(
+        self,
+        *,
+        runner: Any,
+        record: SessionRecord,
+        scenario: GeneratedBundleScenario,
+        seed_text: str,
+        target_family: str,
+        document_type: str,
+        plan: dict[str, Any],
+        runtime: dict[str, Any],
+    ) -> GeneratedMaterialDocument:
+        instructions = (
+            "你是 DS-160 模拟器的单份练习材料生成器。只输出一个 JSON object。\n"
+            f"目标签证：{target_family}。当前只生成 document_type={document_type}。\n"
+            "规则：\n"
+            "1. 事实必须与 plan 与 seed_text 一致。\n"
+            "2. raw_text 为完整 OCR/文本正文（中英文可混），150–500 字即可，不要写分析。\n"
+            "3. fields 必须是 JSON object，键为 JSON pointer（以 / 开头），至少 1 个字段。\n"
+            "4. 禁止 Issue/Missing/Expected/Defect/This conflicts with 等答案提示。\n"
+            "5. 输出键：document_type, filename, raw_text, fields, counts_toward_gate。"
+        )
+        payload = {
+            "task": "generate_one_document",
+            "document_type": document_type,
+            "seed_text": seed_text,
+            "plan": plan,
+            "scenario": scenario,
+            "scenario_rules": self._scenario_rules(scenario),
+            "session_id": record.session_id,
+            "example": {
+                "document_type": document_type,
+                "filename": f"practice_{document_type}.txt",
+                "raw_text": "…document body…",
+                "fields": {"/identity/full_name": "…"},
+                "counts_toward_gate": True,
+            },
+        }
+        last_error: Exception | None = None
+        for attempt in range(2):
+            attempt_instructions = instructions
+            if attempt > 0:
+                attempt_instructions += (
+                    "\n额外约束：不要以 Issue: 单独成行（护照请用 Date of Issue）；"
+                    "不要写 Missing/Expected/Defect。"
+                )
+            try:
+                raw = runner.complete_json(
+                    prompt=json.dumps(payload, ensure_ascii=False),
+                    instructions=attempt_instructions,
+                    runtime=runtime,
+                    max_tokens=int(settings.ai_material_doc_max_tokens),
+                )
+                if isinstance(raw.get("document"), dict):
+                    raw = raw["document"]
+                # Force requested type if model drifts.
+                raw["document_type"] = document_type
+                if not str(raw.get("filename") or "").strip():
+                    raw["filename"] = f"practice_{document_type}.txt"
+                if isinstance(raw.get("raw_text"), str):
+                    raw["raw_text"] = sanitize_generated_raw_text(raw["raw_text"])
+                normalized = (
+                    OpenAIChatCompletionsMaterialBundleRunner()._normalize_document_payload(
+                        raw
+                    )
+                )
+                return GeneratedMaterialDocument.model_validate(normalized)
+            except (ValidationError, ValueError, ModelRuntimeError) as exc:
+                last_error = exc
+                logger.warning(
+                    "per-document generation validation failed; retrying",
+                    extra={
+                        "document_type": document_type,
+                        "attempt": attempt + 1,
+                        "error": type(exc).__name__,
+                    },
+                )
+        assert last_error is not None
+        raise last_error
+
+    def _generate_user_summary(
+        self,
+        *,
+        runner: Any,
+        seed_text: str,
+        target_family: str,
+        plan: dict[str, Any],
+        document_types: list[str],
+        runtime: dict[str, Any],
+    ) -> str:
+        instructions = (
+            "输出 JSON：{\"user_summary_zh\": \"…\"}。"
+            "user_summary_zh 必须是简体中文 3–6 句练习材料说明，"
+            "不得出现调试/oracle/冲突包等内部词。"
+        )
+        payload = {
+            "task": "user_summary_zh",
+            "seed_text": seed_text,
+            "target_family": target_family,
+            "plan": plan,
+            "document_types": document_types,
+        }
+        try:
+            raw = runner.complete_json(
+                prompt=json.dumps(payload, ensure_ascii=False),
+                instructions=instructions,
+                runtime=runtime,
+                max_tokens=int(settings.ai_material_summary_max_tokens),
+            )
+            summary = raw.get("user_summary_zh")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+        except Exception as exc:  # noqa: BLE001 — summary is non-critical
+            logger.warning(
+                "material user_summary_zh generation failed; using fallback",
+                extra={"error": type(exc).__name__},
+            )
+        name = plan.get("applicant_full_name") or "申请人"
+        school = plan.get("school_name") or ""
+        funding = plan.get("funding_primary_source") or "资助人"
+        docs = "、".join(document_types[:6])
+        return (
+            f"本练习包设定{name}申请 {target_family.upper()} 签证"
+            f"{('，拟就读 ' + str(school)) if school else ''}。"
+            f"资金主要来自{funding}。已生成材料类型：{docs}。"
+            "材料仅供模拟面签练习，内容为虚构。"
+        )
+
+    def _synthetic_turns_from_plan(
+        self,
+        plan: dict[str, Any],
+        seed_text: str,
+    ) -> list[GeneratedMaterialSyntheticTurn]:
+        school = str(plan.get("school_name") or "").strip()
+        purpose = str(plan.get("purpose") or seed_text[:80]).strip()
+        content = purpose
+        if school:
+            content = f"I plan to study at {school}. {purpose}"
+        claims: dict[str, str] = {}
+        if school:
+            claims["/education/school_name"] = school
+        return [
+            GeneratedMaterialSyntheticTurn(
+                role="user",
+                content=content[:500],
+                field_claims=claims,
+            )
+        ]
 
     def _build_runtime(self, declared_family: str | None) -> dict[str, Any]:
         if hasattr(self.model_factory, "build_runtime_config"):

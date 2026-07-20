@@ -118,6 +118,92 @@ class AdminModelConfigDraft(BaseModel):
         return self.api_key.get_secret_value() if self.api_key is not None else None
 
 
+class AdminModelChannelCreateRequest(BaseModel):
+    name: str
+    base_url: str
+    api_key: SecretStr
+    model: str | None = None
+    streaming_enabled: bool = True
+    activate: bool = False
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        if not cleaned:
+            raise ValueError("base_url is required")
+        return normalize_openai_base_url(cleaned)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        cleaned = value.strip() if isinstance(value, str) else ""
+        if not cleaned:
+            raise ValueError("name is required")
+        return cleaned
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def empty_api_key_rejected(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("api_key is required")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @property
+    def api_key_value(self) -> str:
+        return self.api_key.get_secret_value()
+
+
+class AdminModelChannelUpdateRequest(BaseModel):
+    name: str | None = None
+    base_url: str | None = None
+    api_key: SecretStr | None = None
+    model: str | None = None
+    streaming_enabled: bool | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return normalize_openai_base_url(value)
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def empty_api_key_as_omitted(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @property
+    def api_key_value(self) -> str | None:
+        return self.api_key.get_secret_value() if self.api_key is not None else None
+
+
 def require_admin_session(
     request: Request,
     db: Session = Depends(get_db),
@@ -509,6 +595,98 @@ def test_admin_model_config(
         api_key=draft.api_key_value,
         model=draft.model,
     )
+
+
+@router.get("/model-channels")
+def list_admin_model_channels(
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    service = AdminConfigService(db)
+    settings_payload = service.admin_payload()
+    return {
+        "model_channels": settings_payload.get("model_channels") or [],
+        "active_model_channel_id": settings_payload.get("active_model_channel_id"),
+    }
+
+
+@router.post("/model-channels", status_code=201)
+def create_admin_model_channel(
+    payload: AdminModelChannelCreateRequest,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    service = AdminConfigService(db)
+    try:
+        channel = service.create_model_channel(
+            name=payload.name,
+            base_url=payload.base_url,
+            api_key=payload.api_key_value,
+            model=payload.model,
+            streaming_enabled=payload.streaming_enabled,
+            activate=payload.activate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "channel": channel,
+        "active_model_channel_id": service.get_settings().get("active_model_channel_id"),
+        "model_channels": service.list_model_channels(),
+    }
+
+
+@router.patch("/model-channels/{channel_id}")
+def update_admin_model_channel(
+    channel_id: str,
+    payload: AdminModelChannelUpdateRequest,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    service = AdminConfigService(db)
+    try:
+        channel = service.update_model_channel(
+            channel_id,
+            name=payload.name,
+            base_url=payload.base_url,
+            api_key=payload.api_key_value,
+            model=payload.model,
+            streaming_enabled=payload.streaming_enabled,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "channel": channel,
+        "active_model_channel_id": service.get_settings().get("active_model_channel_id"),
+        "model_channels": service.list_model_channels(),
+    }
+
+
+@router.delete("/model-channels/{channel_id}")
+def delete_admin_model_channel(
+    channel_id: str,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    service = AdminConfigService(db)
+    try:
+        return service.delete_model_channel(channel_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/model-channels/{channel_id}/activate")
+def activate_admin_model_channel(
+    channel_id: str,
+    _: AuthSessionRecord = Depends(require_admin_session),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    service = AdminConfigService(db)
+    try:
+        return service.activate_model_channel(channel_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/rag/status")

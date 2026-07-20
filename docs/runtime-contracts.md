@@ -80,13 +80,46 @@ Gate 不是面谈主脑，也不负责决定下一句面试官回复。
 
 ## OpenAI-Compatible 合同
 
-`POST /v1/chat/completions` 的 metadata 使用同一套 runtime view 合并规则：
+`POST /v1/chat/completions` 与 `POST /v1/responses` 的 metadata 使用同一套 runtime view 合并规则：
 
 - `metadata.phase_state` 非拒签时为 `interview`。
 - `metadata.requested_documents` 不从 Gate 回填。
 - `metadata.turn_decision`、`metadata.prompt_trace`、`metadata.runtime_view_state` 与 `/messages` 保持一致。
 
+### Authz / ownership（breaking）
+
+- Access-key 用户复用 `metadata.session_id` 时必须拥有该 session；跨 key → `403`。
+- 新建 session 走 `create_session_with_quota`（扣次失败 → `403`，不留下孤儿 session）。
+- Machine bearer（`APP_COMPAT_API_KEY`）仅 compat 两路径；对该路径 session 写为 admin-equivalent，**仅可信后端**。
+
 非 live 测试必须 stub turn decision，不依赖真实模型配置。
+
+## Practice materials 合同
+
+- Gate：**仅** `practice_materials_enabled`。`practice OFF + debug ON` → practice API `403`（非 practice OR debug 并集）。
+- Request：`include_synthetic_user_turns` 默认 `false`；`seed_text` max = `material_generation_seed_max_chars`（默认 4000）→ 超长 `422`。
+- Response：`source:"practice"`、`is_practice_material:true`；**省略** `expected_findings`。Debug 路径保留 oracle，且 `is_practice_material:false`。
+- Guard：同 session in-flight → `409`（detail 含 `material generation already in progress`）；滑动窗口超限 → `429`。
+- Generation：chunked（plan + per-document + summary），`max_tokens` 与连接重试见 `AI_MATERIAL_*` env；长单次整包 JSON 在不稳定网关上易 `APIConnectionError` → 对外 503。
+
+## Admin model channels 合同
+
+- 运行时可配置多条 OpenAI-compatible **渠道**，存于 `admin_settings` JSON：`model_channels[]` + `active_model_channel_id`。
+- 激活渠道驱动 `effective_model_config()`（`source=admin` 时覆盖 env）；并镜像到兼容字段 `model_base_url` / `model_api_key` / `model_name` / `model_streaming_enabled`。
+- 旧客户端 PATCH 扁平 `model_*`：写入/更新激活渠道（无渠道时创建「默认渠道」）。
+- 仅有旧扁平三元组、无 `model_channels` 时，读 settings 会迁移并持久化一条默认渠道（id 稳定）。
+- API：`GET/POST /v1/admin/model-channels`、`PATCH/DELETE .../{id}`、`POST .../{id}/activate`；响应不回显 `api_key`。
+- 后台 UI（`/admin` → 模型渠道）支持列表、新建/编辑/删除、设为运行时、拉模型列表与连通性测试。
+
+## Client IP 信任
+
+- `TRUST_X_FORWARDED_FOR` / `trust_x_forwarded_for` 默认 `false`：忽略 `CF-Connecting-IP` 与 XFF/X-Real-IP，用直连 peer。
+- `true` 时：`CF-Connecting-IP` → 右端 XFF → X-Real-IP → peer。Cloudflare 生产须开 trust **并**锁定 origin 到 CF IP。
+
+## Material understanding readiness
+
+- `MATERIAL_UNDERSTANDING_REQUIRED` 默认 `true`：gate readiness 要求 understanding completed（或 skipped_legacy）。
+- 离线 demo 可设 `false`，允许 parsed/legacy evidence 满足 readiness。
 
 ## 回归测试
 
@@ -103,11 +136,16 @@ uv run pytest -q -m "not live_llm"
 - `tests/integration/test_openai_compat.py`
 - `tests/integration/test_reports_api.py`
 - `tests/integration/test_sessions_api.py`
+- `tests/integration/test_practice_material_bundles_api.py`
+- `tests/integration/test_admin_demo_api.py`（含 model channels CRUD）
 - `tests/e2e/test_simulation_flow.py`
 - `tests/unit/test_interviewer_turn_projector_service.py`
 - `tests/unit/test_interviewer_runtime_service.py`
 - `tests/unit/test_gate_runtime_service.py`
 - `tests/unit/test_report_service.py`
+- `tests/unit/test_admin_model_channels.py`
+- `tests/unit/test_material_generation_guard.py`
+- `tests/unit/test_ai_material_bundle_generator_service.py`
 
 ## Wrong vs Correct
 

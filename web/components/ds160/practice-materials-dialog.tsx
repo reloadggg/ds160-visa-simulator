@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { FileStack, Loader2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -58,14 +58,19 @@ export function PracticeMaterialsDialog({
 }: PracticeMaterialsDialogProps) {
   const [seedText, setSeedText] = useState("")
 
-  // Clear draft when the dialog fully closes (not while open during generation).
-  useEffect(() => {
-    if (!open && !isGenerating) {
+  const canSubmit = seedText.trim().length > 0 && !isGenerating
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    // Lock dialog closed while generation is in flight (escape / outside / X).
+    if (!nextOpen && isGenerating) {
+      return
+    }
+    // Clear draft when the dialog fully closes (not while open during generation).
+    if (!nextOpen) {
       setSeedText("")
     }
-  }, [open, isGenerating])
-
-  const canSubmit = seedText.trim().length > 0 && !isGenerating
+    onOpenChange(nextOpen)
+  }
 
   const handleGenerate = () => {
     const normalized = seedText.trim()
@@ -76,8 +81,26 @@ export function PracticeMaterialsDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[86vh] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-xl">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="flex max-h-[86vh] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-xl"
+        showCloseButton={!isGenerating}
+        onEscapeKeyDown={(event) => {
+          if (isGenerating) {
+            event.preventDefault()
+          }
+        }}
+        onPointerDownOutside={(event) => {
+          if (isGenerating) {
+            event.preventDefault()
+          }
+        }}
+        onInteractOutside={(event) => {
+          if (isGenerating) {
+            event.preventDefault()
+          }
+        }}
+      >
         <DialogHeader className="space-y-2 border-b border-border px-6 py-5 text-left">
           <div className="flex flex-wrap items-center gap-2">
             <DialogTitle className="text-lg font-semibold tracking-tight">
@@ -178,7 +201,7 @@ export function PracticeMaterialsDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={isGenerating}
             >
               取消

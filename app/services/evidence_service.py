@@ -25,6 +25,8 @@ class EvidenceService:
         self.db = db
 
     def get_evidence_excerpt(self, evidence_id: str) -> EvidenceExcerpt | None:
+        from app.repositories.document_repo import DocumentRepository
+
         row = self.db.execute(
             select(EvidenceItemRecord, DocumentRecord)
             .join(DocumentRecord, DocumentRecord.document_id == EvidenceItemRecord.document_id)
@@ -34,6 +36,9 @@ class EvidenceService:
             return None
 
         evidence, document = row
+        # Tombstoned parent documents must not surface excerpts to tools/UI.
+        if DocumentRepository.is_document_tombstoned(document):
+            return None
         return EvidenceExcerpt(
             evidence_id=evidence.evidence_id,
             document_id=evidence.document_id,

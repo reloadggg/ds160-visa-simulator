@@ -438,11 +438,13 @@ def test_openai_chat_runner_uses_json_object_response_format(
             base_url: str,
             timeout: float,
             default_headers: dict[str, str],
+            max_retries: int = 0,
         ) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
             captured["timeout"] = timeout
             captured["default_headers"] = default_headers
+            captured["max_retries"] = max_retries
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -471,7 +473,10 @@ def test_openai_chat_runner_uses_json_object_response_format(
         "role": "system",
         "content": "generate materials",
     }
+    # Single-shot run without max_tokens keeps prior contract; chunked path sets caps.
+    assert "max_tokens" not in completion_kwargs
     assert captured["timeout"] == 240.0
+    assert captured["max_retries"] == 0
     assert captured["default_headers"] == {"User-Agent": "curl/8.5.0"}
     assert output.documents[2].fields["/education/school_name"] == "New York University"
 
@@ -567,6 +572,26 @@ def test_generated_material_allows_real_issue_date_and_stringifies_fields() -> N
 
     assert find_oracle_text_marker(document.raw_text) is None
     assert document.fields["/funding/available_funds"] == "90000"
+
+
+def test_issue_date_line_is_not_oracle_and_is_sanitized() -> None:
+    from app.services.ai_material_bundle_generator_service import (
+        sanitize_generated_raw_text,
+    )
+
+    raw = "PASSPORT\nIssue: 15 MAR 2022\nPassport No.: E12345678\n"
+    assert find_oracle_text_marker(raw) is None
+    sanitized = sanitize_generated_raw_text(raw)
+    assert "Date of Issue: 15 MAR 2022" in sanitized
+    document = GeneratedMaterialDocument.model_validate(
+        {
+            "document_type": "passport_bio",
+            "filename": "passport.txt",
+            "raw_text": raw,
+            "fields": {"/identity/passport_number": "E12345678"},
+        }
+    )
+    assert "Date of Issue: 15 MAR 2022" in document.raw_text
 
 
 def test_generated_material_accepts_path_value_field_list() -> None:

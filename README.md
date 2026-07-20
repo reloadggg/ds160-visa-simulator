@@ -98,14 +98,15 @@ NativeInterviewerRuntimeService
 | Native interviewer runtime | 当前唯一公开面谈主流程。每轮只产生一条用户可见面试官回复，并通过结构化字段给前端、报告和调试台消费。 |
 | Case Memory / Evidence Graph | 长期事实、材料证据、冲突和证明点的持久化来源；LLM 上下文不是最终状态源。 |
 | Case Board | 右侧主视图：claims、evidence、proof points、conflicts、next move；无材料时可直接打开练习材料生成。 |
-| 练习材料（practice materials） | **产品功能**（`practice_materials_enabled`，默认开启，与 debug 解耦）。用户输入背景描述后，经 `POST .../practice/material-bundles[/stream]` 生成虚构材料；响应含 `user_summary_zh`、`document_briefs_zh`、`is_practice_material`。关闭开关后前端入口隐藏，接口返回 403。 |
+| 练习材料（practice materials） | **产品功能**（**仅** `practice_materials_enabled`，默认开启；**不是** practice OR debug）。用户输入背景描述后，经 `POST .../practice/material-bundles[/stream]` 生成虚构材料；响应含 `source:"practice"`、`is_practice_material:true`、`user_summary_zh`、`document_briefs_zh`，**无** `expected_findings`。生成采用**分片**（先规划再逐文档）+ `max_tokens` 上限，降低不稳定兼容网关的长连接失败。同 session 生成中 → 409；限流 → 429；`seed_text` 默认最长 4000。关闭开关后入口隐藏，接口 403。 |
 | 材料理解 | 上传或生成的文件进入 `case_understanding` 队列；图片/PDF 由多模态模型理解，文件名只作审计元数据。 |
-| Material package archive | 已验证的可导入模板包（演示/回归）；与「在线练习生成」不同，不要把 debug 现场生成物直接当已验证 archive。 |
+| Material package archive | 已验证的可导入模板包（演示/回归）；与「在线练习生成」不同，不要把 debug 现场生成物直接当已验证 archive。演示/压测优先 import，比现场 AI 整包生成更稳。 |
 | RAG | 服务端政策知识库；Chroma + SiliconFlow embedding/rerank，不由用户 BYOK 覆盖。 |
-| Admin console | 发放 access keys、查看会话、调整产品开关（含练习材料）、测试运行时模型。 |
+| Admin console | 发放 access keys、查看会话、调整产品开关（含练习材料）、**多渠道**运行时模型管理。 |
 | Access keys | 隔离历史到 `history_namespace=key_<id>`。登录不扣 quota；**创建新 session** 才扣次。支持 `复制 Key` 与 `/#ds160_access_key=...` 分享链接。 |
-| 微信 web-view / upload ticket | `/wx` 轻量 H5；原生上传经短期 ticket（默认 300s、最多 5 文件），后端只存 hash。 |
-| Runtime model config | 后台保存 OpenAI-compatible 连接与 streaming；测试返回来源 `draft` / `admin` / `env`，不回显 secret。 |
+| 微信 web-view / upload ticket | `/wx` 轻量 H5；原生上传经短期 ticket（默认 300s、最多 5 文件），后端只存 hash；上传前先 reserve 槽位防 `max_files` 竞态。 |
+| Runtime model channels | 后台可维护多条 OpenAI-compatible **渠道**（name / base_url / api_key / model），`active_model_channel_id` 决定当前运行时；激活渠道镜像到旧扁平字段 `model_base_url` / `model_name`。API：`/v1/admin/model-channels*`。 |
+| Runtime model config | 兼容旧 PATCH：扁平 `model_*` 仍可写，会同步到激活渠道。测试返回来源 `draft` / `admin` / `env`，不回显 secret。 |
 | 失败消息重试 | 保留 `client_message_id` / `retry_content`；重试复用 idempotency key，已完成可 `idempotent_replay`，处理中 `409`。 |
 | Runtime debug snapshot | `GET .../debug/runtime` 只读快照（需 debug 开关）；敏感字段 redaction。**不要**与练习材料产品入口混淆。 |
 
@@ -260,8 +261,8 @@ docker compose up -d --build postgres ds160-api ds160-web ds160-worker
 | WeChat upload ticket | `POST /v1/sessions/{session_id}/upload-ticket`、`GET /v1/wx/upload-tickets/{ticket}`、`POST .../files` |
 | Reports | `GET .../reports/user`、`POST .../reports/review`、`GET .../reports/export` |
 | RAG | `GET /v1/rag/status`、`POST /v1/rag/files`、`GET /v1/admin/rag/status` |
-| Admin | `POST /v1/admin/login`、`GET /v1/admin/access-keys`、`PATCH /v1/admin/settings`、`POST /v1/admin/model-config/test` |
-| OpenAI-compatible | `POST /v1/chat/completions`、`POST /v1/responses` |
+| Admin | `POST /v1/admin/login`、`GET /v1/admin/access-keys`、`PATCH /v1/admin/settings`、`GET/POST /v1/admin/model-channels`、`POST .../model-channels/{id}/activate`、`POST /v1/admin/model-config/test` |
+| OpenAI-compatible | `POST /v1/chat/completions`、`POST /v1/responses`（ownership + quota；跨 key 写 403） |
 | Debug（非产品） | `GET .../debug/runtime`、`POST .../debug/material-bundles/stream`（需 debug 开关，与 practice 独立） |
 
 ## 常用验证命令
@@ -270,10 +271,13 @@ docker compose up -d --build postgres ds160-api ds160-web ds160-worker
 # 后端（跳过 live LLM）
 uv run pytest -q -m "not live_llm"
 
-# 练习材料 + admin 配置聚焦
+# 练习材料 + 多渠道 + 材料守卫聚焦
 uv run pytest -q \
   tests/integration/test_practice_material_bundles_api.py \
   tests/unit/test_admin_config_service.py \
+  tests/unit/test_admin_model_channels.py \
+  tests/unit/test_material_generation_guard.py \
+  tests/unit/test_ai_material_bundle_generator_service.py \
   -m "not live_llm"
 
 # 前端类型检查与合同测试
@@ -283,10 +287,10 @@ node --test tests/*.test.mjs
 
 # 查看路由与文档引用
 rg -n "include_router|@router\." app/main.py app/api/routers
-rg -n "practice/material|practice_materials" docs/API.md app/api/routers web/lib/api/client.ts
+rg -n "practice/material|model-channels|practice_materials" docs/API.md app/api/routers web/lib/api/client.ts
 ```
 
-可选 live LLM 测试需要显式配置模型服务和 `RUN_LIVE_LLM_TESTS=true`。
+可选 live LLM 测试需要显式配置模型服务和 `RUN_LIVE_LLM_TESTS=true`，并保证后台 **激活渠道** 或 env `OPENAI_*` 指向可用 OpenAI-compatible 服务。不稳定公益网关更适合短问答；练习材料生成已改为分片请求，但仍可能比面签更慢。
 
 ## 本地数据与版本控制
 

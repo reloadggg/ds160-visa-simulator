@@ -21,8 +21,10 @@ class _FakeRequest:
         self.client = SimpleNamespace(host=client_host) if client_host else None
 
 
-def test_prefers_cf_connecting_ip(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings_module.settings, "trust_x_forwarded_for", False)
+def test_prefers_cf_connecting_ip_when_trust_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "trust_x_forwarded_for", True)
     metadata = request_metadata(
         _FakeRequest(
             headers={
@@ -33,6 +35,22 @@ def test_prefers_cf_connecting_ip(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert metadata.client_ip == "203.0.113.9"
     assert metadata.client_ip_source == "cf-connecting-ip"
+
+
+def test_ignores_cf_connecting_ip_when_trust_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings_module.settings, "trust_x_forwarded_for", False)
+    metadata = request_metadata(
+        _FakeRequest(
+            headers={
+                "cf-connecting-ip": "203.0.113.9",
+                "x-forwarded-for": "1.2.3.4, 10.0.0.1",
+            }
+        )
+    )
+    assert metadata.client_ip == "10.0.0.5"
+    assert metadata.client_ip_source == "direct"
 
 
 def test_ignores_xff_when_trust_disabled(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,28 +2,22 @@ from collections.abc import Iterator
 import json
 from queue import Empty, Queue
 from threading import Thread
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-
-from app.core.settings import settings
-from app.core.visa_families import validate_declared_family
-from app.db.session import get_db, session_factory_from_session
-from app.core.dependencies import (
-    create_session_with_quota,
-    get_session_repo,
-    require_session_access,
-)
-from app.repositories.session_repo import SessionRepository
-from app.services.debug_fill_service import DebugFillService
-from app.services.debug_material_bundle_service import DebugMaterialBundleService
-from app.services.gate_service import GateService
-from app.services.runtime_errors import ModelRuntimeError
-from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotService
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.core.dependencies import (
+    create_session_with_quota,
+    current_access_key_id,
+    get_session_repo,
+    require_session_access,
+)
+from app.core.settings import settings
+from app.core.visa_families import validate_declared_family
 from app.db.evidence_models import DocumentChunkRecord, EvidenceItemRecord
 from app.db.models import (
     AccessKeySessionRecord,
@@ -33,7 +27,19 @@ from app.db.models import (
     SessionRecord,
     SessionTurnRecord,
 )
+from app.db.session import get_db, session_factory_from_session
+from app.repositories.session_repo import SessionRepository
 from app.services.admin_config_service import AdminConfigService
+from app.services.debug_fill_service import DebugFillService
+from app.services.debug_material_bundle_service import DebugMaterialBundleService
+from app.services.gate_service import GateService
+from app.services.material_generation_guard import (
+    MaterialGenerationInProgressError,
+    MaterialGenerationRateLimitError,
+    MaterialGenerationGuard,
+)
+from app.services.runtime_debug_snapshot_service import RuntimeDebugSnapshotService
+from app.services.runtime_errors import ModelRuntimeError
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -49,7 +55,22 @@ class DebugFillCurrentGapRequest(BaseModel):
 class DebugMaterialBundleRequest(BaseModel):
     scenario: str = "normal_f1_bundle"
     include_synthetic_user_turns: bool = True
-    seed_text: str | None = None
+    seed_text: str | None = Field(
+        default=None,
+        max_length=settings.material_generation_seed_max_chars,
+    )
+    generation_mode: str = "ai_if_available"
+
+
+class PracticeMaterialBundleRequest(BaseModel):
+    """User-facing practice materials (product defaults differ from debug)."""
+
+    scenario: str = "normal_f1_bundle"
+    include_synthetic_user_turns: bool = False
+    seed_text: str | None = Field(
+        default=None,
+        max_length=settings.material_generation_seed_max_chars,
+    )
     generation_mode: str = "ai_if_available"
 
 
@@ -66,6 +87,7 @@ def _practice_materials_enabled(db: Session) -> bool:
 
 
 def _material_generation_enabled(db: Session) -> bool:
+    """Union helper for internal tooling only — practice product routes must not use this."""
     return AdminConfigService(db).material_generation_enabled()
 
 
@@ -73,14 +95,37 @@ def _sse_event(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _acquire_material_generation_lock(
+    *,
+    session_id: str,
+    request: Request,
+    db: Session,
+) -> str | None:
+    access_key_id = current_access_key_id(request, db)
+    try:
+        MaterialGenerationGuard(db).acquire(
+            session_id,
+            access_key_id=access_key_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MaterialGenerationInProgressError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except MaterialGenerationRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
+    return access_key_id
+
+
 def _run_material_bundle_stream(
     *,
     session_id: str,
-    payload: DebugMaterialBundleRequest,
+    payload: DebugMaterialBundleRequest | PracticeMaterialBundleRequest,
     db: Session,
     progress_stage: str,
     progress_message: str,
     error_prefix: str,
+    source: Literal["practice", "debug"],
+    access_key_id: str | None,
 ) -> StreamingResponse:
     stream_session_factory = session_factory_from_session(db)
 
@@ -100,6 +145,9 @@ def _run_material_bundle_stream(
                     seed_text=payload.seed_text,
                     generation_mode=payload.generation_mode,
                     include_accepted=False,
+                    source=source,
+                    access_key_id=access_key_id,
+                    acquire_lock=False,
                 ):
                     event_queue.put((event.event, event.data))
             except LookupError as exc:
@@ -178,6 +226,7 @@ def create_session(
         "gate_status": record.gate_status_json,
     }
 
+
 def _delete_session_records(db: Session, session_ids: list[str]) -> int:
     if not session_ids:
         return 0
@@ -214,7 +263,6 @@ def list_sessions(
     db: Session = Depends(get_db),
 ) -> dict:
     from app.core.simple_auth import get_current_admin_session, get_current_auth_session
-    from app.db.models import AccessKeySessionRecord
 
     if get_current_admin_session(request, db, touch=False) is not None:
         records = db.scalars(select(SessionRecord).order_by(SessionRecord.session_id.desc())).all()
@@ -334,11 +382,17 @@ def debug_fill_current_gap(
 def debug_create_material_bundle(
     session_id: str,
     payload: DebugMaterialBundleRequest,
+    request: Request,
     _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
     if not _debug_material_enabled(db):
         raise HTTPException(status_code=403, detail="debug fill is disabled")
+    access_key_id = _acquire_material_generation_lock(
+        session_id=session_id,
+        request=request,
+        db=db,
+    )
     try:
         return DebugMaterialBundleService(db).create_bundle(
             session_id,
@@ -346,27 +400,42 @@ def debug_create_material_bundle(
             include_synthetic_user_turns=payload.include_synthetic_user_turns,
             seed_text=payload.seed_text,
             generation_mode=payload.generation_mode,
+            source="debug",
+            access_key_id=access_key_id,
+            acquire_lock=False,
         )
     except LookupError as exc:
+        MaterialGenerationGuard(db).fail(session_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
+        MaterialGenerationGuard(db).fail(session_id)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ModelRuntimeError as exc:
+        MaterialGenerationGuard(db).fail(session_id)
         raise HTTPException(
             status_code=exc.status_code,
             detail=exc.to_public_payload(),
         ) from exc
+    except Exception:
+        MaterialGenerationGuard(db).fail(session_id)
+        raise
 
 
 @router.post("/{session_id}/debug/material-bundles/stream")
 def debug_create_material_bundle_stream(
     session_id: str,
     payload: DebugMaterialBundleRequest,
+    request: Request,
     _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     if not _debug_material_enabled(db):
         raise HTTPException(status_code=403, detail="debug fill is disabled")
+    access_key_id = _acquire_material_generation_lock(
+        session_id=session_id,
+        request=request,
+        db=db,
+    )
     return _run_material_bundle_stream(
         session_id=session_id,
         payload=payload,
@@ -374,22 +443,30 @@ def debug_create_material_bundle_stream(
         progress_stage="debug_material_bundle",
         progress_message="材料包仍在生成或核对中。",
         error_prefix="debug material bundle failed",
+        source="debug",
+        access_key_id=access_key_id,
     )
 
 
 @router.post("/{session_id}/practice/material-bundles")
 def practice_create_material_bundle(
     session_id: str,
-    payload: DebugMaterialBundleRequest,
+    payload: PracticeMaterialBundleRequest,
+    request: Request,
     _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> dict:
-    """User-facing practice materials (same generator as debug; product gate)."""
-    if not _material_generation_enabled(db):
+    """User-facing practice materials (same generator as debug; product gate only)."""
+    if not _practice_materials_enabled(db):
         raise HTTPException(
             status_code=403,
             detail="practice materials are disabled",
         )
+    access_key_id = _acquire_material_generation_lock(
+        session_id=session_id,
+        request=request,
+        db=db,
+    )
     try:
         return DebugMaterialBundleService(db).create_bundle(
             session_id,
@@ -397,30 +474,45 @@ def practice_create_material_bundle(
             include_synthetic_user_turns=payload.include_synthetic_user_turns,
             seed_text=payload.seed_text,
             generation_mode=payload.generation_mode,
+            source="practice",
+            access_key_id=access_key_id,
+            acquire_lock=False,
         )
     except LookupError as exc:
+        MaterialGenerationGuard(db).fail(session_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
+        MaterialGenerationGuard(db).fail(session_id)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ModelRuntimeError as exc:
+        MaterialGenerationGuard(db).fail(session_id)
         raise HTTPException(
             status_code=exc.status_code,
             detail=exc.to_public_payload(),
         ) from exc
+    except Exception:
+        MaterialGenerationGuard(db).fail(session_id)
+        raise
 
 
 @router.post("/{session_id}/practice/material-bundles/stream")
 def practice_create_material_bundle_stream(
     session_id: str,
-    payload: DebugMaterialBundleRequest,
+    payload: PracticeMaterialBundleRequest,
+    request: Request,
     _: None = Depends(require_session_access),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
-    if not _material_generation_enabled(db):
+    if not _practice_materials_enabled(db):
         raise HTTPException(
             status_code=403,
             detail="practice materials are disabled",
         )
+    access_key_id = _acquire_material_generation_lock(
+        session_id=session_id,
+        request=request,
+        db=db,
+    )
     return _run_material_bundle_stream(
         session_id=session_id,
         payload=payload,
@@ -428,6 +520,8 @@ def practice_create_material_bundle_stream(
         progress_stage="practice_material_bundle",
         progress_message="练习材料仍在生成中，请稍候。",
         error_prefix="practice material bundle failed",
+        source="practice",
+        access_key_id=access_key_id,
     )
 
 

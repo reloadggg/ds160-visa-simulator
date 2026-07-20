@@ -622,3 +622,52 @@ def test_user_report_respects_explicit_empty_requested_documents() -> None:
 
     assert payload["requested_documents"] == []
     assert payload["remaining_required_documents"] == []
+
+
+def test_user_report_fallback_requested_documents_excludes_proof_point_ids() -> None:
+    """Missing requested_documents key projects only document_type-like values."""
+    service = ReportService()
+
+    payload = service.user_report(
+        session_id="sess-req-fallback",
+        visa_family="f1",
+        governor_decision="need_more_evidence",
+        profile_json={},
+        phase_state="interview",
+        # No source_turn_id so interviewer_state_json drives effective state.
+        runtime_view_state={},
+        current_focus_json={
+            "kind": "required_document",
+            "document_type": "i20",
+        },
+        interviewer_state_json={
+            # Key intentionally absent so fallback path runs.
+            "remaining_required_documents": ["funding_proof", "passport_bio"],
+            "advisory_context": {
+                "missing_evidence": ["proof-funding-source", "proof-ties"],
+            },
+        },
+        case_board={
+            "proof_points": [
+                {
+                    "proof_point_id": "proof-funding-source",
+                    "visa_family": "f1",
+                    "question": "Who pays?",
+                    "status": "missing",
+                    "why_it_matters": "Funding must be clear.",
+                }
+            ],
+            "claims": [],
+            "conflicts": [],
+            "field_evidence": [],
+        },
+    )
+
+    # Focus + remaining_required only; never raw proof_point ids from missing_evidence.
+    assert payload["requested_documents"] == [
+        "i20",
+        "funding_proof",
+        "passport_bio",
+    ]
+    assert "proof-funding-source" not in payload["requested_documents"]
+    assert "proof-ties" not in payload["requested_documents"]

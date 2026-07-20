@@ -74,6 +74,21 @@ test("wx send guard uses sendingRef and blocks terminal sessions", () => {
   assert.match(source, /reuseMessageId/)
   assert.match(source, /client_message_id/)
   assert.match(source, /retry_content/)
+  assert.match(source, /not_passed/)
+})
+
+test("wx ticket refresh hard-returns on cross-session mismatch", () => {
+  const source = read("hooks/use-wx-workbench.ts")
+  const start = source.indexOf("const refreshNativeUploadTicket")
+  assert.notEqual(start, -1)
+  const block = source.slice(start, start + 900)
+  assert.match(block, /sessionIdRef\.current !== effectiveSessionId/)
+  assert.match(block, /Cross-session guard/)
+  // Must not soft-continue past the mismatch.
+  assert.doesNotMatch(
+    block,
+    /still apply if no active session switch mid-flight/,
+  )
 })
 
 test("wx revokes object URLs for image previews", () => {

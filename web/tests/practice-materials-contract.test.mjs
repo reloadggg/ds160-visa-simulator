@@ -66,7 +66,9 @@ test("login workbench wires PracticeMaterialsDialog and defaults practice_materi
   assert.match(source, /practiceMaterialsEnabled=\{practiceMaterialsEnabled\}/)
   assert.match(source, /<PracticeMaterialsDialog/)
   assert.match(source, /open=\{practiceMaterialsDialogOpen\}/)
-  assert.match(source, /onOpenChange=\{setPracticeMaterialsDialogOpen\}/)
+  assert.match(source, /onOpenChange=\{/)
+  assert.match(source, /setPracticeMaterialsDialogOpen/)
+  assert.match(source, /isDebugBundleGenerating/)
   assert.match(source, /onGenerate=\{handlePracticeGenerate\}/)
   assert.match(
     source,
@@ -88,6 +90,15 @@ test("client createPracticeMaterialBundleStream hits practice material-bundles s
     source,
     /\/v1\/sessions\/\$\{sessionId\}\/debug\/material-bundles\/stream/,
   )
+  // Non-stream practice endpoint + same-family fallback (never debug from practice).
+  assert.match(source, /export async function createPracticeMaterialBundle/)
+  assert.match(
+    source,
+    /\/v1\/sessions\/\$\{sessionId\}\/practice\/material-bundles`/,
+  )
+  assert.match(source, /resolveMaterialBundleNonStreamFallback/)
+  assert.match(source, /family === "practice"/)
+  assert.match(source, /Never call createDebugMaterialBundle from a practice/)
 
   const practiceFnStart = source.indexOf(
     "export async function createPracticeMaterialBundleStream",
@@ -101,6 +112,15 @@ test("client createPracticeMaterialBundleStream hits practice material-bundles s
   const practiceFn = source.slice(practiceFnStart, practiceFnEnd)
   assert.match(practiceFn, /practice\/material-bundles\/stream/)
   assert.doesNotMatch(practiceFn, /debug\/material-bundles\/stream/)
+})
+
+test("practice dialog and login lock onOpenChange while generating", () => {
+  const dialog = read("components/ds160/practice-materials-dialog.tsx")
+  const login = read("app/login/page.tsx")
+  assert.match(dialog, /handleOpenChange/)
+  assert.match(dialog, /!nextOpen && isGenerating/)
+  assert.match(dialog, /showCloseButton=\{!isGenerating\}/)
+  assert.match(login, /!nextOpen && isDebugBundleGenerating/)
 })
 
 test("appConfig practice_materials_enabled defaults true on landing and login", () => {

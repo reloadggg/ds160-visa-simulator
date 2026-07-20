@@ -1089,3 +1089,78 @@ def test_user_session_cannot_read_admin_login_audit(client: TestClient) -> None:
     response = client.get("/v1/admin/login-audit")
 
     assert response.status_code == 401
+
+
+def test_admin_model_channels_crud_activate_and_settings_mirror(
+    client: TestClient,
+) -> None:
+    assert client.post("/v1/admin/login", json={"password": "admin-pass"}).status_code == 200
+
+    created_a = client.post(
+        "/v1/admin/model-channels",
+        json={
+            "name": "venlacy",
+            "base_url": "https://a.example/v1",
+            "api_key": "key-a",
+            "model": "model-a",
+            "activate": True,
+        },
+    )
+    assert created_a.status_code == 201
+    body_a = created_a.json()
+    assert body_a["channel"]["name"] == "venlacy"
+    assert body_a["channel"]["api_key_configured"] is True
+    assert "api_key" not in body_a["channel"]
+    channel_a_id = body_a["channel"]["id"]
+    assert body_a["active_model_channel_id"] == channel_a_id
+
+    created_b = client.post(
+        "/v1/admin/model-channels",
+        json={
+            "name": "yxxb",
+            "base_url": "https://sub.yxxb.eu.cc",
+            "api_key": "key-b",
+            "model": "grok-4.5",
+            "activate": False,
+        },
+    )
+    assert created_b.status_code == 201
+    channel_b_id = created_b.json()["channel"]["id"]
+    assert created_b.json()["channel"]["base_url"] == "https://sub.yxxb.eu.cc/v1"
+
+    listed = client.get("/v1/admin/model-channels")
+    assert listed.status_code == 200
+    assert len(listed.json()["model_channels"]) == 2
+    assert listed.json()["active_model_channel_id"] == channel_a_id
+
+    settings_before = client.get("/v1/admin/settings")
+    assert settings_before.status_code == 200
+    assert settings_before.json()["model_name"] == "model-a"
+    assert settings_before.json()["active_model_channel_id"] == channel_a_id
+    assert len(settings_before.json()["model_channels"]) == 2
+
+    activated = client.post(f"/v1/admin/model-channels/{channel_b_id}/activate")
+    assert activated.status_code == 200
+    assert activated.json()["active_model_channel_id"] == channel_b_id
+    assert activated.json()["model_name"] == "grok-4.5"
+    assert activated.json()["model_base_url"] == "https://sub.yxxb.eu.cc/v1"
+
+    settings_after = client.get("/v1/admin/settings")
+    assert settings_after.json()["model_name"] == "grok-4.5"
+    assert settings_after.json()["model_api_key_configured"] is True
+    assert "model_api_key" not in settings_after.json()
+    assert "key-b" not in settings_after.text
+
+    patched = client.patch(
+        f"/v1/admin/model-channels/{channel_b_id}",
+        json={"model": "grok-4.5-build"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["channel"]["model"] == "grok-4.5-build"
+    assert client.get("/v1/admin/settings").json()["model_name"] == "grok-4.5-build"
+
+    deleted = client.delete(f"/v1/admin/model-channels/{channel_b_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_channel_id"] == channel_b_id
+    assert deleted.json()["active_model_channel_id"] == channel_a_id
+    assert client.get("/v1/admin/settings").json()["model_name"] == "model-a"

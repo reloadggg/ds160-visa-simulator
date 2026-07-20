@@ -12,6 +12,7 @@ from app.db.evidence_models import EvidenceItemRecord
 from app.db.models import AdminSettingRecord, DocumentRecord, SessionRecord
 from app.db.session import get_db
 from app.main import app
+from app.services.material_generation_guard import reset_access_key_rate_limits_for_tests
 from tests.integration.test_debug_material_bundles_api import (
     SEED_TEXT,
     install_ai_material_generator_stub,
@@ -66,6 +67,7 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     # Product default: practice ON; debug OFF (no key stored → defaults ON).
     with db_session_factory() as db:
         _set_demo_settings(db, console=False, debug_materials=False)
+    reset_access_key_rate_limits_for_tests()
 
     def override_get_db() -> Generator[Session, None, None]:
         db = db_session_factory()
@@ -78,6 +80,7 @@ def client(db_session_factory) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+    reset_access_key_rate_limits_for_tests()
 
 
 def test_practice_material_bundle_api_works_when_enabled_by_default(
@@ -100,12 +103,14 @@ def test_practice_material_bundle_api_works_when_enabled_by_default(
     payload = response.json()
     assert payload["scenario"] == "funding_shortfall_bundle"
     assert payload["is_practice_material"] is True
+    assert payload.get("source") == "practice"
+    assert "expected_findings" not in payload
     assert isinstance(payload["user_summary_zh"], str)
     assert payload["user_summary_zh"].strip()
     assert isinstance(payload["document_briefs_zh"], list)
     assert len(payload["document_briefs_zh"]) >= 5
     assert len(payload["documents"]) >= 5
-    assert refresh_calls == ["debug_material_bundle:funding_shortfall_bundle"]
+    assert refresh_calls == ["practice_material_bundle:funding_shortfall_bundle"]
 
     with db_session_factory() as db:
         documents = db.query(DocumentRecord).filter_by(session_id=session_id).all()
@@ -116,6 +121,8 @@ def test_practice_material_bundle_api_works_when_enabled_by_default(
     assert any(item.field_path == "/funding/available_funds" for item in evidence)
     assert record is not None
     assert record.gate_status_json["status"] == "ready_for_interview"
+    mg = dict((record.interviewer_state_json or {}).get("material_generation") or {})
+    assert mg.get("status") == "completed"
 
 
 def test_practice_material_bundle_stream_emits_progress_and_final(
@@ -145,6 +152,8 @@ def test_practice_material_bundle_stream_emits_progress_and_final(
     assert len(final_events) == 1
     final = final_events[0]
     assert final["is_practice_material"] is True
+    assert final.get("source") == "practice"
+    assert "expected_findings" not in final
     assert isinstance(final.get("user_summary_zh"), str)
     assert final["user_summary_zh"].strip()
     assert isinstance(final.get("document_briefs_zh"), list)
@@ -232,6 +241,7 @@ def test_practice_enabled_debug_disabled_keeps_debug_routes_gated(
     )
     assert practice.status_code == 200
     assert practice.json()["is_practice_material"] is True
+    assert "expected_findings" not in practice.json()
 
     debug_bundle = client.post(
         f"/v1/sessions/{session_id}/debug/material-bundles",
@@ -245,12 +255,12 @@ def test_practice_enabled_debug_disabled_keeps_debug_routes_gated(
     assert debug_runtime.json() == {"detail": "runtime debug is disabled"}
 
 
-def test_practice_route_still_allowed_when_only_debug_material_enabled(
+def test_practice_route_forbidden_when_only_debug_material_enabled(
     client: TestClient,
     db_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """material_generation_enabled = practice OR debug_material (legacy path)."""
+    """Practice gate is practice-only; debug ON must not open practice routes."""
     install_material_refresh_stub(monkeypatch)
     install_ai_material_generator_stub(monkeypatch)
     with db_session_factory() as db:
@@ -268,6 +278,63 @@ def test_practice_route_still_allowed_when_only_debug_material_enabled(
         f"/v1/sessions/{session_id}/practice/material-bundles",
         json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
     )
-    assert response.status_code == 200
-    assert response.json()["is_practice_material"] is True
-    assert response.json()["user_summary_zh"].strip()
+    assert response.status_code == 403
+    assert response.json() == {"detail": "practice materials are disabled"}
+
+    debug_ok = client.post(
+        f"/v1/sessions/{session_id}/debug/material-bundles",
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
+    )
+    assert debug_ok.status_code == 200
+    assert debug_ok.json()["is_practice_material"] is False
+    assert "expected_findings" in debug_ok.json()
+
+
+def test_practice_seed_text_over_max_returns_422(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/practice/material-bundles",
+        json={
+            "scenario": "normal_f1_bundle",
+            "seed_text": "x" * 4001,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_practice_concurrent_generation_returns_409(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_material_refresh_stub(monkeypatch)
+    install_ai_material_generator_stub(monkeypatch)
+    session_resp = client.post("/v1/sessions", json={"declared_family": "f1"})
+    session_id = session_resp.json()["session_id"]
+
+    with db_session_factory() as db:
+        record = db.get(SessionRecord, session_id)
+        assert record is not None
+        state = dict(record.interviewer_state_json or {})
+        state["material_generation"] = {
+            "status": "running",
+            "started_at": "2099-01-01T00:00:00",
+            "bundle_id": "locked",
+        }
+        record.interviewer_state_json = state
+        db.add(record)
+        db.commit()
+
+    response = client.post(
+        f"/v1/sessions/{session_id}/practice/material-bundles",
+        json={"scenario": "normal_f1_bundle", "seed_text": SEED_TEXT},
+    )
+    assert response.status_code == 409
+    assert "already in progress" in response.json()["detail"]

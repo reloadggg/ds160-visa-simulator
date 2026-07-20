@@ -23,6 +23,10 @@ import type {
   AdminAccessKeyStatusFilter,
   AdminLoginAuditKindFilter,
   AdminLoginAuditOutcomeFilter,
+  AdminModelChannel,
+  AdminModelChannelCreateRequest,
+  AdminModelChannelListResponse,
+  AdminModelChannelUpdateRequest,
   AdminModelConfigModelsRequest,
   AdminModelConfigModelsResponse,
   AdminModelConfigTestRequest,
@@ -572,6 +576,43 @@ export async function createDebugMaterialBundle(
   return handleResponse<DebugMaterialBundleResponse>(response)
 }
 
+/** Non-stream practice material bundle (product path). */
+export async function createPracticeMaterialBundle(
+  sessionId: string,
+  scenario: DebugMaterialBundleScenario | string,
+  includeSyntheticUserTurns = false,
+  seedText?: string | null,
+  generationMode = "ai_if_available",
+): Promise<DebugMaterialBundleResponse> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/sessions/${sessionId}/practice/material-bundles`),
+    {
+      method: "POST",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify({
+        scenario,
+        include_synthetic_user_turns: includeSyntheticUserTurns,
+        seed_text: seedText,
+        generation_mode: generationMode,
+      }),
+    },
+  )
+  return handleResponse<DebugMaterialBundleResponse>(response)
+}
+
+/**
+ * Choose same-family non-stream fallback when stream response has no body.
+ * Practice must never fall back to the debug endpoint.
+ */
+export function resolveMaterialBundleNonStreamFallback(
+  streamPath: string,
+): "practice" | "debug" {
+  if (streamPath.includes("/practice/")) {
+    return "practice"
+  }
+  return "debug"
+}
+
 export async function createPracticeMaterialBundleStream(
   sessionId: string,
   scenario: DebugMaterialBundleScenario | string,
@@ -637,6 +678,18 @@ async function createMaterialBundleStream(
     return handleResponse<DebugMaterialBundleResponse>(response)
   }
   if (!response.body) {
+    // Same product family only: practice → practice non-stream; debug → debug.
+    // Never call createDebugMaterialBundle from a practice stream entry.
+    const family = resolveMaterialBundleNonStreamFallback(path)
+    if (family === "practice") {
+      return createPracticeMaterialBundle(
+        sessionId,
+        scenario,
+        includeSyntheticUserTurns,
+        seedText,
+        generationMode,
+      )
+    }
     return createDebugMaterialBundle(
       sessionId,
       scenario,
@@ -994,4 +1047,78 @@ export async function testAdminModelConfig(
     body: JSON.stringify(payload),
   })
   return handleResponse<AdminModelConfigTestResponse>(response)
+}
+
+export async function listAdminModelChannels(): Promise<AdminModelChannelListResponse> {
+  const response = await apiFetch(buildApiUrl("/v1/admin/model-channels"), {
+    headers: getAuthHeaders(),
+  })
+  return handleResponse<AdminModelChannelListResponse>(response)
+}
+
+export async function createAdminModelChannel(
+  payload: AdminModelChannelCreateRequest,
+): Promise<{
+  channel: AdminModelChannel
+  active_model_channel_id?: string | null
+  model_channels: AdminModelChannel[]
+}> {
+  const response = await apiFetch(buildApiUrl("/v1/admin/model-channels"), {
+    method: "POST",
+    headers: getAuthHeaders("application/json"),
+    body: JSON.stringify(payload),
+  })
+  return handleResponse(response)
+}
+
+export async function updateAdminModelChannel(
+  channelId: string,
+  payload: AdminModelChannelUpdateRequest,
+): Promise<{
+  channel: AdminModelChannel
+  active_model_channel_id?: string | null
+  model_channels: AdminModelChannel[]
+}> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/model-channels/${channelId}`),
+    {
+      method: "PATCH",
+      headers: getAuthHeaders("application/json"),
+      body: JSON.stringify(payload),
+    },
+  )
+  return handleResponse(response)
+}
+
+export async function deleteAdminModelChannel(channelId: string): Promise<{
+  deleted_channel_id?: string
+  active_model_channel_id?: string | null
+  model_channels: AdminModelChannel[]
+}> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/model-channels/${channelId}`),
+    {
+      method: "DELETE",
+      headers: getAuthHeaders(),
+    },
+  )
+  return handleResponse(response)
+}
+
+export async function activateAdminModelChannel(channelId: string): Promise<{
+  active_model_channel_id?: string | null
+  model_channels: AdminModelChannel[]
+  model_base_url?: string | null
+  model_name?: string | null
+  model_streaming_enabled?: boolean
+  model_api_key_configured?: boolean
+}> {
+  const response = await apiFetch(
+    buildApiUrl(`/v1/admin/model-channels/${channelId}/activate`),
+    {
+      method: "POST",
+      headers: getAuthHeaders(),
+    },
+  )
+  return handleResponse(response)
 }

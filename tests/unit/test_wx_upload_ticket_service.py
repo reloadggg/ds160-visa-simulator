@@ -98,3 +98,46 @@ def test_record_upload_result_enforces_max_files_atomically(db_session) -> None:
             size=1,
             now=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=1),
         )
+
+
+def test_reserve_upload_slot_enforces_max_files_before_upload(db_session) -> None:
+    service = WxUploadTicketService(db_session)
+    created = service.create_ticket(
+        session_id="sess-wx",
+        access_key_id=None,
+        max_files=1,
+    )
+    reserved = service.reserve_upload_slot(created.ticket)
+    assert reserved.uploaded_count == 1
+    assert reserved.status == "completed"
+
+    with pytest.raises(WxUploadTicketLimitExceededError):
+        service.reserve_upload_slot(created.ticket)
+
+    finalized = service.finalize_reserved_upload(
+        reserved,
+        result_payload={"document_id": "doc-1"},
+        filename="a.pdf",
+        content_type="application/pdf",
+        size=1,
+    )
+    assert finalized.uploaded_count == 1
+    assert len(finalized.upload_results_json or []) == 1
+
+
+def test_release_upload_slot_rolls_back_reservation(db_session) -> None:
+    service = WxUploadTicketService(db_session)
+    created = service.create_ticket(
+        session_id="sess-wx",
+        access_key_id=None,
+        max_files=1,
+    )
+    reserved = service.reserve_upload_slot(created.ticket)
+    assert reserved.uploaded_count == 1
+    released = service.release_upload_slot(reserved)
+    assert released.uploaded_count == 0
+    assert released.status == "active"
+
+    # Slot is available again after release.
+    again = service.reserve_upload_slot(created.ticket)
+    assert again.uploaded_count == 1

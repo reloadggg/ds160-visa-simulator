@@ -7,8 +7,20 @@ from app.services.admin_config_service import EffectiveModelConfig, admin_model_
 
 
 def _allows_db_admin_model_config(request: pytest.FixtureRequest) -> bool:
+    """Allow selected tests to read real AdminConfigService DB model config.
+
+    Most suites isolate admin model settings via empty ``admin_model_runtime``
+    so developer machine DB keys do not leak into unit tests. Tests that
+    explicitly exercise admin model channels / admin settings persistence must
+    opt in here.
+    """
     test_path = request.node.path.as_posix()
-    return test_path.endswith("tests/integration/test_admin_demo_api.py")
+    return test_path.endswith(
+        (
+            "tests/integration/test_admin_demo_api.py",
+            "tests/unit/test_admin_model_channels.py",
+        )
+    )
 
 
 @pytest.fixture(autouse=True)

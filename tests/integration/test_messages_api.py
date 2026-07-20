@@ -3024,6 +3024,102 @@ def test_refusal_session_cannot_continue_with_new_messages(
         ).all()
 
     assert len(turns) == 2
+
+
+def test_concurrent_message_posts_reject_second_with_409(
+    client: TestClient,
+    db_session_factory,
+    monkeypatch,
+) -> None:
+    """B1/F6: processing flag prevents double user turns under concurrency.
+
+    Holds the first request inside the LLM path after the user turn + processing
+    flag are committed; a concurrent second call must raise
+    DuplicateTurnInProgressError and must not append a second unmatched user turn.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services.message_service import (
+        DuplicateTurnInProgressError,
+        MessageService,
+    )
+    from app.services import native_interviewer_runtime_service as native_mod
+
+    install_native_fixed_interview_response(
+        monkeypatch,
+        decision="continue_interview",
+        assistant_message="What is the purpose of your travel?",
+    )
+    fixed_run = native_mod.NativeInterviewerRuntimeService.run_turn
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_fixed_run(self, record, message_text, user_turn=None):
+        entered.set()
+        release.wait(timeout=5)
+        return fixed_run(self, record, message_text, user_turn=user_turn)
+
+    monkeypatch.setattr(
+        native_mod.NativeInterviewerRuntimeService,
+        "run_turn",
+        blocking_fixed_run,
+    )
+
+    session_id = seed_ready_for_interview_session(client, db_session_factory)
+
+    errors: list[BaseException] = []
+    first_result: dict | None = None
+
+    def first_turn() -> None:
+        nonlocal first_result
+        with db_session_factory() as db:
+            first_result = MessageService(db).handle_user_turn(
+                session_id,
+                "First concurrent answer",
+            )
+
+    def second_turn() -> None:
+        assert entered.wait(timeout=5), "first request never entered LLM path"
+        try:
+            with db_session_factory() as db:
+                MessageService(db).handle_user_turn(
+                    session_id,
+                    "Second concurrent answer",
+                )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            release.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(first_turn)
+        second_future = pool.submit(second_turn)
+        first_future.result(timeout=15)
+        second_future.result(timeout=15)
+
+    assert first_result is not None
+    assert first_result.get("governor_decision") == "continue_interview"
+    assert len(errors) == 1
+    assert isinstance(errors[0], DuplicateTurnInProgressError)
+
+    with db_session_factory() as db:
+        user_turns = db.scalars(
+            select(SessionTurnRecord)
+            .where(
+                SessionTurnRecord.session_id == session_id,
+                SessionTurnRecord.role == "user",
+            )
+            .order_by(SessionTurnRecord.turn_index)
+        ).all()
+        record = db.get(SessionRecord, session_id)
+
+    assert len(user_turns) == 1
+    assert user_turns[0].content == "First concurrent answer"
+    assert record is not None
+    assert "processing_user_turn" not in dict(record.interviewer_state_json or {})
+
+
 def test_negated_fraud_statement_does_not_trigger_refusal(
     client: TestClient,
     db_session_factory,

@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     openai_timeout_seconds: float = 60.0
     openai_compat_user_agent: str = "curl/8.5.0"
-    ai_material_bundle_timeout_seconds: float = 180.0
+    # Per-request timeout for material generation LLM calls (chunked docs).
+    ai_material_bundle_timeout_seconds: float = 90.0
+    # Cap completion size so free/unstable gateways do not hang on huge JSON.
+    ai_material_doc_max_tokens: int = 1600
+    ai_material_summary_max_tokens: int = 500
+    ai_material_generation_max_retries: int = 2
     run_live_llm_tests: bool = False
     app_auth_password: str | None = None
     app_auth_session_ttl_seconds: int = 60 * 60 * 24
@@ -89,6 +94,17 @@ class Settings(BaseSettings):
     # completed (or skipped_legacy). Set False for offline demos where
     # parsed+legacy evidence is enough.
     material_understanding_required: bool = True
+
+    # Practice/debug material-bundle generation guards (WP-A).
+    # Session + access-key sliding windows; in-flight lock TTL auto-expires
+    # stale "running" so crashed workers do not brick a session.
+    # Access-key counters are process-local (multi-worker → shared store later).
+    material_generation_session_limit: int = 5
+    material_generation_session_window_seconds: int = 3600
+    material_generation_access_key_limit: int = 20
+    material_generation_access_key_window_seconds: int = 3600
+    material_generation_lock_ttl_seconds: int = 900
+    material_generation_seed_max_chars: int = 4000
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

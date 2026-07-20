@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -143,9 +144,13 @@ function isTerminalInterviewState(
   session: Session | null,
   userReport: UserReport | null,
 ): boolean {
+  const governorDecision = session?.current_governor_decision ?? null
   return (
     session?.phase_state === "completed" ||
     session?.phase_state === "session_closed" ||
+    ["passed", "not_passed", "refused", "simulated_refusal"].includes(
+      governorDecision ?? "",
+    ) ||
     userReport?.interview_result === "passed" ||
     userReport?.interview_result === "refused" ||
     userReport?.interview_status === "simulated_refusal"
@@ -407,12 +412,12 @@ function debugBundleDocumentToMaterial(
     fields: document.fields,
     synthetic_bundle_id: bundle.bundle_id,
     debug_bundle_scenario: bundle.scenario,
-    expected_findings: bundle.expected_findings,
-    // Practice / synthetic bundle materials surface the product「练习」badge.
-    is_practice_material:
-      Boolean(bundle.is_practice_material) ||
-      bundle.scenario != null ||
-      Boolean(bundle.bundle_id),
+    // Oracle findings only for debug bundles; practice omits/hides them.
+    expected_findings: bundle.is_practice_material
+      ? undefined
+      : bundle.expected_findings,
+    // Strict product flag only — do not OR scenario/bundle_id (debug would always badge).
+    is_practice_material: Boolean(bundle.is_practice_material),
   }
 }
 
@@ -1067,6 +1072,51 @@ function responseNeedsMaterialUnderstandingRefresh(
   )
 }
 
+/**
+ * Multi-doc understanding poll exit decision (F5d).
+ * Continue while any tracked id is still non-terminal; missing ids stay pending.
+ */
+export function evaluateMaterialUnderstandingPollExit(
+  trackedDocumentIds: Set<string>,
+  trackedDocuments: Array<{
+    document_id?: string | null
+    understanding_status?: string | null
+    status?: string | null
+    tombstoned?: boolean
+  }>,
+): { shouldContinue: boolean; terminalCount: number; pendingCount: number } {
+  const byId = new Map(
+    trackedDocuments
+      .filter((doc) => doc.document_id)
+      .map((doc) => [doc.document_id as string, doc]),
+  )
+  let pendingCount = 0
+  let terminalCount = 0
+  for (const documentId of trackedDocumentIds) {
+    const document = byId.get(documentId)
+    if (!document) {
+      // Not listed yet — keep polling for this id.
+      pendingCount += 1
+      continue
+    }
+    if (document.tombstoned) {
+      terminalCount += 1
+      continue
+    }
+    const status = document.understanding_status ?? document.status ?? null
+    if (isTerminalMaterialUnderstandingStatus(status)) {
+      terminalCount += 1
+    } else {
+      pendingCount += 1
+    }
+  }
+  return {
+    shouldContinue: pendingCount > 0,
+    terminalCount,
+    pendingCount,
+  }
+}
+
 function waitForMilliseconds(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, delayMs)
@@ -1706,6 +1756,8 @@ export function useSessionWorkbench() {
   const streamProgressEventIdRef = useRef<string | null>(null)
   const loadedSessionIdFromQueryRef = useRef<string | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  /** Monotonic seq so stale handleLoadBackendSession responses never apply. */
+  const sessionLoadSeqRef = useRef(0)
   const userReportRef = useRef<UserReport | null>(null)
   const [chatError, setChatError] = useState<string | null>(null)
 
@@ -1815,8 +1867,14 @@ export function useSessionWorkbench() {
   const [sessionTime, setSessionTime] = useState(0)
 
   const sessionId = session?.session_id ?? null
-  sessionIdRef.current = sessionId
-  userReportRef.current = userReport
+
+  // Keep race-guard refs aligned with latest render without writing refs during render
+  // (eslint react-hooks/refs). layout effect runs before paint/useEffect so async
+  // completions still see the current session id.
+  useLayoutEffect(() => {
+    sessionIdRef.current = sessionId
+    userReportRef.current = userReport
+  }, [sessionId, userReport])
 
   useEffect(() => {
     if (!settingsFeedback) {
@@ -2059,14 +2117,15 @@ export function useSessionWorkbench() {
       }
       try {
         const report = await getUserReport(targetSessionId)
-        if (sessionIdRef.current && sessionIdRef.current !== targetSessionId) {
+        // Strict inequality only — truthy short-circuit failed when sessionIdRef was null.
+        if (sessionIdRef.current !== targetSessionId) {
           return report
         }
         setUserReport(report)
         setReportError(null)
         return report
       } catch (error) {
-        if (sessionIdRef.current && sessionIdRef.current !== targetSessionId) {
+        if (sessionIdRef.current !== targetSessionId) {
           return null
         }
         setReportError(getErrorMessage(error, "获取报告失败，请稍后重试。"))
@@ -2187,7 +2246,7 @@ export function useSessionWorkbench() {
       void (async () => {
         let intervalMs = MATERIAL_UNDERSTANDING_POLL_INITIAL_MS
         let elapsedMs = 0
-        let reachedTerminal = false
+        let sawAnyTerminal = false
 
         while (elapsedMs < MATERIAL_UNDERSTANDING_POLL_MAX_TOTAL_MS) {
           await waitForMilliseconds(intervalMs)
@@ -2204,13 +2263,14 @@ export function useSessionWorkbench() {
               return
             }
 
+            // Include tombstoned so deleted tracked ids count as terminal.
             const trackedDocuments = listed.documents.filter(
               (document) =>
                 document.document_id &&
-                trackedDocumentIds.has(document.document_id) &&
-                !document.tombstoned,
+                trackedDocumentIds.has(document.document_id),
             )
             const patches = trackedDocuments
+              .filter((document) => !document.tombstoned)
               .map(materialUnderstandingPatchFromDocument)
               .filter(
                 (patch): patch is RuntimeMaterialUnderstandingPatch =>
@@ -2223,16 +2283,23 @@ export function useSessionWorkbench() {
               )
             }
 
-            if (
-              patches.some((patch) =>
-                isTerminalMaterialUnderstandingStatus(
-                  patch.understanding_status,
-                ),
-              )
-            ) {
-              reachedTerminal = true
-              // Rematerialize case board / analysis from user report.
+            // Multi-doc: stop only when ALL tracked docs are terminal
+            // (completed/failed/tombstoned). Partial terminal → merge patches,
+            // soft-refresh, continue backoff (wx pending-list parity).
+            const pollDecision = evaluateMaterialUnderstandingPollExit(
+              trackedDocumentIds,
+              trackedDocuments,
+            )
+            if (pollDecision.terminalCount > 0) {
+              sawAnyTerminal = true
+            }
+            if (pollDecision.shouldContinue && pollDecision.terminalCount > 0) {
               await refreshReports(targetSessionId).catch(() => undefined)
+            }
+            if (!pollDecision.shouldContinue) {
+              if (sawAnyTerminal) {
+                await refreshReports(targetSessionId).catch(() => undefined)
+              }
               return
             }
           } catch {
@@ -2245,7 +2312,7 @@ export function useSessionWorkbench() {
           )
         }
 
-        if (!reachedTerminal && sessionIdRef.current === targetSessionId) {
+        if (sessionIdRef.current === targetSessionId) {
           // Final attempt to rematerialize if understanding finished after last check.
           await refreshReports(targetSessionId).catch(() => undefined)
         }
@@ -2588,6 +2655,9 @@ export function useSessionWorkbench() {
         return
       }
 
+      // Monotonic load seq: ignore stale responses from an earlier load.
+      const loadSeq = ++sessionLoadSeqRef.current
+
       setIsInitializing(true)
       setInitError(null)
       setChatError(null)
@@ -2612,6 +2682,10 @@ export function useSessionWorkbench() {
             getRequiredPackage(normalizedSessionId).catch(() => null),
             listSessionDocuments(normalizedSessionId).catch(() => null),
           ])
+        // Ignore stale load responses when a newer load started mid-flight.
+        if (sessionLoadSeqRef.current !== loadSeq) {
+          return
+        }
         const restoredVisaType = visaFamilyFromReport(report)
         setSession({
           session_id: transcript.session_id,
@@ -2691,6 +2765,9 @@ export function useSessionWorkbench() {
         })
         void refreshRuntimeDebugSnapshot(transcript.session_id)
       } catch (error) {
+        if (sessionLoadSeqRef.current !== loadSeq) {
+          return
+        }
         setInitError(getErrorMessage(error, "无法恢复这个后端会话。"))
         setActivityEvents((prev) =>
           prev.map((event) =>
@@ -2700,7 +2777,9 @@ export function useSessionWorkbench() {
           ),
         )
       } finally {
-        setIsInitializing(false)
+        if (sessionLoadSeqRef.current === loadSeq) {
+          setIsInitializing(false)
+        }
       }
     },
     [
@@ -2827,6 +2906,7 @@ export function useSessionWorkbench() {
         return
       }
 
+      const targetSessionId = sessionId
       const trimmedContent = content.trim()
       const nextFiles = files ?? []
       const hasFiles = nextFiles.length > 0
@@ -2843,6 +2923,9 @@ export function useSessionWorkbench() {
         content: string,
         status: SessionActivityEvent["status"] = "sending",
       ) => {
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         if (streamProgressEventIdRef.current) {
           updateActivityEventContent(streamProgressEventIdRef.current, content)
           updateActivityEventStatus(streamProgressEventIdRef.current, status)
@@ -2858,6 +2941,9 @@ export function useSessionWorkbench() {
         const messageAttachments = hasFiles
           ? await createMessageAttachments(nextFiles)
           : []
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         const clientMessageId = hasContent
           ? options?.clientMessageId ?? createClientId("client-message")
           : undefined
@@ -2889,6 +2975,9 @@ export function useSessionWorkbench() {
           setIsUploading(true)
 
           for (const [index, file] of nextFiles.entries()) {
+            if (sessionIdRef.current !== targetSessionId) {
+              return
+            }
             const attachment = messageAttachments[index]
 
             if (mockMode) {
@@ -2907,10 +2996,13 @@ export function useSessionWorkbench() {
 
             try {
               const response = await uploadFile(
-                sessionId,
+                targetSessionId,
                 file,
                 hasContent ? trimmedContent : undefined,
               )
+              if (sessionIdRef.current !== targetSessionId) {
+                return
+              }
               uploadResponses.push(response)
               const uploadFeedback = firstNonEmptyText(
                 response.feedback_message ?? null,
@@ -2931,7 +3023,7 @@ export function useSessionWorkbench() {
               ])
               updateMessageAttachment(userMsgId, attachment.id, {
                 document_id: response.document_id ?? null,
-                session_id: sessionId,
+                session_id: targetSessionId,
                 upload_status: "uploaded",
                 preview_url:
                   resolvePersistentMaterialPreview(uploadedMaterial) ??
@@ -2964,9 +3056,12 @@ export function useSessionWorkbench() {
                 })
               }
 
-              queueMaterialUnderstandingRefresh(sessionId, [response])
+              queueMaterialUnderstandingRefresh(targetSessionId, [response])
               successfulUploads += 1
             } catch (error) {
+              if (sessionIdRef.current !== targetSessionId) {
+                return
+              }
               const fileError = getErrorMessage(
                 error,
                 `文件 ${file.name} 上传失败。`,
@@ -2994,18 +3089,24 @@ export function useSessionWorkbench() {
 
           setIsUploading(false)
           if (!hasContent) {
+            if (sessionIdRef.current !== targetSessionId) {
+              return
+            }
             updateMessageStatus(
               userMsgId,
               successfulUploads > 0 ? "sent" : "error",
             )
             if (successfulUploads > 0) {
-              await refreshReports(sessionId)
+              await refreshReports(targetSessionId)
+              if (sessionIdRef.current !== targetSessionId) {
+                return
+              }
               appendActivityEvent({
                 kind: "upload",
                 content: buildUploadOnlyMaterialActivitySummary(uploadResponses),
               })
             } else {
-              await refreshReports(sessionId)
+              await refreshReports(targetSessionId)
             }
           }
         }
@@ -3030,11 +3131,14 @@ export function useSessionWorkbench() {
               !runtimeModelConfig || userModelConfig.streamingEnabled
             const response = shouldUseStream
               ? await sendMessageStream(
-                  sessionId,
+                  targetSessionId,
                   trimmedContent,
                   runtimeModelConfig,
                   clientMessageId,
                   (event) => {
+                    if (sessionIdRef.current !== targetSessionId) {
+                      return
+                    }
                     if (event.event === "accepted") {
                       streamAccepted = true
                       if (userMsgId) {
@@ -3074,16 +3178,40 @@ export function useSessionWorkbench() {
                   },
                 )
               : await sendMessage(
-                  sessionId,
+                  targetSessionId,
                   trimmedContent,
                   runtimeModelConfig,
                   clientMessageId,
                 )
+            if (sessionIdRef.current !== targetSessionId) {
+              return
+            }
             updateMessageStatus(userMsgId, "sent")
             const assistantMessage =
               buildAssistantMessageFromBackendResponse(response)
             if (assistantMessage) {
               appendMessage(assistantMessage)
+            }
+
+            // Terminal parity (wx): apply governor/phase from send response without waiting only on report.
+            if (response.governor_decision) {
+              const decision = response.governor_decision
+              setSession((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      current_governor_decision: decision,
+                      phase_state: [
+                        "passed",
+                        "not_passed",
+                        "refused",
+                        "simulated_refusal",
+                      ].includes(decision)
+                        ? "completed"
+                        : prev.phase_state,
+                    }
+                  : prev,
+              )
             }
 
             const requestedDocumentsMessage = buildEvidenceSuggestionMessage(
@@ -3106,11 +3234,17 @@ export function useSessionWorkbench() {
                 content: gateProgressMessage,
               })
             }
-            await refreshReports(sessionId)
-            await refreshRuntimeDebugSnapshot(sessionId)
+            await refreshReports(targetSessionId)
+            if (sessionIdRef.current !== targetSessionId) {
+              return
+            }
+            await refreshRuntimeDebugSnapshot(targetSessionId)
           }
         }
       } catch (error) {
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         const streamError =
           error instanceof ApiError
             ? messageStreamErrorFromUnknown(error.data)
@@ -3127,12 +3261,12 @@ export function useSessionWorkbench() {
         if (userMsgId) {
           updateMessageFailure(userMsgId, failureDetail)
         }
-        if (streamAccepted && sessionId) {
+        if (streamAccepted && targetSessionId) {
           // F11: after accept but before final, try reloading transcript.
           let recoveredAssistant = false
           try {
-            const transcript = await fetchSessionMessages(sessionId)
-            if (sessionIdRef.current === sessionId) {
+            const transcript = await fetchSessionMessages(targetSessionId)
+            if (sessionIdRef.current === targetSessionId) {
               const restoredMessages = chatMessagesFromBackendTurns(
                 transcript.messages,
               )
@@ -3146,6 +3280,9 @@ export function useSessionWorkbench() {
           } catch {
             // Fall through to error UX when transcript reload fails.
           }
+          if (sessionIdRef.current !== targetSessionId) {
+            return
+          }
           upsertStreamProgress(
             streamError
               ? `处理失败：${failureDetail}`
@@ -3157,13 +3294,17 @@ export function useSessionWorkbench() {
           if (recoveredAssistant && userMsgId) {
             updateMessageStatus(userMsgId, "sent")
           }
-          await refreshReports(sessionId).catch(() => undefined)
+          await refreshReports(targetSessionId).catch(() => undefined)
           if (recoveredAssistant && !streamError) {
-            setChatError(null)
+            if (sessionIdRef.current === targetSessionId) {
+              setChatError(null)
+            }
             return
           }
         }
-        setChatError(failureDetail)
+        if (sessionIdRef.current === targetSessionId) {
+          setChatError(failureDetail)
+        }
       } finally {
         sendingRef.current = false
         setIsSending(false)
@@ -3705,6 +3846,7 @@ export function useSessionWorkbench() {
         setPracticeMaterialsError(message)
         return
       }
+      const targetSessionId = sessionId
       if (mockMode) {
         appendActivityEvent({
           kind: "debug",
@@ -3740,6 +3882,9 @@ export function useSessionWorkbench() {
         status: "sending",
       })
       const updateProgress = (line: string) => {
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         progressLines.push(line)
         setDebugBundleProgress([...progressLines])
         updateActivityEventContent(
@@ -3758,10 +3903,13 @@ export function useSessionWorkbench() {
         let result
         try {
           result = await createPracticeMaterialBundleStream(
-            sessionId,
+            targetSessionId,
             scenario,
             false,
             (event) => {
+              if (sessionIdRef.current !== targetSessionId) {
+                return
+              }
               recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
               updateProgress(describeDebugBundleEvent(event))
             },
@@ -3779,16 +3927,23 @@ export function useSessionWorkbench() {
             throw practiceError
           }
           result = await createDebugMaterialBundleStream(
-            sessionId,
+            targetSessionId,
             scenario,
             false,
             (event) => {
+              if (sessionIdRef.current !== targetSessionId) {
+                return
+              }
               recordRuntimeDebugEvent(runtimeDebugEventFromMaterialEvent(event))
               updateProgress(describeDebugBundleEvent(event))
             },
             normalizedSeedText,
             "ai_if_available",
           )
+        }
+        // After stream: do not paint foreign session state.
+        if (sessionIdRef.current !== targetSessionId) {
+          return
         }
         setLatestDebugMaterialBundle(result)
         setPracticeMaterialsError(null)
@@ -3815,7 +3970,7 @@ export function useSessionWorkbench() {
         )
         setUploadedMaterials((prev) => {
           const nextMaterials = result.documents.map((document) =>
-            debugBundleDocumentToMaterial(sessionId, document, result),
+            debugBundleDocumentToMaterial(targetSessionId, document, result),
           )
           const generatedIds = new Set(
             nextMaterials.map((material) => material.id),
@@ -3840,9 +3995,18 @@ export function useSessionWorkbench() {
               : null,
           })
         }
-        await refreshReports(sessionId)
-        await refreshRuntimeDebugSnapshot(sessionId)
+        await refreshReports(targetSessionId)
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
+        await refreshRuntimeDebugSnapshot(targetSessionId)
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         await refreshMaterialPackages()
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         if (result.main_flow_refresh_error) {
           setSettingsFeedback(
             `练习材料已生成，但后续刷新失败：${result.main_flow_refresh_error}`,
@@ -3851,6 +4015,9 @@ export function useSessionWorkbench() {
           setSettingsFeedback("练习材料已生成。可在材料库与右侧中文说明中查看。")
         }
       } catch (error) {
+        if (sessionIdRef.current !== targetSessionId) {
+          return
+        }
         updateActivityEventStatus(progressMessageId, "error")
         const message = getErrorMessage(
           error,
@@ -3861,7 +4028,12 @@ export function useSessionWorkbench() {
         setPracticeMaterialsError(message)
         setSettingsFeedback(message)
       } finally {
-        setIsDebugBundleGenerating(false)
+        if (sessionIdRef.current === targetSessionId) {
+          setIsDebugBundleGenerating(false)
+        } else {
+          // Still clear generating flag so dialog unlocks if user switched sessions.
+          setIsDebugBundleGenerating(false)
+        }
       }
     },
     [
@@ -3900,10 +4072,13 @@ export function useSessionWorkbench() {
     [handleDebugMaterialBundleScenario, visaType],
   )
 
-  const handleDebugFillCurrentGap = useCallback(
-    () => runDebugMaterialBundle("normal_f1_bundle"),
-    [runDebugMaterialBundle],
-  )
+  /**
+   * Dead-end without seed: route to practice dialog so the user must provide
+   * seed text (runDebugMaterialBundle rejects empty seed).
+   */
+  const handleDebugFillCurrentGap = useCallback(() => {
+    openPracticeMaterialsDialog()
+  }, [openPracticeMaterialsDialog])
 
   const handleClearHistory = useCallback(async () => {
     removeHistoryEntries()

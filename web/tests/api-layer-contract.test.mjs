@@ -381,3 +381,130 @@ test("material package document content_url is rewritten (F8)", () => {
     }
   }
 })
+
+test("mapSessionDocumentToUploadedMaterial sets image preview_url from content_url", () => {
+  const previous = process.env.NEXT_PUBLIC_API_BASE_URL
+  try {
+    process.env.NEXT_PUBLIC_API_BASE_URL = "/api"
+    const imageMaterial = mappers.mapSessionDocumentToUploadedMaterial(
+      {
+        document_id: "doc-img",
+        filename: "passport.png",
+        status: "parsed",
+        understanding_status: "completed",
+        content_url: "/v1/sessions/sess-1/files/doc-img/content",
+        tombstoned: false,
+      },
+      "sess-1",
+    )
+    assert.equal(imageMaterial.kind, "image")
+    assert.equal(
+      imageMaterial.preview_url,
+      "/api/v1/sessions/sess-1/files/doc-img/content",
+    )
+    assert.equal(
+      imageMaterial.content_url,
+      "/api/v1/sessions/sess-1/files/doc-img/content",
+    )
+
+    const pdfMaterial = mappers.mapSessionDocumentToUploadedMaterial(
+      {
+        document_id: "doc-pdf",
+        filename: "i20.pdf",
+        status: "parsed",
+        content_url: "/v1/sessions/sess-1/files/doc-pdf/content",
+        tombstoned: false,
+      },
+      "sess-1",
+    )
+    assert.equal(pdfMaterial.kind, "pdf")
+    assert.equal(pdfMaterial.preview_url, null)
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NEXT_PUBLIC_API_BASE_URL
+    } else {
+      process.env.NEXT_PUBLIC_API_BASE_URL = previous
+    }
+  }
+})
+
+test("practice stream without body falls back to practice non-stream URL (mock fetch)", async () => {
+  const previousBase = process.env.NEXT_PUBLIC_API_BASE_URL
+  const previousFetch = globalThis.fetch
+  process.env.NEXT_PUBLIC_API_BASE_URL = "/api"
+
+  const calledUrls = []
+  const finalPayload = {
+    bundle_id: "b1",
+    scenario: "normal_f1_bundle",
+    scenario_label: "F-1",
+    documents: [],
+    is_practice_material: true,
+  }
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    calledUrls.push({ url, method: init?.method ?? "GET" })
+    if (url.includes("/practice/material-bundles/stream")) {
+      return {
+        ok: true,
+        status: 200,
+        body: null,
+        json: async () => ({}),
+      }
+    }
+    if (
+      url.includes("/practice/material-bundles") &&
+      !url.includes("/stream")
+    ) {
+      return {
+        ok: true,
+        status: 200,
+        body: {},
+        json: async () => finalPayload,
+      }
+    }
+    throw new Error(`Unexpected fetch URL in test: ${url}`)
+  }
+
+  try {
+    // Load client after fetch mock is in place (client closes over global fetch).
+    const client = loadTypeScriptModule("lib/api/client.ts", {
+      "./config": apiConfig,
+      "./mappers": mappers,
+    })
+    const result = await client.createPracticeMaterialBundleStream(
+      "sess-practice",
+      "normal_f1_bundle",
+      false,
+      () => {},
+      "seed text for practice",
+    )
+    assert.equal(result.bundle_id, "b1")
+    assert.ok(
+      calledUrls.some((entry) =>
+        entry.url.includes("/practice/material-bundles/stream"),
+      ),
+      "must hit practice stream first",
+    )
+    assert.ok(
+      calledUrls.some(
+        (entry) =>
+          entry.url.includes("/practice/material-bundles") &&
+          !entry.url.includes("/stream"),
+      ),
+      "must fall back to practice non-stream",
+    )
+    assert.ok(
+      !calledUrls.some((entry) => entry.url.includes("/debug/")),
+      "must never call debug endpoints from practice stream fallback",
+    )
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousBase === undefined) {
+      delete process.env.NEXT_PUBLIC_API_BASE_URL
+    } else {
+      process.env.NEXT_PUBLIC_API_BASE_URL = previousBase
+    }
+  }
+})
